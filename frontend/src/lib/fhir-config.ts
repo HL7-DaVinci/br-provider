@@ -25,6 +25,7 @@ const DEFAULT_FHIR_SERVERS: FhirServer[] = [
     url: "http://localhost:8080/fhir",
   },
 ];
+const CUSTOM_SERVER_NAME = "Custom Server";
 
 function isValidFhirServer(server: unknown): server is FhirServer {
   return (
@@ -68,19 +69,62 @@ export const FHIR_SERVERS: FhirServer[] = parseFhirServers();
 
 const STORAGE_KEY = "fhir-server-url";
 
+function normalizeServerUrl(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+function matchesRequestUrl(requestUrl: string, serverUrl: string): boolean {
+  const normalizedServerUrl = normalizeServerUrl(serverUrl);
+  if (!requestUrl.startsWith(normalizedServerUrl)) {
+    return false;
+  }
+
+  const boundary = requestUrl.charAt(normalizedServerUrl.length);
+  return !boundary || boundary === "/" || boundary === "?" || boundary === "#";
+}
+
 export function getStoredServerUrl(): string {
   if (typeof window === "undefined") {
-    return FHIR_SERVERS[0].url;
+    return normalizeServerUrl(FHIR_SERVERS[0].url);
   }
-  return localStorage.getItem(STORAGE_KEY) || FHIR_SERVERS[0].url;
+
+  return normalizeServerUrl(
+    localStorage.getItem(STORAGE_KEY) || FHIR_SERVERS[0].url,
+  );
 }
 
 export function setStoredServerUrl(url: string): void {
   if (typeof window !== "undefined") {
-    localStorage.setItem(STORAGE_KEY, url);
+    localStorage.setItem(STORAGE_KEY, normalizeServerUrl(url));
   }
 }
 
 export function getServerByUrl(url: string): FhirServer | undefined {
-  return FHIR_SERVERS.find((server) => server.url === url);
+  const normalizedUrl = normalizeServerUrl(url);
+  return FHIR_SERVERS.find(
+    (server) => normalizeServerUrl(server.url) === normalizedUrl,
+  );
+}
+
+export function getServerByRequestUrl(
+  requestUrl: string,
+): FhirServer | undefined {
+  const presetServer = FHIR_SERVERS.find((server) =>
+    matchesRequestUrl(requestUrl, server.url),
+  );
+  if (presetServer) {
+    return presetServer;
+  }
+
+  const currentServerUrl = getStoredServerUrl();
+  if (!matchesRequestUrl(requestUrl, currentServerUrl)) {
+    return undefined;
+  }
+
+  return (
+    getServerByUrl(currentServerUrl) ?? {
+      name: CUSTOM_SERVER_NAME,
+      url: currentServerUrl,
+    }
+  );
 }

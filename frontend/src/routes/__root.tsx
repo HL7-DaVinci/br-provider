@@ -1,13 +1,22 @@
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
-import { Settings, Users } from "lucide-react";
-import { useState } from "react";
+import { Settings, Users, Wrench } from "lucide-react";
+import { useCallback, useState } from "react";
+import {
+  DevToolsDrawer,
+  DRAWER_WIDTH,
+} from "@/components/dev-tools/dev-tools-drawer";
 import { ServerStatus } from "@/components/server-status";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { NotFoundComponent } from "./-not-found";
 
 const navItems = [{ label: "Patients", to: "/", icon: Users }] as const;
@@ -19,6 +28,12 @@ export const Route = createRootRoute({
 
 function RootComponent() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerPinned, setDrawerPinned] = useState(false);
+
+  const handlePinnedChange = useCallback((pinned: boolean) => {
+    setDrawerPinned(pinned);
+  }, []);
 
   return (
     <TooltipProvider>
@@ -53,24 +68,63 @@ function RootComponent() {
 
           <div className="flex items-center gap-3">
             <ServerStatus showLatency />
-            <ThemeToggle />
 
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => setSettingsOpen(true)}
-              aria-label="Open settings"
-            >
-              <Settings className="h-4 w-4" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div>
+                  <ThemeToggle />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Toggle theme</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setDrawerOpen((prev) => !prev)}
+                  aria-label="Toggle dev tools"
+                >
+                  <Wrench className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Dev Tools</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setSettingsOpen(true)}
+                  aria-label="Open settings"
+                >
+                  <Settings className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Settings</TooltipContent>
+            </Tooltip>
           </div>
         </header>
 
-        <main className="flex-1 overflow-auto bg-background">
+        <main
+          className="flex-1 overflow-auto bg-background transition-[margin] duration-300"
+          style={{
+            marginRight: drawerOpen && drawerPinned ? DRAWER_WIDTH : undefined,
+          }}
+        >
           <Outlet />
         </main>
       </div>
+
+      <DevToolsDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        onPinnedChange={handlePinnedChange}
+      />
 
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
 

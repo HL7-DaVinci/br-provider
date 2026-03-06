@@ -7,27 +7,106 @@ import type {
   Parameters,
 } from "fhir/r4";
 import { useMemo } from "react";
+import { type FhirServer, getServerByRequestUrl } from "@/lib/fhir-config";
 import { isOperationOutcome } from "@/lib/fhir-types";
+import { networkLogStore } from "@/lib/network-log-store";
 
 interface FhirError extends Error {
   status?: number;
   operationOutcome?: OperationOutcome;
 }
 
-export async function fhirFetch<T>(url: string): Promise<T> {
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/fhir+json",
-    },
+function parseResourceType(
+  requestUrl: string,
+  server?: FhirServer,
+): string | null {
+  const resolvedServer = server ?? getServerByRequestUrl(requestUrl);
+  if (!resolvedServer) return null;
+  const path = requestUrl.slice(resolvedServer.url.length).replace(/^\//, "");
+  const segment = path.split(/[/?]/)[0];
+  // Resource types start with uppercase
+  return segment && /^[A-Z]/.test(segment) ? segment : null;
+}
+
+function serializeFetchError(error: unknown): {
+  message: string;
+  name?: string;
+} {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      name: error.name,
+    };
+  }
+
+  return {
+    message: typeof error === "string" ? error : "Unknown fetch error",
+  };
+}
+
+function addNetworkLogEntry({
+  startTime,
+  url,
+  server,
+  status,
+  responseBody,
+  error,
+}: {
+  startTime: number;
+  url: string;
+  server?: FhirServer;
+  status: number | null;
+  responseBody: unknown;
+  error: boolean;
+}): void {
+  networkLogStore.addEntry({
+    id: crypto.randomUUID(),
+    timestamp: startTime,
+    method: "GET",
+    url,
+    serverUrl: server?.url ?? "",
+    serverName: server?.name ?? "Unknown",
+    resourceType: parseResourceType(url, server),
+    status,
+    duration: Date.now() - startTime,
+    responseBody,
+    requestBody: null,
+    error,
   });
+}
+
+export async function fhirFetch<T>(url: string): Promise<T> {
+  const startTime = Date.now();
+  const server = getServerByRequestUrl(url);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Accept: "application/fhir+json",
+      },
+    });
+  } catch (error) {
+    addNetworkLogEntry({
+      startTime,
+      url,
+      server,
+      status: null,
+      responseBody: serializeFetchError(error),
+      error: true,
+    });
+    throw error;
+  }
 
   if (!response.ok) {
     const error: FhirError = new Error(
       `FHIR request failed: ${response.status} ${response.statusText}`,
     );
     error.status = response.status;
+    let errorBody: unknown = null;
     try {
       const body = await response.json();
+      errorBody = body;
       if (isOperationOutcome(body)) {
         error.operationOutcome = body;
         error.message =
@@ -38,10 +117,29 @@ export async function fhirFetch<T>(url: string): Promise<T> {
     } catch {
       // Ignore JSON parse errors
     }
+    addNetworkLogEntry({
+      startTime,
+      url,
+      server,
+      status: response.status,
+      responseBody: errorBody,
+      error: true,
+    });
     throw error;
   }
 
-  return response.json();
+  const data: T = await response.json();
+
+  addNetworkLogEntry({
+    startTime,
+    url,
+    server,
+    status: response.status,
+    responseBody: data,
+    error: false,
+  });
+
+  return data;
 }
 
 export function useCapabilityStatement(serverUrl: string) {
