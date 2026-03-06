@@ -1,5 +1,5 @@
 {
-  "name": "@br-payer/source",
+  "name": "@br-provider/source",
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
@@ -8,6 +8,9 @@
     "test": "nx run-many -t test"
   },
   "private": true,
+  "workspaces": [
+    "frontend"
+  ],
   "dependencies": {},
   "devDependencies": {
     "@nx/devkit": "^22.5.4",
