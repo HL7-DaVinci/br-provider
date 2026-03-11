@@ -1,8 +1,8 @@
 import { TanStackDevtools } from "@tanstack/react-devtools";
-import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
+import { createRootRoute } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
-import { Settings, Users, Wrench } from "lucide-react";
-import { useCallback, useState } from "react";
+import { Settings, Wrench, Bell } from "lucide-react";
+import { useCallback, useState} from "react";
 import {
   DevToolsDrawer,
   DRAWER_WIDTH,
@@ -12,6 +12,16 @@ import { SettingsDialog } from "@/components/settings-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem
+} from "@/components/ui/select";
+import { useResourceSearchWithParams } from "@/hooks/use-fhir-api";
+import type { Patient, Practitioner } from "fhir/r4";
+import { useFhirServer } from "@/hooks/use-fhir-server";
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -19,17 +29,36 @@ import {
 } from "@/components/ui/tooltip";
 import { NotFoundComponent } from "./-not-found";
 
-const navItems = [{ label: "Patients", to: "/", icon: Users }] as const;
-
 export const Route = createRootRoute({
   component: RootComponent,
   notFoundComponent: NotFoundComponent,
 });
 
 function RootComponent() {
+  const { serverUrl } = useFhirServer();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerPinned, setDrawerPinned] = useState(false);
+  const [selectedPatientId, setSelectedPatientId] = useState<string | undefined>(undefined);
+  const [selectedUserId, setSelectedUserId] = useState<string | undefined>(undefined);
+  // Fetch all patients using generic FHIR search hook
+  const { data, isLoading, isError } = useResourceSearchWithParams(
+    serverUrl || "",
+    "Patient",
+    {}, // no search params
+    undefined,
+    50
+  );
+  // Fetch all users (Practitioners) using generic FHIR search hook
+  const { data: practitionerData, isLoading: practitionerLoading, isError: practitionerError } = useResourceSearchWithParams(
+    serverUrl || "",
+    "Practitioner",
+    {}, // no search params
+    undefined,
+    50
+  );
+  const patients = (data?.entry?.map((entry) => entry.resource) || []) as Patient[];
+  const practitioners = (practitionerData?.entry?.map((entry) => entry.resource) || []) as Practitioner[];
 
   const handlePinnedChange = useCallback((pinned: boolean) => {
     setDrawerPinned(pinned);
@@ -37,38 +66,75 @@ function RootComponent() {
 
   return (
     <TooltipProvider>
-      <div className="flex min-h-screen flex-col">
-        <header className="flex h-12 shrink-0 items-center justify-between gap-4 border-b px-4 bg-background/80 backdrop-blur-sm">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background">
-                <span className="text-sm font-semibold tracking-tight">Cx</span>
-              </div>
-              <span className="text-sm font-semibold">Clinical Portal</span>
+      <div className="flex min-h-screen flex-col" style={{ overflow: 'hidden' }}>
+        <header className="flex h-12 shrink-0 items-center justify-between gap-4 border-b px-4 bg-[#7CAEAE] backdrop-blur-sm">
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2 justify-center">
+              <img
+                src="/header-logo.png"
+                alt="Logo"
+                className="h-11 w-full object-contain rounded-none"
+              />
             </div>
-
-            <nav className="flex items-center gap-1">
-              {navItems.map((item) => (
-                <Link
-                  key={item.to}
-                  to={item.to}
-                  className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  activeProps={{
-                    className:
-                      "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm bg-accent text-foreground font-medium",
-                  }}
-                  activeOptions={{ exact: item.to === "/" }}
-                >
-                  <item.icon className="h-4 w-4" />
-                  <span>{item.label}</span>
-                </Link>
-              ))}
-            </nav>
+            <div className="flex items-center gap-6">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text">User :</span>
+                <Select value={selectedUserId} onValueChange={setSelectedUserId}>
+                  <SelectTrigger className="w-45 text font-light bg-white border border-gray-300 rounded-lg">
+                    <SelectValue placeholder={practitionerLoading ? "Loading..." : "Select User"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {practitionerError && <SelectItem value="error">Error loading users</SelectItem>}
+                    {practitioners
+                      .filter((practitioner) => practitioner && practitioner.resourceType === "Practitioner")
+                      .map((practitioner) => (
+                        <SelectItem key={practitioner.id || "unknown"} value={practitioner.id || "unknown"}>
+                          {practitioner.name && practitioner.name[0] && practitioner.name[0].text
+                            ? practitioner.name[0].text
+                            : practitioner.id || "Unknown"}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text">Patient :</span>
+                <Select value={selectedPatientId} onValueChange={setSelectedPatientId}>
+                  <SelectTrigger className="w-45 text font-light bg-white border border-gray-300 rounded-lg">
+                    <SelectValue placeholder={isLoading ? "Loading..." : "Select Patient"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {isError && <SelectItem value="error">Error loading patients</SelectItem>}
+                    {patients
+                      .filter((patient) => patient && patient.resourceType === "Patient")
+                      .map((patient) => (
+                        <SelectItem key={patient.id || "unknown"} value={patient.id || "unknown"}>
+                          {patient.name && patient.name[0] && patient.name[0].text
+                            ? patient.name[0].text
+                            : patient.id || "Unknown"}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
           </div>
-
           <div className="flex items-center gap-3">
             <ServerStatus showLatency />
-
+            {/* Notifications icon */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label="Notifications"
+                >
+                  <Bell className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Notifications</TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <div>
@@ -111,12 +177,30 @@ function RootComponent() {
         </header>
 
         <main
-          className="flex-1 overflow-auto bg-background transition-[margin] duration-300"
+          className="flex-1 bg-background transition-[margin] duration-300 relative" // scrollable area with smooth margin transition when drawer opens/closes
           style={{
             marginRight: drawerOpen && drawerPinned ? DRAWER_WIDTH : undefined,
+            scrollbarColor: '#f3f4f6 #ffffff', // custom scrollbar color
           }}
         >
-          <Outlet />
+          <div className="absolute inset-0 flex flex-col overflow-auto ">
+            {/* Show welcome portal on the root path */}
+            {window.location.pathname === "/" &&   (
+              <div className="p-6">
+                <div className="text-lg font-semibold mb-2">Welcome to the Clinical Portal</div>
+                {/*
+                  Uncomment the code below to enable scroll test:
+                  <div className="mb-4 text-base text-gray-700">Below are test items to help verify scrolling on this page.</div>
+                  <div className="flex flex-col gap-2">
+                    {Array.from({ length: 50 }, (_, i) => (
+                      <div key={i} className="bg-white rounded shadow p-2">
+                        Test User {i + 1}
+                      </div>
+                    ))}
+                  </div>*/}
+              </div>
+            )}
+          </div>
         </main>
       </div>
 
