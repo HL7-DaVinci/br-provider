@@ -28,6 +28,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { NotFoundComponent } from "./-not-found";
+import { useNavigate, Outlet, useLocation } from "@tanstack/react-router";
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -50,10 +51,23 @@ function RootComponent() {
     50
   );
   const patients = (data?.entry?.map((entry) => entry.resource) || []) as Patient[];
+  const navigate = useNavigate();
+  const location = useLocation(); // Get router location
 
   const handlePinnedChange = useCallback((pinned: boolean) => {
     setDrawerPinned(pinned);
   }, []);
+
+  // Update Select to navigate on patient selection
+  const handlePatientSelect = (patientId: string | undefined) => {
+    setSelectedPatientId(patientId);
+    if (patientId) {
+      navigate({
+        to: "/patients/$patientId",
+        params: { patientId },
+      });
+    }
+  };
 
   return (
     <TooltipProvider>
@@ -76,7 +90,7 @@ function RootComponent() {
               </div>
               <div className="flex items-center gap-2">
                 <span className="font-semibold text text-lg leading-none">Patient :</span>
-                <Select value={selectedPatientId} onValueChange={setSelectedPatientId}>
+                <Select value={selectedPatientId} onValueChange={handlePatientSelect}>
                   <SelectTrigger className="w-50 text font-normal bg-white border border-gray-300 rounded-lg">
                     <SelectValue placeholder={isLoading ? "Loading..." : "Select Patient"} />
                   </SelectTrigger>
@@ -161,8 +175,8 @@ function RootComponent() {
           }}
         >
           <div className="absolute inset-0 flex flex-col overflow-auto ">
-            {/* Show welcome portal on the root path */}
-            {window.location.pathname === "/" &&   (
+            {/* Show welcome portal only on root path */}
+            {location.pathname === "/" ? (
               <div className="p-6">
                 <div className="text-lg font-semibold mb-2">Welcome to the Clinical Portal</div>
                 {/*
@@ -176,6 +190,8 @@ function RootComponent() {
                     ))}
                   </div>*/}
               </div>
+            ) : (
+              <Outlet />
             )}
           </div>
         </main>

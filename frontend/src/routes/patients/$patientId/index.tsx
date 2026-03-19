@@ -1,11 +1,11 @@
 import { createFileRoute, useParams } from "@tanstack/react-router";
 import { usePatient } from "@/hooks/use-clinical-api";
-import {
+/*import {
   calculateAge,
   formatClinicalDate,
   formatPatientName,
   getPrimaryIdentifier,
-} from "@/lib/clinical-formatters";
+} from "@/lib/clinical-formatters";*/
 
 export const Route = createFileRoute("/patients/$patientId/")({
   component: PatientSummary,
@@ -32,6 +32,7 @@ function PatientSummary() {
     );
   }
 
+  /*
   const address = patient.address?.[0];
   const phone = patient.telecom?.find((t) => t.system === "phone");
 
@@ -63,9 +64,11 @@ function PatientSummary() {
       : []),
     ...(phone ? [{ label: "Phone", value: phone.value }] : []),
   ].filter((f) => f.value);
+  */
 
   return (
     <div className="p-6 max-w-4xl">
+      {/*
       <section className="border-t pt-4">
         <h2 className="text-base font-semibold mb-3">Demographics</h2>
         <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
@@ -77,6 +80,7 @@ function PatientSummary() {
           ))}
         </dl>
       </section>
+      */}
     </div>
   );
 }
