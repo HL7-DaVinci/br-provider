@@ -78,3 +78,7 @@ agent-*.json
 **/.cursor*
 **/cursor.log
 **/.windsurf*
+
+
+# Certs
+generated-cert.pfx

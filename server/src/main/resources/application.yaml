@@ -458,3 +458,25 @@ initial-data:
   - examples-pas
   - seed-data
 
+# -------------------------------------------------------------------------------------
+# Security Configuration
+# -------------------------------------------------------------------------------------
+security:
+  enable-authentication: true
+  issuer: https://localhost:5001
+  fetch-cert: true
+  default-cert-password: udap-test
+  default-user-password: test
+  fetch-cert-retry-attempts: 10
+  fetch-cert-retry-delay: 5000
+  bypass-header: X-Bypass-Auth
+  ssl-verify: false
+  external-base-url: http://localhost:3000
+  oauth-client-id: provider-client
+  scope: "openid udap fhirUser profile"
+  client-name: "Da Vinci Burden Reduction Provider Client"
+  public-endpoints:
+    - /fhir/metadata
+    - /fhir/.well-known/udap
+    - /.well-known/udap
+    - /.well-known/openid-configuration

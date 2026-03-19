@@ -1,5 +1,5 @@
 import { TanStackDevtools } from "@tanstack/react-devtools";
-import { createRootRoute } from "@tanstack/react-router";
+import { createRootRoute, Outlet, useMatchRoute } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { Settings, Wrench, Bell } from "lucide-react";
 import { useCallback, useState} from "react";
@@ -27,6 +27,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useAuth } from "@/hooks/use-auth";
 import { NotFoundComponent } from "./-not-found";
 
 export const Route = createRootRoute({
@@ -35,12 +36,14 @@ export const Route = createRootRoute({
 });
 
 function RootComponent() {
+  const matchRoute = useMatchRoute();
   const { serverUrl } = useFhirServer();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerPinned, setDrawerPinned] = useState(false);
   const [selectedPatientId, setSelectedPatientId] = useState<string | undefined>(undefined);
   const [selectedUserId, setSelectedUserId] = useState<string | undefined>(undefined);
+  const { isAuthenticated, authEnabled, displayName, fhirUserType, login, logout } = useAuth();
   // Fetch all patients using generic FHIR search hook
   const { data, isLoading, isError } = useResourceSearchWithParams(
     serverUrl || "",
@@ -64,6 +67,11 @@ function RootComponent() {
     setDrawerPinned(pinned);
   }, []);
 
+  // Login and callback pages have their own full-page layout; render without app shell
+  if (matchRoute({ to: "/login" }) || matchRoute({ to: "/callback" })) {
+    return <Outlet />;
+  }
+
   return (
     <TooltipProvider>
       <div className="flex min-h-screen flex-col" style={{ overflow: 'hidden' }}>
@@ -79,23 +87,38 @@ function RootComponent() {
             <div className="flex items-center gap-6">
               <div className="flex items-center gap-2">
                 <span className="font-semibold text">User :</span>
-                <Select value={selectedUserId} onValueChange={setSelectedUserId}>
-                  <SelectTrigger className="w-45 text font-light bg-white border border-gray-300 rounded-lg">
-                    <SelectValue placeholder={practitionerLoading ? "Loading..." : "Select User"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {practitionerError && <SelectItem value="error">Error loading users</SelectItem>}
-                    {practitioners
-                      .filter((practitioner) => practitioner && practitioner.resourceType === "Practitioner")
-                      .map((practitioner) => (
-                        <SelectItem key={practitioner.id || "unknown"} value={practitioner.id || "unknown"}>
-                          {practitioner.name && practitioner.name[0] && practitioner.name[0].text
-                            ? practitioner.name[0].text
-                            : practitioner.id || "Unknown"}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
+                {authEnabled && isAuthenticated ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text font-light bg-white border border-gray-300 rounded-lg px-3 py-1.5 text-sm">
+                      {displayName || "Authenticated"} ({fhirUserType || "Unknown"})
+                    </span>
+                    <Button variant="ghost" size="sm" onClick={logout} className="text-xs">
+                      Sign Out
+                    </Button>
+                  </div>
+                ) : authEnabled ? (
+                  <Button variant="ghost" size="sm" onClick={login} className="bg-white border border-gray-300 rounded-lg">
+                    Sign In
+                  </Button>
+                ) : (
+                  <Select value={selectedUserId} onValueChange={setSelectedUserId}>
+                    <SelectTrigger className="w-45 text font-light bg-white border border-gray-300 rounded-lg">
+                      <SelectValue placeholder={practitionerLoading ? "Loading..." : "Select User"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {practitionerError && <SelectItem value="error">Error loading users</SelectItem>}
+                      {practitioners
+                        .filter((practitioner) => practitioner && practitioner.resourceType === "Practitioner")
+                        .map((practitioner) => (
+                          <SelectItem key={practitioner.id || "unknown"} value={practitioner.id || "unknown"}>
+                            {practitioner.name && practitioner.name[0] && practitioner.name[0].text
+                              ? practitioner.name[0].text
+                              : practitioner.id || "Unknown"}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <span className="font-semibold text">Patient :</span>
@@ -184,22 +207,7 @@ function RootComponent() {
           }}
         >
           <div className="absolute inset-0 flex flex-col overflow-auto ">
-            {/* Show welcome portal on the root path */}
-            {window.location.pathname === "/" &&   (
-              <div className="p-6">
-                <div className="text-lg font-semibold mb-2">Welcome to the Clinical Portal</div>
-                {/*
-                  Uncomment the code below to enable scroll test:
-                  <div className="mb-4 text-base text-gray-700">Below are test items to help verify scrolling on this page.</div>
-                  <div className="flex flex-col gap-2">
-                    {Array.from({ length: 50 }, (_, i) => (
-                      <div key={i} className="bg-white rounded shadow p-2">
-                        Test User {i + 1}
-                      </div>
-                    ))}
-                  </div>*/}
-              </div>
-            )}
+            <Outlet />
           </div>
         </main>
       </div>

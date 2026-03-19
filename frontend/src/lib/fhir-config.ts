@@ -11,6 +11,8 @@ export interface CdsServer {
 interface AppConfig {
   fhirServers?: FhirServer[];
   cdsServers?: CdsServer[];
+  providerServerUrl?: string;
+  authEnabled?: boolean;
 }
 
 declare global {
@@ -127,4 +129,26 @@ export function getServerByRequestUrl(
       url: currentServerUrl,
     }
   );
+}
+
+export function getProviderFhirBaseUrl(): string | null {
+  const providerServerUrl = getAppConfig().providerServerUrl;
+  if (!providerServerUrl) {
+    return null;
+  }
+
+  return normalizeServerUrl(`${providerServerUrl}/fhir`);
+}
+
+export function isProviderFhirRequestUrl(requestUrl: string): boolean {
+  const providerFhirBaseUrl = getProviderFhirBaseUrl();
+  if (!providerFhirBaseUrl) {
+    return false;
+  }
+
+  return matchesRequestUrl(requestUrl, providerFhirBaseUrl);
+}
+
+export function getAppConfig(): AppConfig {
+  return window?.APP_CONFIG ?? {};
 }

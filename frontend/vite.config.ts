@@ -38,4 +38,23 @@ export default defineConfig({
       },
     },
   },
+  server: {
+    port: 3000,
+    proxy: {
+      "/login": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+        bypass(req) {
+          if (req.method === "GET") return req.url;
+        },
+      },
+      "/auth": { target: "http://localhost:8080", changeOrigin: true },
+      "/oauth2": { target: "http://localhost:8080", changeOrigin: true },
+      "/fhir": { target: "http://localhost:8080", changeOrigin: true },
+      "/.well-known": { target: "http://localhost:8080", changeOrigin: true },
+      "/config.js": { target: "http://localhost:8080", changeOrigin: true },
+      "/api": { target: "http://localhost:8080", changeOrigin: true },
+      "/actuator": { target: "http://localhost:8080", changeOrigin: true },
+    },
+  },
 });
