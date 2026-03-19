@@ -19,7 +19,7 @@ import {
   SelectItem
 } from "@/components/ui/select";
 import { useResourceSearchWithParams } from "@/hooks/use-fhir-api";
-import type { Patient, Practitioner } from "fhir/r4";
+import type { Patient } from "fhir/r4";
 import { useFhirServer } from "@/hooks/use-fhir-server";
 import {
   Tooltip,
@@ -40,7 +40,7 @@ function RootComponent() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerPinned, setDrawerPinned] = useState(false);
   const [selectedPatientId, setSelectedPatientId] = useState<string | undefined>(undefined);
-  const [selectedUserId, setSelectedUserId] = useState<string | undefined>(undefined);
+  const userName = "Test Practitioner"; // TODO: Replace with actual user name from login
   // Fetch all patients using generic FHIR search hook
   const { data, isLoading, isError } = useResourceSearchWithParams(
     serverUrl || "",
@@ -49,16 +49,7 @@ function RootComponent() {
     undefined,
     50
   );
-  // Fetch all users (Practitioners) using generic FHIR search hook
-  const { data: practitionerData, isLoading: practitionerLoading, isError: practitionerError } = useResourceSearchWithParams(
-    serverUrl || "",
-    "Practitioner",
-    {}, // no search params
-    undefined,
-    50
-  );
   const patients = (data?.entry?.map((entry) => entry.resource) || []) as Patient[];
-  const practitioners = (practitionerData?.entry?.map((entry) => entry.resource) || []) as Practitioner[];
 
   const handlePinnedChange = useCallback((pinned: boolean) => {
     setDrawerPinned(pinned);
@@ -77,30 +68,16 @@ function RootComponent() {
               />
             </div>
             <div className="flex items-center gap-6">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text">User :</span>
-                <Select value={selectedUserId} onValueChange={setSelectedUserId}>
-                  <SelectTrigger className="w-45 text font-light bg-white border border-gray-300 rounded-lg">
-                    <SelectValue placeholder={practitionerLoading ? "Loading..." : "Select User"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {practitionerError && <SelectItem value="error">Error loading users</SelectItem>}
-                    {practitioners
-                      .filter((practitioner) => practitioner && practitioner.resourceType === "Practitioner")
-                      .map((practitioner) => (
-                        <SelectItem key={practitioner.id || "unknown"} value={practitioner.id || "unknown"}>
-                          {practitioner.name && practitioner.name[0] && practitioner.name[0].text
-                            ? practitioner.name[0].text
-                            : practitioner.id || "Unknown"}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
+              <div className="flex items-center gap-2" style={{height: '100%'}}>
+                <span className="font-semibold text text-lg leading-none">User :</span>
+                <span className="text font-semibold text-lg leading-none">
+                  {userName}
+                </span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="font-semibold text">Patient :</span>
+                <span className="font-semibold text text-lg leading-none">Patient :</span>
                 <Select value={selectedPatientId} onValueChange={setSelectedPatientId}>
-                  <SelectTrigger className="w-45 text font-light bg-white border border-gray-300 rounded-lg">
+                  <SelectTrigger className="w-50 text font-normal bg-white border border-gray-300 rounded-lg">
                     <SelectValue placeholder={isLoading ? "Loading..." : "Select Patient"} />
                   </SelectTrigger>
                   <SelectContent>

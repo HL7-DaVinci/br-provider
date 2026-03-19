@@ -53,6 +53,35 @@ export function usePatient(patientId: string) {
   });
 }
 
+export function useCoverage(patientId: string) {
+  const { serverUrl } = useFhirServer();
+
+  return useQuery({
+    queryKey: ["fhir", "Coverage", patientId, serverUrl],
+    queryFn: () =>
+        fhirFetch<Bundle>(
+            `${serverUrl}/Coverage?beneficiary=Patient/${patientId}&_count=10`
+        ),
+    staleTime: 60 * 1000,
+    retry: 1,
+    enabled: !!serverUrl && !!patientId,
+  });
+}
+
+export function useOrganization(orgId: string | undefined) {
+  const { serverUrl } = useFhirServer();
+  return useQuery({
+    queryKey: ["fhir", "Organization", orgId, serverUrl],
+    queryFn: () =>
+        orgId
+            ? fhirFetch<any>(`${serverUrl}/Organization/${orgId}`)
+            : Promise.resolve(undefined),
+    enabled: !!serverUrl && !!orgId,
+    staleTime: 60 * 1000,
+    retry: 1,
+  });
+}
+
 export function useConditions(patientId: string) {
   const { serverUrl } = useFhirServer();
 
@@ -107,6 +136,45 @@ export function useMedicationRequestCount(patientId: string) {
       fhirFetch<Bundle>(
         `${serverUrl}/MedicationRequest?patient=${patientId}&status=active&_summary=count`,
       ),
+    staleTime: 60 * 1000,
+    retry: 1,
+    enabled: !!serverUrl && !!patientId,
+  });
+}
+
+/**
+ * Gets total orders count (ServiceRequest, MedicationRequest, DeviceRequest, NutritionOrder) for a patient via FHIR batch.
+ */
+export function useOrderCount(patientId: string) {
+  const { serverUrl } = useFhirServer();
+
+  return useQuery({
+    queryKey: ["fhir", "OrderCount", patientId, serverUrl],
+    queryFn: () => {
+      const batchBundle = {
+        resourceType: "Bundle",
+        type: "batch",
+        entry: [
+          { request: { method: "GET", url: `ServiceRequest?patient=${patientId}&_summary=count` } },
+          { request: { method: "GET", url: `MedicationRequest?patient=${patientId}&_summary=count` } },
+          { request: { method: "GET", url: `DeviceRequest?patient=${patientId}&_summary=count` } },
+          { request: { method: "GET", url: `NutritionOrder?patient=${patientId}&_summary=count` } },
+        ],
+      };
+      return fetch(`${serverUrl}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/fhir+json" },
+        body: JSON.stringify(batchBundle),
+      })
+          .then((response) => response.json())
+          .then((bundle) => {
+            const total = (bundle.entry || []).reduce((sum: number, entry: any) => {
+              const entryBundle = entry.resource as { total?: number };
+              return sum + (entryBundle.total ?? 0);
+            }, 0);
+            return { total };
+          });
+    },
     staleTime: 60 * 1000,
     retry: 1,
     enabled: !!serverUrl && !!patientId,

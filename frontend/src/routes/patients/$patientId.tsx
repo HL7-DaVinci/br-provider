@@ -8,6 +8,7 @@ import { PatientHeader } from "@/components/patient-header";
 import {
   useConditionCount,
   useMedicationRequestCount,
+  useOrderCount,
   usePatient,
 } from "@/hooks/use-clinical-api";
 import { cn } from "@/lib/utils";
@@ -27,6 +28,7 @@ function PatientLayout() {
   const { data: patient, isLoading, isError, error } = usePatient(patientId);
   const { data: conditionCount } = useConditionCount(patientId);
   const { data: medCount } = useMedicationRequestCount(patientId);
+  const { data: orderCount } = useOrderCount(patientId);
 
   if (isLoading) {
     return (
@@ -58,6 +60,7 @@ function PatientLayout() {
         stats={{
           conditions: conditionCount?.total,
           medications: medCount?.total,
+          orders: orderCount?.total,
         }}
       />
 
