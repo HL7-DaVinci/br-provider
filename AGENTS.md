@@ -74,19 +74,33 @@ nx run frontend:copy-to-server
 
 ### 1. Server (`server`)
 - **Path**: `server/`
-- **Type**: Java / Maven / HAPI FHIR
-- **Description**: The backend FHIR server.
+- **Type**: Java / Maven / HAPI FHIR 8.8.0 / Spring Boot 3.5.9
+- **Description**: The backend FHIR server (R4) and OAuth2 authorization server.
 - **Structure**:
   - `src/main/java/ca/uhn/fhir/` - HAPI starter code (do NOT modify)
   - `src/main/java/org/hl7/davinci/` - Custom implementation code (all custom code goes here)
-    - `api/` - REST controllers for non-FHIR APIs
-    - `common/` - Shared utilities and base classes
-    - `config/` - Spring configuration classes
+    - `api/` - REST controllers for non-FHIR endpoints (UserController, ApiController)
+    - `common/` - Shared utilities and base classes (BaseProvider, BaseInterceptor)
+    - `config/` - Spring configuration classes (CORS, beans)
+    - `datainitializer/` - Seed data loading on startup from `initial-data` directories
+    - `security/` - Auth stack (see Authentication section below)
+- **Database**: H2 in-memory (transient, reloaded each startup). PostgreSQL-ready via config.
+- **IGs**: CRD, DTR, PAS (v2.2.0) loaded from `hapi.fhir.implementationguides` in application.yaml
 
 ### 2. Frontend (`frontend`)
 - **Path**: `frontend/`
-- **Type**: TanStack React Router SPA
-- **Description**: Contains a frontend application simulating a clinical experience from the provider perspective.
+- **Type**: React 19 SPA with TanStack Router (file-based routing), TanStack Query, TanStack Table
+- **Styling**: Tailwind CSS 4 + Radix UI components
+- **Linting**: Biome (lint + format)
+- **Testing**: Vitest + Testing Library
+- **Description**: Clinical experience UI from the provider perspective.
+- **Key directories**:
+  - `src/routes/` - File-based routing (`routeTree.gen.ts` is auto-generated, do not edit)
+  - `src/hooks/` - React hooks (auth, FHIR API, server selection, theme)
+  - `src/lib/` - Core utilities (auth/PKCE client, FHIR config, types)
+  - `src/components/ui/` - Radix-based UI primitives
+- **Path alias**: `@/` maps to `frontend/src/`
+- **Dev proxy**: Vite forwards `/fhir`, `/auth`, `/oauth2`, `/.well-known`, `/api`, `/actuator` to localhost:8080
 
 ---
 
@@ -104,6 +118,44 @@ This server implements the Da Vinci Burden Reduction implementation guides. Alwa
 **Important**: This server is a **provider** implementation. It does NOT implement payer functionality.
 
 
+## Authentication & Security
+
+This server is the **Identity Provider (IdP)** in a UDAP Tiered OAuth flow. The **FAST Security RI** (configured at `security.issuer`, default `https://localhost:5001`) is the trust community authorization server that issues tokens.
+
+### UDAP Tiered OAuth Flow
+1. At startup, this server registers as a UDAP client with the FAST RI (`UdapClientRegistration` discovers endpoints from `{issuer}/.well-known/udap`, then performs DCR)
+2. `CertificateHolder` fetches an X.509 certificate from the FAST RI (`{issuer}/api/cert/generate`) for signing
+3. Frontend calls `/auth/login` -> `SpaAuthController` redirects to the FAST RI's authorize endpoint with `&idp={this-server-url}` to indicate this server as the IdP
+4. FAST RI uses Tiered OAuth to redirect back to this server's IdP endpoints for user authentication
+5. User authenticates locally against the provider's Spring Authorization Server
+6. FAST RI issues tokens; frontend receives them via `/auth/token` (private_key_jwt exchange)
+7. Tokens stored in browser sessionStorage; FHIR requests use `Authorization: Bearer` header
+8. `TokenValidator` validates FAST RI-issued JWTs against the FAST RI's published JWKS
+
+### Two UDAP Discovery Endpoints
+- **`/fhir/.well-known/udap`** (resource server discovery via `UdapDiscoveryInterceptor`) - authorization/token endpoints point to the FAST RI
+- **`/.well-known/udap`** (IdP discovery via `UdapIdpDiscoveryController`) - endpoints point to this server's own Spring Authorization Server; used by the FAST RI during Tiered OAuth to discover IdP capabilities and register as a client
+
+### UDAP DCR on this server
+`UdapRegistrationController` accepts dynamic client registrations from the FAST RI (and other UDAP clients). Client IDs are deterministic (UUID derived from issuer) to handle the FAST RI's `UpsertTieredClient` re-registration behavior.
+
+### Security module (`org.hl7.davinci.security/`)
+- `AuthorizationServerConfig` - Spring OAuth2 Authorization Server (local IdP)
+- `SpaAuthController` - SPA auth endpoints (`/auth/login`, `/auth/token`, `/auth/callback`)
+- `UdapClientRegistration` - Registers this server with the FAST RI at startup
+- `UdapRegistrationController` - Accepts UDAP DCR from the FAST RI
+- `UdapIdpDiscoveryController` - IdP discovery at `/.well-known/udap`
+- `UdapDiscoveryInterceptor` - Resource server discovery at `/fhir/.well-known/udap`
+- `CertificateHolder` - X.509 certificate fetching/management
+- `TokenValidator` - Validates FAST RI-issued JWTs via remote JWKS
+- `AuthInterceptor` - FHIR request authentication
+- `SecurityProperties` - Externalized config (bound to `security.*` in application.yaml)
+
+### Auth bypass (development)
+The `X-Bypass-Auth` header can skip authentication (configured via `security.bypass-header`).
+
+---
+
 ## Configuration
 
 - Main: `server/src/main/resources/application.yaml`
@@ -115,8 +167,23 @@ This server implements the Da Vinci Burden Reduction implementation guides. Alwa
 | `boot` | Yes | Spring Boot embedded Tomcat (development) |
 | `jetty` | No | Replace Tomcat with Jetty (`mvn -Pjetty spring-boot:run`) |
 
+### Dev URLs
+- Server: http://localhost:8080/fhir
+- Frontend: http://localhost:3000
+---
+
+## Deployment
+
+Multi-stage Dockerfile: frontend (bun/vite) -> docs (mkdocs-material) -> server (maven) -> distroless Java 17 image. Drone CI handles multi-arch builds (amd64/arm64) and publishes to `hlseven/davinci-br-provider`.
+
+The frontend build is copied into `server/src/main/resources/static/` so the production WAR serves the SPA directly from port 8080.
+
+---
+
 ## Key Constraints
 
 1. **Do NOT modify HAPI starter code** in `src/main/java/ca/uhn/fhir/` - place custom code in `org.hl7.davinci`
-2. **Provider-only scope** - This server implements provider operations
+2. **Provider-only scope** - This server implements provider operations, not payer
 3. **H2 in-memory database** - Data is transient and reloaded each startup
+4. **Do not edit `routeTree.gen.ts`** - Auto-generated by TanStack Router plugin from `src/routes/`
+5. **Use `bun`** instead of `npm`, `npx`, or `node` for all frontend/workspace commands

@@ -132,7 +132,7 @@ public class AuthorizationServerConfig {
             .formLogin(form -> form.loginPage("/login"))
             .userDetailsService(userDetailsService)
             .csrf(csrf -> csrf
-                .ignoringRequestMatchers("/login", "/oauth2/register", "/fhir/**", "/auth/**")
+                .ignoringRequestMatchers("/login", "/oauth2/register", "/fhir/**", "/auth/**", "/api/**")
             );
         return http.build();
     }

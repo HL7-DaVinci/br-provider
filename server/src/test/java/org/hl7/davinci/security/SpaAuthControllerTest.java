@@ -6,6 +6,7 @@ import com.nimbusds.jwt.SignedJWT;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockHttpServletRequest;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SpaAuthControllerTest {
@@ -46,9 +47,10 @@ class SpaAuthControllerTest {
 
     @Test
     void token_missingCode_returns400() {
+        var request = new MockHttpServletRequest();
         Map<String, String> body = Map.of("state", "some-state");
 
-        ResponseEntity<Map<String, Object>> response = controller.exchangeToken(body);
+        ResponseEntity<Map<String, Object>> response = controller.exchangeToken(body, request);
 
         assertEquals(400, response.getStatusCode().value());
         assertEquals("invalid_request", response.getBody().get("error"));
@@ -56,9 +58,10 @@ class SpaAuthControllerTest {
 
     @Test
     void token_missingState_returns400() {
+        var request = new MockHttpServletRequest();
         Map<String, String> body = Map.of("code", "some-code");
 
-        ResponseEntity<Map<String, Object>> response = controller.exchangeToken(body);
+        ResponseEntity<Map<String, Object>> response = controller.exchangeToken(body, request);
 
         assertEquals(400, response.getStatusCode().value());
         assertEquals("invalid_request", response.getBody().get("error"));
@@ -66,9 +69,10 @@ class SpaAuthControllerTest {
 
     @Test
     void token_unknownState_returns400() {
+        var request = new MockHttpServletRequest();
         Map<String, String> body = Map.of("code", "some-code", "state", "unknown-state");
 
-        ResponseEntity<Map<String, Object>> response = controller.exchangeToken(body);
+        ResponseEntity<Map<String, Object>> response = controller.exchangeToken(body, request);
 
         assertEquals(400, response.getStatusCode().value());
         assertEquals("invalid_state", response.getBody().get("error"));
@@ -76,7 +80,7 @@ class SpaAuthControllerTest {
 
     @Test
     void token_expiredState_returns400() {
-        // Insert a flow that expired 10 minutes ago
+        var request = new MockHttpServletRequest();
         String state = "expired-state";
         controller.getPendingFlows().put(state,
             new SpaAuthController.PendingFlow("verifier", "http://localhost:3000/callback",
@@ -84,7 +88,7 @@ class SpaAuthControllerTest {
 
         Map<String, String> body = Map.of("code", "some-code", "state", state);
 
-        ResponseEntity<Map<String, Object>> response = controller.exchangeToken(body);
+        ResponseEntity<Map<String, Object>> response = controller.exchangeToken(body, request);
 
         assertEquals(400, response.getStatusCode().value());
         assertEquals("invalid_state", response.getBody().get("error"));
@@ -120,6 +124,40 @@ class SpaAuthControllerTest {
         assertEquals("1", tokenParams.get("udap"));
         assertEquals("test-client-id", tokenParams.get("client_id"));
         assertNotNull(tokenParams.get("client_assertion"));
+    }
+
+    @Test
+    void getSession_noSession_returnsNotAuthenticated() {
+        var request = new MockHttpServletRequest();
+
+        ResponseEntity<Map<String, Object>> response = controller.getSession(request);
+
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals(false, response.getBody().get("authenticated"));
+    }
+
+    @Test
+    void getSession_sessionWithoutToken_returnsNotAuthenticated() {
+        var request = new MockHttpServletRequest();
+        request.getSession(true);
+
+        ResponseEntity<Map<String, Object>> response = controller.getSession(request);
+
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals(false, response.getBody().get("authenticated"));
+    }
+
+    @Test
+    void getSession_sessionWithToken_returnsAuthenticatedWithToken() {
+        var request = new MockHttpServletRequest();
+        var session = request.getSession(true);
+        session.setAttribute(SpaAuthController.SESSION_ACCESS_TOKEN, "test-token");
+
+        ResponseEntity<Map<String, Object>> response = controller.getSession(request);
+
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals(true, response.getBody().get("authenticated"));
+        assertEquals("test-token", response.getBody().get("access_token"));
     }
 
     private static CertificateHolder testCertificateHolder() throws Exception {

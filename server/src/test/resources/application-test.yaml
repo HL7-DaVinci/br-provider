@@ -5,5 +5,9 @@ hapi:
     search_index_full_text_enabled: false
     mdm_enabled: false
 
+spring:
+  session:
+    store-type: none
+
 security:
   enable-authentication: false

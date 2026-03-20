@@ -11,13 +11,13 @@ describe("handleCallback", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
-        access_token: "access-token",
-        id_token: "id-token",
+        authenticated: true,
+        userinfo: { name: "Test User", fhirUser: "Practitioner/1" },
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const { getAccessToken, handleCallback } = await import("./auth");
+    const { handleCallback, getUserInfo } = await import("./auth");
 
     await Promise.all([
       handleCallback("auth-code", "auth-state"),
@@ -25,14 +25,18 @@ describe("handleCallback", () => {
     ]);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(getAccessToken()).toBe("access-token");
+    expect(getUserInfo()).toEqual({
+      name: "Test User",
+      fhirUser: "Practitioner/1",
+    });
   });
 
-  it("reuses the completed callback exchange for repeated calls with the same payload", async () => {
+  it("stores only userinfo, not tokens, after callback", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({
-        access_token: "access-token",
+        authenticated: true,
+        userinfo: { name: "Test User" },
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -40,8 +44,48 @@ describe("handleCallback", () => {
     const { handleCallback } = await import("./auth");
 
     await handleCallback("auth-code", "auth-state");
+
+    expect(sessionStorage.getItem("spa_access_token")).toBeNull();
+    expect(sessionStorage.getItem("spa_id_token")).toBeNull();
+    expect(sessionStorage.getItem("spa_userinfo")).not.toBeNull();
+  });
+
+  it("sends credentials: include on token exchange", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ authenticated: true }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { handleCallback } = await import("./auth");
+
     await handleCallback("auth-code", "auth-state");
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, options] = fetchMock.mock.calls[0];
+    expect(options.credentials).toBe("include");
+  });
+});
+
+describe("checkSession", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("calls /auth/session with credentials", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ authenticated: true }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { checkSession } = await import("./auth");
+
+    const result = await checkSession();
+
+    expect(fetchMock).toHaveBeenCalledWith("/auth/session", {
+      credentials: "include",
+    });
+    expect(result.authenticated).toBe(true);
   });
 });

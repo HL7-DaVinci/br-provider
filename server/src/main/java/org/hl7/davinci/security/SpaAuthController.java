@@ -39,9 +39,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * SPA authentication controller for OAuth2 authorization code flow with PKCE.
- * Provides two endpoints: /auth/login to initiate the flow, and /auth/token
- * to exchange the authorization code for tokens returned as JSON to the SPA.
- * Private keys never leave the server; tokens are held in the browser's sessionStorage.
+ * Provides endpoints for login initiation, token exchange (stored server-side
+ * in the HTTP session), session status, and logout.
+ * Private keys never leave the server; tokens are held in the server session.
  */
 @RestController
 @RequestMapping("/auth")
@@ -51,6 +51,9 @@ public class SpaAuthController {
     private static final ObjectMapper objectMapper = new ObjectMapper();
     private static final SecureRandom secureRandom = new SecureRandom();
     private static final long PENDING_FLOW_TTL_SECONDS = 300;
+
+    public static final String SESSION_ACCESS_TOKEN = "bff.access_token";
+    public static final String SESSION_ID_TOKEN = "bff.id_token";
 
     private final UdapClientRegistration udapClient;
     private final CertificateHolder certificateHolder;
@@ -100,10 +103,12 @@ public class SpaAuthController {
 
     /**
      * Exchanges an authorization code for tokens using private_key_jwt.
-     * The SPA calls this after receiving the code from the FAST RI callback.
+     * Tokens are stored in the server-side HTTP session (BFF pattern).
+     * Only user identity info is returned to the SPA.
      */
     @PostMapping("/token")
-    public ResponseEntity<Map<String, Object>> exchangeToken(@RequestBody Map<String, String> body) {
+    public ResponseEntity<Map<String, Object>> exchangeToken(
+            @RequestBody Map<String, String> body, HttpServletRequest request) {
         String code = body.get("code");
         String state = body.get("state");
 
@@ -143,11 +148,16 @@ public class SpaAuthController {
             Map<String, Object> tokens = objectMapper.readValue(
                 tokenResponse.body(), new TypeReference<>() {});
 
-            Map<String, Object> result = new LinkedHashMap<>();
+            // Store tokens in server-side session
+            var session = request.getSession(true);
+            session.setAttribute(SESSION_ACCESS_TOKEN, tokens.get("access_token"));
+            if (tokens.containsKey("id_token")) {
+                session.setAttribute(SESSION_ID_TOKEN, tokens.get("id_token"));
+            }
 
-            // Forward the FAST RI token as the trust community credential.
-            // User identity comes from the Spring Security session (IdP login).
-            result.put("access_token", tokens.get("access_token"));
+            // Return only user identity info to the SPA (no tokens)
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("authenticated", true);
 
             Authentication auth = SecurityContextHolder.getContext().getAuthentication();
             if (auth != null && auth.getPrincipal() instanceof FhirUserDetails user) {
@@ -156,10 +166,6 @@ public class SpaAuthController {
                 userInfo.put("fhirUser", user.getFhirResourceReference());
                 userInfo.put("fhirUserType", user.getFhirResourceType());
                 result.put("userinfo", userInfo);
-            }
-
-            if (tokens.containsKey("id_token")) {
-                result.put("id_token", tokens.get("id_token"));
             }
 
             logger.info("SPA token exchange completed successfully");
@@ -171,6 +177,33 @@ public class SpaAuthController {
                 "error", "server_error",
                 "error_description", "Internal error during token exchange"));
         }
+    }
+
+    /**
+     * Returns current session authentication state.
+     * The SPA calls this on page load to verify the session is still valid.
+     * Includes the access token so developers can copy it for use in external
+     * tools (Postman, curl, MCP inspector, etc.).
+     */
+    @GetMapping("/session")
+    public ResponseEntity<Map<String, Object>> getSession(HttpServletRequest request) {
+        var session = request.getSession(false);
+        if (session == null || session.getAttribute(SESSION_ACCESS_TOKEN) == null) {
+            return ResponseEntity.ok(Map.of("authenticated", false));
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("authenticated", true);
+        result.put("access_token", session.getAttribute(SESSION_ACCESS_TOKEN));
+
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.getPrincipal() instanceof FhirUserDetails user) {
+            result.put("userinfo", Map.of(
+                "name", user.getDisplayName(),
+                "fhirUser", user.getFhirResourceReference(),
+                "fhirUserType", user.getFhirResourceType()));
+        }
+        return ResponseEntity.ok(result);
     }
 
     private void pruneExpiredFlows() {
@@ -232,19 +265,27 @@ public class SpaAuthController {
 
     /**
      * Invalidates the server-side session so the next login presents the form.
+     * Explicitly removes session attributes before invalidation to prevent
+     * Spring Security's filter chain from re-saving the security context.
      */
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(HttpServletRequest request, HttpServletResponse response) {
         SecurityContextHolder.clearContext();
         var session = request.getSession(false);
         if (session != null) {
+            session.removeAttribute(SESSION_ACCESS_TOKEN);
+            session.removeAttribute(SESSION_ID_TOKEN);
+            session.removeAttribute("SPRING_SECURITY_CONTEXT");
             session.invalidate();
         }
-        Cookie cookie = new Cookie("JSESSIONID", "");
-        cookie.setPath("/");
-        cookie.setMaxAge(0);
-        cookie.setHttpOnly(true);
-        response.addCookie(cookie);
+        // Clear both cookie names: JSESSIONID (Tomcat default) and SESSION (Spring Session)
+        for (String name : new String[]{"JSESSIONID", "SESSION"}) {
+            Cookie cookie = new Cookie(name, "");
+            cookie.setPath("/");
+            cookie.setMaxAge(0);
+            cookie.setHttpOnly(true);
+            response.addCookie(cookie);
+        }
         return ResponseEntity.noContent().build();
     }
 

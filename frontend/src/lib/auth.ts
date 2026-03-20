@@ -1,5 +1,3 @@
-const TOKEN_KEY = "spa_access_token";
-const ID_TOKEN_KEY = "spa_id_token";
 const USERINFO_KEY = "spa_userinfo";
 const callbackRequests = new Map<string, Promise<void>>();
 
@@ -24,15 +22,16 @@ export async function handleCallback(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code, state }),
+      credentials: "include",
     });
     if (!response.ok) {
       const err = await response.json();
       throw new Error(err.error_description || "Token exchange failed");
     }
-    const { access_token, id_token, userinfo } = await response.json();
-    sessionStorage.setItem(TOKEN_KEY, access_token);
-    if (id_token) sessionStorage.setItem(ID_TOKEN_KEY, id_token);
-    if (userinfo) sessionStorage.setItem(USERINFO_KEY, JSON.stringify(userinfo));
+    const { authenticated, userinfo } = await response.json();
+    if (authenticated) {
+      sessionStorage.setItem(USERINFO_KEY, JSON.stringify(userinfo || {}));
+    }
   })();
 
   callbackRequests.set(requestKey, request);
@@ -44,15 +43,18 @@ export async function handleCallback(
   }
 }
 
-export function getAccessToken(): string | null {
-  return sessionStorage.getItem(TOKEN_KEY);
+export async function checkSession(): Promise<{
+  authenticated: boolean;
+  userinfo?: { name?: string; fhirUser?: string; fhirUserType?: string };
+}> {
+  const response = await fetch("/auth/session", { credentials: "include" });
+  return response.json();
 }
 
 export async function logout(): Promise<void> {
-  // Invalidate server-side session so the login form is shown on next sign-in
-  await fetch("/auth/logout", { method: "POST" }).catch(() => {});
-  sessionStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(ID_TOKEN_KEY);
+  await fetch("/auth/logout", { method: "POST", credentials: "include" }).catch(
+    () => {},
+  );
   sessionStorage.removeItem(USERINFO_KEY);
 }
 
@@ -66,26 +68,13 @@ export function getUserInfo(): {
   if (stored) {
     try {
       return JSON.parse(stored);
-    } catch { /* fall through */ }
+    } catch {
+      /* fall through */
+    }
   }
-  // Fallback: decode ID token payload for display (not for security)
-  const token =
-    sessionStorage.getItem(ID_TOKEN_KEY) ||
-    sessionStorage.getItem(TOKEN_KEY);
-  if (!token) return null;
-  try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
-    const fhirUser: string | undefined = payload.fhirUser;
-    return {
-      name: payload.name,
-      fhirUser,
-      fhirUserType: fhirUser?.split("/")[0],
-    };
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 export function isAuthenticated(): boolean {
-  return getAccessToken() !== null;
+  return getUserInfo() !== null;
 }

@@ -42,12 +42,14 @@ public class AuthInterceptor extends BaseInterceptor {
 
         // Bearer token authentication
         String authHeader = request.getHeader("Authorization");
+        String errMsg = null;
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             try {
                 tokenValidator.validate(authHeader.substring(7));
                 return true;
             } catch (Exception e) {
-                logger.info("Bearer token validation failed: {}", e.getMessage());
+                errMsg = e.getMessage();
+                logger.info("Bearer token validation failed: {}", errMsg);
             }
         }
 
@@ -55,7 +57,7 @@ public class AuthInterceptor extends BaseInterceptor {
         response.setHeader("WWW-Authenticate", "Bearer");
         response.setContentType("application/json");
         response.getWriter().write("{\"error\":\"invalid_token\",\"error_description\":\"" +
-            "No valid Bearer token found\"}");
+            "No valid Bearer token found: " + errMsg + "\"}");
         return false;
     }
 }

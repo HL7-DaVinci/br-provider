@@ -1,4 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { handleCallback } from "@/lib/auth";
 
@@ -9,6 +10,7 @@ export const Route = createFileRoute("/callback")({
 function CallbackPage() {
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -26,9 +28,14 @@ function CallbackPage() {
     }
 
     handleCallback(code, state)
-      .then(() => navigate({ to: "/" }))
+      .then(() => {
+        // Clear the pre-login session query cache so stale { authenticated: false }
+        // doesn't race with the freshly stored auth state
+        queryClient.removeQueries({ queryKey: ["auth", "session"] });
+        navigate({ to: "/" });
+      })
       .catch((e) => setError(e.message));
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   if (error) return <div>Authentication failed: {error}</div>;
   return <div>Completing sign in...</div>;

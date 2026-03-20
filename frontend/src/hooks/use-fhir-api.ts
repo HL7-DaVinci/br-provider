@@ -7,12 +7,7 @@ import type {
   Parameters,
 } from "fhir/r4";
 import { useMemo } from "react";
-import {
-  type FhirServer,
-  getServerByRequestUrl,
-  isProviderFhirRequestUrl,
-} from "@/lib/fhir-config";
-import { getAccessToken } from "@/lib/auth";
+import { type FhirServer, getServerByRequestUrl } from "@/lib/fhir-config";
 import { isOperationOutcome } from "@/lib/fhir-types";
 import { networkLogStore } from "@/lib/network-log-store";
 
@@ -89,12 +84,9 @@ export async function fhirFetch<T>(url: string): Promise<T> {
     const headers: Record<string, string> = {
       Accept: "application/fhir+json",
     };
-    const token = getAccessToken();
-    if (token && isProviderFhirRequestUrl(url)) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
 
-    response = await fetch(url, { headers });
+    const proxyUrl = `/api/fhir-proxy?${new URLSearchParams({ url })}`;
+    response = await fetch(proxyUrl, { headers, credentials: "include" });
   } catch (error) {
     addNetworkLogEntry({
       startTime,
