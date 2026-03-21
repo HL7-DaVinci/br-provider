@@ -1,32 +1,28 @@
-import {
-  createFileRoute,
-  Link,
-  Outlet,
-  useParams,
-} from "@tanstack/react-router";
+import { createFileRoute, Outlet, useParams } from "@tanstack/react-router";
 import { PatientHeader } from "@/components/patient-header";
 import {
   useConditionCount,
   useMedicationRequestCount,
+  useOrderCount,
   usePatient,
 } from "@/hooks/use-clinical-api";
-import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/patients/$patientId")({
   component: PatientLayout,
 });
 
-const tabs = [
+/*const tabs = [
   { label: "Summary", to: "/patients/$patientId" },
   { label: "Conditions", to: "/patients/$patientId/conditions" },
   { label: "Medications", to: "/patients/$patientId/medications" },
-] as const;
+] as const;*/
 
 function PatientLayout() {
   const { patientId } = useParams({ from: "/patients/$patientId" });
   const { data: patient, isLoading, isError, error } = usePatient(patientId);
   const { data: conditionCount } = useConditionCount(patientId);
   const { data: medCount } = useMedicationRequestCount(patientId);
+  const { data: orderCount } = useOrderCount(patientId);
 
   if (isLoading) {
     return (
@@ -58,9 +54,11 @@ function PatientLayout() {
         stats={{
           conditions: conditionCount?.total,
           medications: medCount?.total,
+          orders: orderCount?.total,
         }}
       />
 
+      {/*
       <div className="border-b bg-background">
         <nav className="flex gap-0 px-4" aria-label="Patient tabs">
           {tabs.map((tab) => (
@@ -85,6 +83,7 @@ function PatientLayout() {
           ))}
         </nav>
       </div>
+      */}
 
       <Outlet />
     </div>
