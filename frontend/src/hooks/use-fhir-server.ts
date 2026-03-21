@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { useCallback, useState, useSyncExternalStore } from "react";
 import {
   FHIR_SERVERS,
@@ -128,4 +129,35 @@ export function useServerSelection(
     handleServerChange,
     handleCustomUrlSubmit,
   };
+}
+
+interface ServerDiscoveryResult {
+  fhirServer?: boolean;
+  error?: string;
+  udapEnabled: boolean;
+  issuer?: string;
+  authorizationEndpoint?: string;
+  registered?: boolean;
+  tieredOauthSupported?: boolean;
+}
+
+/**
+ * Probes a custom server for UDAP support.
+ * Only runs when the selected server is not in the configured server list.
+ */
+export function useServerDiscovery(serverUrl: string, isCustomServer: boolean) {
+  return useQuery({
+    queryKey: ["server-discovery", serverUrl],
+    queryFn: async (): Promise<ServerDiscoveryResult> => {
+      const response = await fetch(
+        `/api/servers/discover?${new URLSearchParams({ url: serverUrl })}`,
+        { credentials: "include" },
+      );
+      if (!response.ok) return { udapEnabled: false };
+      return response.json();
+    },
+    enabled: isCustomServer && !!serverUrl,
+    staleTime: 5 * 60 * 1000,
+    retry: 0,
+  });
 }

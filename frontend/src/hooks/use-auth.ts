@@ -1,6 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
-import { checkSession, getUserInfo, logout, startLogin } from "@/lib/auth";
+import {
+  checkSession,
+  clearAuthStorage,
+  getUserInfo,
+  logout,
+  startLogin,
+} from "@/lib/auth";
 import { getAppConfig } from "@/lib/fhir-config";
 
 export function useAuth() {
@@ -24,12 +30,12 @@ export function useAuth() {
 
     if (!sessionData.authenticated && userInfo) {
       // Server session expired -- clear local state
-      sessionStorage.removeItem("spa_userinfo");
+      clearAuthStorage();
       forceUpdate((n) => n + 1);
     } else if (sessionData.authenticated && sessionData.userinfo) {
       // Backfill userinfo from server when local copy is empty (e.g. first login)
       const local = getUserInfo();
-      if (!local?.name && sessionData.userinfo.name) {
+      if (!local || (!local.name && sessionData.userinfo.name)) {
         sessionStorage.setItem(
           "spa_userinfo",
           JSON.stringify(sessionData.userinfo),
@@ -39,7 +45,10 @@ export function useAuth() {
     }
   }, [sessionData, userInfo]);
 
-  const login = useCallback(() => startLogin(), []);
+  const login = useCallback(
+    (serverUrl?: string, idp?: string) => startLogin(serverUrl, idp),
+    [],
+  );
   const logoutAndRefresh = useCallback(async () => {
     await logout();
     queryClient.clear();

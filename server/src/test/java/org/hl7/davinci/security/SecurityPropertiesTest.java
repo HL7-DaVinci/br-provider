@@ -16,6 +16,9 @@ class SecurityPropertiesTest {
         assertEquals("X-Bypass-Auth", props.getBypassHeader());
         assertEquals("provider-client", props.getOauthClientId());
         assertFalse(props.isSslVerify());
+        assertNotNull(props.getAllowedLocalHosts());
+        assertTrue(props.getAllowedLocalHosts().contains("localhost"));
+        assertTrue(props.getAllowedLocalHosts().contains("host.docker.internal"));
         assertNotNull(props.getPublicEndpoints());
         assertTrue(props.getPublicEndpoints().contains("/fhir/metadata"));
     }
@@ -26,9 +29,11 @@ class SecurityPropertiesTest {
         props.setIssuer("https://custom:443");
         props.setEnableAuthentication(true);
         props.setDefaultUserPassword("secret");
+        props.setAllowedLocalHosts(java.util.List.of("localhost", "host.docker.internal"));
         assertEquals("https://custom:443", props.getIssuer());
         assertTrue(props.isEnableAuthentication());
         assertEquals("secret", props.getDefaultUserPassword());
+        assertEquals(java.util.List.of("localhost", "host.docker.internal"), props.getAllowedLocalHosts());
     }
 
     @Test

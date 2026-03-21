@@ -479,6 +479,11 @@ security:
   oauth-client-id: provider-client
   scope: "openid udap fhirUser profile"
   client-name: "Da Vinci Burden Reduction Provider Client"
+  allowed-local-hosts:
+    - "localhost"
+    - "127.0.0.1"
+    - "[::1]"
+    # - "host.docker.internal"
   public-endpoints:
     - /fhir/metadata
     - /fhir/.well-known/udap

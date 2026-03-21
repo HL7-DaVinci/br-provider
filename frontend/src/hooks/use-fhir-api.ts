@@ -7,7 +7,13 @@ import type {
   Parameters,
 } from "fhir/r4";
 import { useMemo } from "react";
-import { type FhirServer, getServerByRequestUrl } from "@/lib/fhir-config";
+import { getSessionServerUrl } from "@/lib/auth";
+import {
+  type FhirServer,
+  getServerByRequestUrl,
+  isTrustedServerUrl,
+  matchesRequestUrl,
+} from "@/lib/fhir-config";
 import { isOperationOutcome } from "@/lib/fhir-types";
 import { networkLogStore } from "@/lib/network-log-store";
 
@@ -75,6 +81,17 @@ function addNetworkLogEntry({
   });
 }
 
+/**
+ * Determines whether a FHIR request should route through the BFF proxy.
+ * Returns true for configured trusted servers and the custom server
+ * authenticated in the current session.
+ */
+function shouldUseProxy(url: string): boolean {
+  if (isTrustedServerUrl(url)) return true;
+  const sessionServer = getSessionServerUrl();
+  return sessionServer !== null && matchesRequestUrl(url, sessionServer);
+}
+
 export async function fhirFetch<T>(url: string): Promise<T> {
   const startTime = Date.now();
   const server = getServerByRequestUrl(url);
@@ -85,8 +102,14 @@ export async function fhirFetch<T>(url: string): Promise<T> {
       Accept: "application/fhir+json",
     };
 
-    const proxyUrl = `/api/fhir-proxy?${new URLSearchParams({ url })}`;
-    response = await fetch(proxyUrl, { headers, credentials: "include" });
+    if (shouldUseProxy(url)) {
+      // Trusted or authenticated server: route through BFF proxy with session credentials
+      const proxyUrl = `/api/fhir-proxy?${new URLSearchParams({ url })}`;
+      response = await fetch(proxyUrl, { headers, credentials: "include" });
+    } else {
+      // Unauthenticated custom server: direct CORS request without credentials
+      response = await fetch(url, { headers });
+    }
   } catch (error) {
     addNetworkLogEntry({
       startTime,

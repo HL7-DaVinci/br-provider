@@ -7,6 +7,8 @@ import java.net.http.HttpResponse;
 import java.util.Set;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
+import org.hl7.davinci.config.FhirServerProperties;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SecurityUtil;
 import org.hl7.davinci.security.SpaAuthController;
@@ -19,8 +21,13 @@ import static org.springframework.web.bind.annotation.RequestMethod.*;
 
 /**
  * BFF proxy that routes FHIR requests through the server with token injection.
- * The SPA wraps absolute FHIR URLs through this proxy; the proxy injects the
- * access token from the server-side session and forwards allowed headers.
+ * The SPA wraps absolute FHIR URLs through this proxy; the proxy validates the
+ * target against a trusted server allowlist and injects the access token
+ * from the server-side session.
+ *
+ * The allowlist includes:
+ *   - Static: configured trusted server base URLs from FhirServerProperties
+ *   - Dynamic: the single custom server authenticated in the current session
  */
 @RestController
 @RequestMapping("/api/fhir-proxy")
@@ -34,9 +41,12 @@ public class FhirProxyController {
     );
 
     private final SecurityProperties securityProperties;
+    private final FhirServerProperties fhirServerProperties;
 
-    public FhirProxyController(SecurityProperties securityProperties) {
+    public FhirProxyController(SecurityProperties securityProperties,
+            FhirServerProperties fhirServerProperties) {
         this.securityProperties = securityProperties;
+        this.fhirServerProperties = fhirServerProperties;
     }
 
     @RequestMapping(method = {GET, POST, PUT, DELETE, PATCH})
@@ -53,18 +63,27 @@ public class FhirProxyController {
             return;
         }
 
-        if (!isAllowedTarget(target)) {
-            response.sendError(HttpServletResponse.SC_BAD_REQUEST, "Target URL not allowed");
+        String scheme = target.getScheme();
+        if (!"http".equals(scheme) && !"https".equals(scheme)) {
+            response.sendError(HttpServletResponse.SC_BAD_REQUEST,
+                "Target URL must use http or https");
+            return;
+        }
+
+        var session = request.getSession(false);
+
+        if (!isAllowedTarget(target, session)) {
+            logger.warn("Proxy request blocked: {} not in trusted server list", targetUrl);
+            response.sendError(HttpServletResponse.SC_FORBIDDEN,
+                "Target URL not in trusted server list");
             return;
         }
 
         HttpRequest.Builder reqBuilder = HttpRequest.newBuilder().uri(target);
 
-        // Inject token from session when available; the target server
-        // decides whether a given endpoint actually requires authentication.
-        var session = request.getSession(false);
-        String token = (session != null)
-            ? (String) session.getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN) : null;
+        // Inject the per-server token from the session when available;
+        // the target server decides whether a given endpoint requires authentication.
+        String token = SpaAuthController.getTokenForServer(session, targetUrl);
         if (token != null) {
             reqBuilder.header("Authorization", "Bearer " + token);
         }
@@ -100,8 +119,27 @@ public class FhirProxyController {
         response.getOutputStream().write(upstream.body());
     }
 
-    private boolean isAllowedTarget(URI uri) {
-        String scheme = uri.getScheme();
-        return "http".equals(scheme) || "https".equals(scheme);
+    /**
+     * Validates that the target URL is in the trusted server allowlist.
+     * Checks static trusted URLs from configuration and the single custom
+     * server authenticated in the current session.
+     */
+    private boolean isAllowedTarget(URI uri, HttpSession session) {
+        String target = uri.toString();
+
+        for (String baseUrl : fhirServerProperties.getTrustedBaseUrls()) {
+            if (FhirServerProperties.matchesBaseUrl(target, baseUrl)) return true;
+        }
+
+        if (session != null) {
+            String sessionServer = (String) session.getAttribute(
+                SpaAuthController.SESSION_SERVER_URL);
+            if (sessionServer != null
+                    && FhirServerProperties.matchesBaseUrl(target, sessionServer)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -68,6 +68,7 @@ describe("handleCallback", () => {
 
 describe("checkSession", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -87,5 +88,32 @@ describe("checkSession", () => {
       credentials: "include",
     });
     expect(result.authenticated).toBe(true);
+  });
+
+  it("clears saved auth storage when the server session has expired", async () => {
+    sessionStorage.setItem(
+      "spa_userinfo",
+      JSON.stringify({ name: "Test User" }),
+    );
+    sessionStorage.setItem(
+      "spa_session_server",
+      "https://custom.fhir.org/fhir",
+    );
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ authenticated: false }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { checkSession, getSessionServerUrl, getUserInfo } = await import(
+      "./auth"
+    );
+
+    const result = await checkSession();
+
+    expect(result.authenticated).toBe(false);
+    expect(getUserInfo()).toBeNull();
+    expect(getSessionServerUrl()).toBeNull();
   });
 });

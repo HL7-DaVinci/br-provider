@@ -1,8 +1,9 @@
 import { TanStackDevtools } from "@tanstack/react-devtools";
 import { createRootRoute, Outlet, useMatchRoute } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
-import { Settings, Wrench, Bell } from "lucide-react";
-import { useCallback, useState} from "react";
+import type { Patient, Practitioner } from "fhir/r4";
+import { Bell, Settings, Wrench } from "lucide-react";
+import { useCallback, useState } from "react";
 import {
   DevToolsDrawer,
   DRAWER_WIDTH,
@@ -13,14 +14,11 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import {
   Select,
+  SelectContent,
+  SelectItem,
   SelectTrigger,
   SelectValue,
-  SelectContent,
-  SelectItem
 } from "@/components/ui/select";
-import { useResourceSearchWithParams } from "@/hooks/use-fhir-api";
-import type { Patient, Practitioner } from "fhir/r4";
-import { useFhirServer } from "@/hooks/use-fhir-server";
 import {
   Tooltip,
   TooltipContent,
@@ -28,6 +26,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
+import { useResourceSearchWithParams } from "@/hooks/use-fhir-api";
+import { useFhirServer } from "@/hooks/use-fhir-server";
 import { NotFoundComponent } from "./-not-found";
 
 export const Route = createRootRoute({
@@ -37,31 +37,49 @@ export const Route = createRootRoute({
 
 function RootComponent() {
   const matchRoute = useMatchRoute();
-  const { serverUrl } = useFhirServer();
+  const { serverUrl, isCustomServer } = useFhirServer();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerPinned, setDrawerPinned] = useState(false);
-  const [selectedPatientId, setSelectedPatientId] = useState<string | undefined>(undefined);
-  const [selectedUserId, setSelectedUserId] = useState<string | undefined>(undefined);
-  const { isAuthenticated, authEnabled, displayName, fhirUserType, login, logout } = useAuth();
+  const [selectedPatientId, setSelectedPatientId] = useState<
+    string | undefined
+  >(undefined);
+  const [selectedUserId, setSelectedUserId] = useState<string | undefined>(
+    undefined,
+  );
+  const {
+    isAuthenticated,
+    authEnabled,
+    displayName,
+    fhirUserType,
+    login,
+    logout,
+  } = useAuth();
   // Fetch all patients using generic FHIR search hook
   const { data, isLoading, isError } = useResourceSearchWithParams(
     serverUrl || "",
     "Patient",
     {}, // no search params
     undefined,
-    50
+    50,
   );
   // Fetch all users (Practitioners) using generic FHIR search hook
-  const { data: practitionerData, isLoading: practitionerLoading, isError: practitionerError } = useResourceSearchWithParams(
+  const {
+    data: practitionerData,
+    isLoading: practitionerLoading,
+    isError: practitionerError,
+  } = useResourceSearchWithParams(
     serverUrl || "",
     "Practitioner",
     {}, // no search params
     undefined,
-    50
+    50,
   );
-  const patients = (data?.entry?.map((entry) => entry.resource) || []) as Patient[];
-  const practitioners = (practitionerData?.entry?.map((entry) => entry.resource) || []) as Practitioner[];
+  const patients = (data?.entry?.map((entry) => entry.resource) ||
+    []) as Patient[];
+  const practitioners = (practitionerData?.entry?.map(
+    (entry) => entry.resource,
+  ) || []) as Practitioner[];
 
   const handlePinnedChange = useCallback((pinned: boolean) => {
     setDrawerPinned(pinned);
@@ -74,7 +92,10 @@ function RootComponent() {
 
   return (
     <TooltipProvider>
-      <div className="flex min-h-screen flex-col" style={{ overflow: 'hidden' }}>
+      <div
+        className="flex min-h-screen flex-col"
+        style={{ overflow: "hidden" }}
+      >
         <header className="flex h-12 shrink-0 items-center justify-between gap-4 border-b px-4 bg-[#7CAEAE] backdrop-blur-sm">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2 justify-center">
@@ -90,49 +111,95 @@ function RootComponent() {
                 {authEnabled && isAuthenticated ? (
                   <div className="flex items-center gap-2">
                     <span className="text font-light bg-white border border-gray-300 rounded-lg px-3 py-1.5 text-sm">
-                      {displayName || "Authenticated"} ({fhirUserType || "Unknown"})
+                      {displayName || "Authenticated"} (
+                      {fhirUserType || "Unknown"})
                     </span>
-                    <Button variant="ghost" size="sm" onClick={logout} className="text-xs">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={logout}
+                      className="text-xs"
+                    >
                       Sign Out
                     </Button>
                   </div>
                 ) : authEnabled ? (
-                  <Button variant="ghost" size="sm" onClick={login} className="bg-white border border-gray-300 rounded-lg">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      login(isCustomServer ? serverUrl : undefined)
+                    }
+                    className="bg-white border border-gray-300 rounded-lg"
+                  >
                     Sign In
                   </Button>
-                ) : (
-                  <Select value={selectedUserId} onValueChange={setSelectedUserId}>
+                ) : !authEnabled ? (
+                  <Select
+                    value={selectedUserId}
+                    onValueChange={setSelectedUserId}
+                  >
                     <SelectTrigger className="w-45 text font-light bg-white border border-gray-300 rounded-lg">
-                      <SelectValue placeholder={practitionerLoading ? "Loading..." : "Select User"} />
+                      <SelectValue
+                        placeholder={
+                          practitionerLoading ? "Loading..." : "Select User"
+                        }
+                      />
                     </SelectTrigger>
                     <SelectContent>
-                      {practitionerError && <SelectItem value="error">Error loading users</SelectItem>}
+                      {practitionerError && (
+                        <SelectItem value="error">
+                          Error loading users
+                        </SelectItem>
+                      )}
                       {practitioners
-                        .filter((practitioner) => practitioner && practitioner.resourceType === "Practitioner")
+                        .filter(
+                          (practitioner) =>
+                            practitioner &&
+                            practitioner.resourceType === "Practitioner",
+                        )
                         .map((practitioner) => (
-                          <SelectItem key={practitioner.id || "unknown"} value={practitioner.id || "unknown"}>
-                            {practitioner.name && practitioner.name[0] && practitioner.name[0].text
+                          <SelectItem
+                            key={practitioner.id || "unknown"}
+                            value={practitioner.id || "unknown"}
+                          >
+                            {practitioner.name?.[0]?.text
                               ? practitioner.name[0].text
                               : practitioner.id || "Unknown"}
                           </SelectItem>
                         ))}
                     </SelectContent>
                   </Select>
-                )}
+                ) : null}
               </div>
               <div className="flex items-center gap-2">
                 <span className="font-semibold text">Patient :</span>
-                <Select value={selectedPatientId} onValueChange={setSelectedPatientId}>
+                <Select
+                  value={selectedPatientId}
+                  onValueChange={setSelectedPatientId}
+                >
                   <SelectTrigger className="w-45 text font-light bg-white border border-gray-300 rounded-lg">
-                    <SelectValue placeholder={isLoading ? "Loading..." : "Select Patient"} />
+                    <SelectValue
+                      placeholder={isLoading ? "Loading..." : "Select Patient"}
+                    />
                   </SelectTrigger>
                   <SelectContent>
-                    {isError && <SelectItem value="error">Error loading patients</SelectItem>}
+                    {isError && (
+                      <SelectItem value="error">
+                        Error loading patients
+                      </SelectItem>
+                    )}
                     {patients
-                      .filter((patient) => patient && patient.resourceType === "Patient")
+                      .filter(
+                        (patient) =>
+                          patient && patient.resourceType === "Patient",
+                      )
                       .map((patient) => (
-                        <SelectItem key={patient.id || "unknown"} value={patient.id || "unknown"}>
-                          {patient.name && patient.name[0] && patient.name[0].text
+                        <SelectItem
+                          key={patient.id || "unknown"}
+                          value={patient.id || "unknown"}
+                        >
+                          {patient.name?.[0]?.text
                             ? patient.name[0].text
                             : patient.id || "Unknown"}
                         </SelectItem>
@@ -203,7 +270,7 @@ function RootComponent() {
           className="flex-1 bg-background transition-[margin] duration-300 relative" // scrollable area with smooth margin transition when drawer opens/closes
           style={{
             marginRight: drawerOpen && drawerPinned ? DRAWER_WIDTH : undefined,
-            scrollbarColor: '#f3f4f6 #ffffff', // custom scrollbar color
+            scrollbarColor: "#f3f4f6 #ffffff", // custom scrollbar color
           }}
         >
           <div className="absolute inset-0 flex flex-col overflow-auto ">

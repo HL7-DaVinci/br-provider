@@ -41,6 +41,6 @@ class UdapIdpDiscoveryControllerTest {
         assertEquals("http://localhost:8080/oauth2/authorize", body.get("authorization_endpoint"));
         assertEquals("http://localhost:8080/oauth2/token", body.get("token_endpoint"));
         assertEquals("http://localhost:8080/oauth2/register", body.get("registration_endpoint"));
-        assertTrue(((java.util.List<?>) body.get("udap_profiles_supported")).contains("udap_to"));
+        assertFalse(((java.util.List<?>) body.get("udap_profiles_supported")).contains("udap_to"));
     }
 }

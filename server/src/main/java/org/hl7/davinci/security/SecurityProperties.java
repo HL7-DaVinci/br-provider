@@ -21,6 +21,12 @@ public class SecurityProperties {
     private String bypassHeader = "X-Bypass-Auth";
     private boolean sslVerify = false;
     private String oauthClientId = "provider-client";
+    private List<String> allowedLocalHosts = new ArrayList<>(List.of(
+        "localhost",
+        "127.0.0.1",
+        "[::1]",
+        "host.docker.internal"
+    ));
     private List<String> publicEndpoints = new ArrayList<>(List.of(
         "/fhir/metadata",
         "/.well-known/udap",
@@ -71,6 +77,9 @@ public class SecurityProperties {
 
     public String getOauthClientId() { return oauthClientId; }
     public void setOauthClientId(String oauthClientId) { this.oauthClientId = oauthClientId; }
+
+    public List<String> getAllowedLocalHosts() { return allowedLocalHosts; }
+    public void setAllowedLocalHosts(List<String> allowedLocalHosts) { this.allowedLocalHosts = allowedLocalHosts; }
 
     public List<String> getPublicEndpoints() { return publicEndpoints; }
     public void setPublicEndpoints(List<String> publicEndpoints) { this.publicEndpoints = publicEndpoints; }

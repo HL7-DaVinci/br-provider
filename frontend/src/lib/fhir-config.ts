@@ -75,7 +75,10 @@ function normalizeServerUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-function matchesRequestUrl(requestUrl: string, serverUrl: string): boolean {
+export function matchesRequestUrl(
+  requestUrl: string,
+  serverUrl: string,
+): boolean {
   const normalizedServerUrl = normalizeServerUrl(serverUrl);
   if (!requestUrl.startsWith(normalizedServerUrl)) {
     return false;
@@ -147,6 +150,17 @@ export function isProviderFhirRequestUrl(requestUrl: string): boolean {
   }
 
   return matchesRequestUrl(requestUrl, providerFhirBaseUrl);
+}
+
+/**
+ * Returns true if the request URL matches a configured (trusted) FHIR server.
+ * Trusted servers route through the BFF proxy with session credentials;
+ * non-trusted (custom) servers use direct browser CORS requests.
+ */
+export function isTrustedServerUrl(requestUrl: string): boolean {
+  return FHIR_SERVERS.some((server) =>
+    matchesRequestUrl(requestUrl, server.url),
+  );
 }
 
 export function getAppConfig(): AppConfig {

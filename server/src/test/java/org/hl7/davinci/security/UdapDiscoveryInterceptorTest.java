@@ -75,7 +75,7 @@ class UdapDiscoveryInterceptorTest {
         assertEquals("https://localhost:5001/connect/authorize", body.get("authorization_endpoint"));
         assertEquals("https://localhost:5001/connect/token", body.get("token_endpoint"));
         assertEquals("https://localhost:5001/connect/register", body.get("registration_endpoint"));
-        assertFalse(((java.util.List<?>) body.get("udap_profiles_supported")).contains("udap_to"));
+        assertTrue(((java.util.List<?>) body.get("udap_profiles_supported")).contains("udap_to"));
     }
 
     @Test

@@ -76,7 +76,7 @@ public class UdapDiscoveryInterceptor extends BaseInterceptor {
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("udap_versions_supported", List.of("1"));
-        metadata.put("udap_profiles_supported", List.of("udap_dcr", "udap_authn", "udap_authz"));
+        metadata.put("udap_profiles_supported", List.of("udap_dcr", "udap_authn", "udap_authz", "udap_to"));
         metadata.put("udap_authorization_extensions_supported", List.of("hl7-b2b"));
         metadata.put("udap_authorization_extensions_required", List.of());
         metadata.put("udap_certifications_supported", List.of());
@@ -89,6 +89,7 @@ public class UdapDiscoveryInterceptor extends BaseInterceptor {
         metadata.put("token_endpoint_auth_signing_alg_values_supported", List.of("RS256", "RS384", "ES256", "ES384"));
         metadata.put("registration_endpoint", securityServerUrl + "/connect/register");
         metadata.put("registration_endpoint_jwt_signing_alg_values_supported", List.of("RS256", "RS384", "ES256", "ES384"));
+        metadata.put("issuer", securityServerUrl);
         metadata.put("signed_metadata", signedMetadata.serialize());
 
         response.setStatus(200);

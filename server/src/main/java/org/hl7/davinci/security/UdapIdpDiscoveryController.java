@@ -64,7 +64,7 @@ public class UdapIdpDiscoveryController {
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("udap_versions_supported", List.of("1"));
-        metadata.put("udap_profiles_supported", List.of("udap_dcr", "udap_authn", "udap_to"));
+        metadata.put("udap_profiles_supported", List.of("udap_dcr", "udap_authn"));
         metadata.put("udap_authorization_extensions_supported", List.of());
         metadata.put("udap_certifications_supported", List.of());
         metadata.put("grant_types_supported", List.of("authorization_code"));

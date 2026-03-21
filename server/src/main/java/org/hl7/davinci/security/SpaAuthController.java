@@ -23,11 +23,13 @@ import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import org.hl7.davinci.config.FhirServerProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -35,6 +37,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -42,6 +45,9 @@ import org.springframework.web.bind.annotation.RestController;
  * Provides endpoints for login initiation, token exchange (stored server-side
  * in the HTTP session), session status, and logout.
  * Private keys never leave the server; tokens are held in the server session.
+ *
+ * Single-server-per-session model: one access token is stored in flat session
+ * attributes. Switching servers requires a full logout and re-authentication.
  */
 @RestController
 @RequestMapping("/auth")
@@ -52,31 +58,86 @@ public class SpaAuthController {
     private static final SecureRandom secureRandom = new SecureRandom();
     private static final long PENDING_FLOW_TTL_SECONDS = 300;
 
+    /** Session attribute holding the access token for the authenticated server */
     public static final String SESSION_ACCESS_TOKEN = "bff.access_token";
+
+    /** Session attribute holding the id token for the authenticated server */
     public static final String SESSION_ID_TOKEN = "bff.id_token";
+
+    /** Session attribute holding the authenticated server's base URL */
+    public static final String SESSION_SERVER_URL = "bff.server_url";
+
+    /** Session attribute holding userinfo claims for the authenticated user */
+    public static final String SESSION_USERINFO = "bff.userinfo";
 
     private final UdapClientRegistration udapClient;
     private final CertificateHolder certificateHolder;
     private final SecurityProperties securityProperties;
+    private final FhirServerProperties fhirServerProperties;
     private final ConcurrentHashMap<String, PendingFlow> pendingFlows = new ConcurrentHashMap<>();
 
-    record PendingFlow(String codeVerifier, String redirectUri, Instant createdAt) {}
+    /**
+     * Tracks an in-progress OAuth authorization code flow.
+     * For primary login, serverUrl/tokenEndpoint/clientId are null (use udapClient).
+     * For custom server auth, they contain the custom server's registration details.
+     */
+    record PendingFlow(String codeVerifier, String redirectUri, Instant createdAt,
+                       String serverUrl, String tokenEndpoint, String clientId) {
+        PendingFlow(String codeVerifier, String redirectUri, Instant createdAt) {
+            this(codeVerifier, redirectUri, createdAt, null, null, null);
+        }
+    }
 
     public SpaAuthController(
             UdapClientRegistration udapClient,
             CertificateHolder certificateHolder,
-            SecurityProperties securityProperties) {
+            SecurityProperties securityProperties,
+            FhirServerProperties fhirServerProperties) {
         this.udapClient = udapClient;
         this.certificateHolder = certificateHolder;
         this.securityProperties = securityProperties;
+        this.fhirServerProperties = fhirServerProperties;
     }
 
     /**
-     * Initiates the OAuth2 authorization code flow.
-     * Generates PKCE verifier/challenge and state, stores in memory, redirects to FAST RI.
+     * Stores an access token (and optional id token) for the single authenticated server.
+     */
+    public static void storeServerToken(HttpSession session, String serverUrl,
+            String accessToken, String idToken) {
+        String normalized = FhirServerProperties.normalizeUrl(serverUrl);
+        session.setAttribute(SESSION_ACCESS_TOKEN, accessToken);
+        session.setAttribute(SESSION_SERVER_URL, normalized);
+        if (idToken != null) {
+            session.setAttribute(SESSION_ID_TOKEN, idToken);
+        }
+    }
+
+    /**
+     * Returns the stored access token if the target URL matches the authenticated server.
+     * Returns null if no matching token exists or the session is null.
+     */
+    public static String getTokenForServer(HttpSession session, String targetUrl) {
+        if (session == null) return null;
+        String serverUrl = (String) session.getAttribute(SESSION_SERVER_URL);
+        if (serverUrl == null) return null;
+        if (!FhirServerProperties.matchesBaseUrl(targetUrl, serverUrl)) return null;
+        return (String) session.getAttribute(SESSION_ACCESS_TOKEN);
+    }
+
+    /**
+     * Initiates the UDAP authorization code flow. Without a server parameter,
+     * redirects to the primary FAST RI with the idp parameter for Tiered OAuth.
+     * With a server parameter, redirects to the custom server's issuer directly
+     * (requires prior discovery via /api/servers/discover).
      */
     @GetMapping("/login")
-    public ResponseEntity<Void> login() throws Exception {
+    public ResponseEntity<?> login(
+            @RequestParam(name = "server", required = false) String server,
+            @RequestParam(name = "idp", required = false) String idp) throws Exception {
+        if (server != null && !server.isEmpty()) {
+            return loginToCustomServer(server, idp);
+        }
+
         udapClient.ensureRegistered();
 
         String codeVerifier = generateCodeVerifier();
@@ -102,9 +163,64 @@ public class SpaAuthController {
     }
 
     /**
+     * Initiates UDAP authentication with a custom FHIR server whose registration
+     * was cached during discovery. Uses the registration's authorize endpoint
+     * and client_id without the &idp= parameter (not tiered OAuth).
+     */
+    private ResponseEntity<?> loginToCustomServer(String serverUrl, String idp) throws Exception {
+        UdapClientRegistration.ServerRegistration registration =
+            udapClient.getRegistrationForServer(serverUrl);
+        if (registration == null) {
+            udapClient.discoverAndRegister(serverUrl);
+            registration = udapClient.getRegistrationForServer(serverUrl);
+            if (registration == null) {
+                return ResponseEntity.badRequest().body(Map.of(
+                    "error", "registration_required",
+                    "error_description", "Run discovery first for server: " + serverUrl));
+            }
+        }
+
+        String codeVerifier = generateCodeVerifier();
+        String codeChallenge = generateCodeChallenge(codeVerifier);
+        String state = UUID.randomUUID().toString();
+
+        pendingFlows.put(state, new PendingFlow(
+            codeVerifier, registration.redirectUri(), Instant.now(),
+            serverUrl, registration.tokenEndpoint(), registration.clientId()));
+
+        String scope = securityProperties.getScope();
+        String authorizeUrl = registration.authorizeEndpoint()
+            + "?response_type=code"
+            + "&client_id=" + registration.clientId()
+            + "&redirect_uri=" + URI.create(registration.redirectUri()).toASCIIString();
+
+        // When an IdP is specified, include the udap scope (required for Tiered OAuth)
+        if (idp != null && !idp.isEmpty()) {
+            if (!scope.contains("udap")) {
+                scope = scope + " udap";
+            }
+            authorizeUrl += "&scope=" + scope.replace(" ", "+")
+                + "&code_challenge=" + codeChallenge
+                + "&code_challenge_method=S256"
+                + "&state=" + state
+                + "&idp=" + URLEncoder.encode(idp, StandardCharsets.UTF_8);
+        } else {
+            authorizeUrl += "&scope=" + scope.replace(" ", "+")
+                + "&code_challenge=" + codeChallenge
+                + "&code_challenge_method=S256"
+                + "&state=" + state;
+        }
+
+        logger.debug("Custom server auth redirect to: {}", authorizeUrl);
+        return ResponseEntity.status(302).location(URI.create(authorizeUrl)).build();
+    }
+
+    /**
      * Exchanges an authorization code for tokens using private_key_jwt.
-     * Tokens are stored in the server-side HTTP session (BFF pattern).
-     * Only user identity info is returned to the SPA.
+     * Tokens are stored in the server-side HTTP session (BFF pattern),
+     * keyed by server URL for per-server token isolation.
+     * Handles both primary login and custom server authentication flows
+     * based on the PendingFlow context stored with the state parameter.
      */
     @PostMapping("/token")
     public ResponseEntity<Map<String, Object>> exchangeToken(
@@ -128,11 +244,17 @@ public class SpaAuthController {
         }
 
         try {
+            boolean isCustomServerFlow = flow.serverUrl() != null;
+            String tokenEndpoint = isCustomServerFlow
+                ? flow.tokenEndpoint() : udapClient.getTokenEndpoint();
+            String serverUrl = isCustomServerFlow
+                ? flow.serverUrl() : fhirServerProperties.getLocalServerAddress();
+
             Map<String, String> tokenParams = buildTokenParams(flow, code);
 
             HttpClient httpClient = SecurityUtil.getHttpClient(securityProperties);
             HttpRequest tokenRequest = HttpRequest.newBuilder()
-                .uri(URI.create(udapClient.getTokenEndpoint()))
+                .uri(URI.create(tokenEndpoint))
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .POST(HttpRequest.BodyPublishers.ofString(formEncode(tokenParams)))
                 .build();
@@ -148,27 +270,51 @@ public class SpaAuthController {
             Map<String, Object> tokens = objectMapper.readValue(
                 tokenResponse.body(), new TypeReference<>() {});
 
-            // Store tokens in server-side session
+            // Store tokens in server-side session, keyed by server URL
             var session = request.getSession(true);
-            session.setAttribute(SESSION_ACCESS_TOKEN, tokens.get("access_token"));
-            if (tokens.containsKey("id_token")) {
-                session.setAttribute(SESSION_ID_TOKEN, tokens.get("id_token"));
-            }
+            storeServerToken(session, serverUrl,
+                (String) tokens.get("access_token"),
+                tokens.containsKey("id_token") ? (String) tokens.get("id_token") : null);
 
-            // Return only user identity info to the SPA (no tokens)
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("authenticated", true);
+            result.put("serverUrl", FhirServerProperties.normalizeUrl(serverUrl));
 
-            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-            if (auth != null && auth.getPrincipal() instanceof FhirUserDetails user) {
-                Map<String, String> userInfo = new LinkedHashMap<>();
-                userInfo.put("name", user.getDisplayName());
-                userInfo.put("fhirUser", user.getFhirResourceReference());
-                userInfo.put("fhirUserType", user.getFhirResourceType());
-                result.put("userinfo", userInfo);
+            Map<String, String> userInfo = new LinkedHashMap<>();
+
+            if (!isCustomServerFlow) {
+                // Primary login: get userinfo from Spring Security context (local auth)
+                Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+                if (auth != null && auth.getPrincipal() instanceof FhirUserDetails user) {
+                    userInfo.put("name", user.getDisplayName());
+                    userInfo.put("fhirUser", user.getFhirResourceReference());
+                    userInfo.put("fhirUserType", user.getFhirResourceType());
+                }
+            } else {
+                // Custom server: try id_token claims first (no network call)
+                String idToken = (String) tokens.get("id_token");
+                if (idToken != null) {
+                    userInfo = extractClaimsFromIdToken(idToken);
+                }
+
+                // Fall back to userinfo endpoint if id_token didn't have fhirUser
+                if (userInfo.isEmpty() || !userInfo.containsKey("fhirUser")) {
+                    UdapClientRegistration.ServerRegistration registration =
+                        udapClient.getRegistrationForServer(flow.serverUrl());
+                    if (registration != null && registration.userinfoEndpoint() != null) {
+                        Map<String, String> userinfoResult = fetchUserinfo(
+                            registration.userinfoEndpoint(), (String) tokens.get("access_token"));
+                        if (!userinfoResult.isEmpty()) {
+                            userInfo = userinfoResult;
+                        }
+                    }
+                }
             }
 
-            logger.info("SPA token exchange completed successfully");
+            session.setAttribute(SESSION_USERINFO, userInfo);
+            result.put("userinfo", userInfo);
+
+            logger.info("Token exchange completed for server: {}", serverUrl);
             return ResponseEntity.ok(result);
 
         } catch (Exception e) {
@@ -188,22 +334,142 @@ public class SpaAuthController {
     @GetMapping("/session")
     public ResponseEntity<Map<String, Object>> getSession(HttpServletRequest request) {
         var session = request.getSession(false);
-        if (session == null || session.getAttribute(SESSION_ACCESS_TOKEN) == null) {
+        String serverUrl = (session != null)
+            ? (String) session.getAttribute(SESSION_SERVER_URL) : null;
+        if (serverUrl == null) {
+            return ResponseEntity.ok(Map.of("authenticated", false));
+        }
+
+        String accessToken = (String) session.getAttribute(SESSION_ACCESS_TOKEN);
+        if (accessToken == null) {
             return ResponseEntity.ok(Map.of("authenticated", false));
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("authenticated", true);
-        result.put("access_token", session.getAttribute(SESSION_ACCESS_TOKEN));
+        result.put("access_token", accessToken);
+        result.put("serverUrl", serverUrl);
 
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth != null && auth.getPrincipal() instanceof FhirUserDetails user) {
-            result.put("userinfo", Map.of(
-                "name", user.getDisplayName(),
-                "fhirUser", user.getFhirResourceReference(),
-                "fhirUserType", user.getFhirResourceType()));
+        @SuppressWarnings("unchecked")
+        Map<String, String> userInfo = (Map<String, String>) session.getAttribute(SESSION_USERINFO);
+        if (userInfo != null && !userInfo.isEmpty()) {
+            result.put("userinfo", userInfo);
+        } else {
+            // Fallback: try Spring Security context (primary login session restoration)
+            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+            if (auth != null && auth.getPrincipal() instanceof FhirUserDetails user) {
+                userInfo = Map.of(
+                    "name", user.getDisplayName(),
+                    "fhirUser", user.getFhirResourceReference(),
+                    "fhirUserType", user.getFhirResourceType());
+                result.put("userinfo", userInfo);
+            }
         }
+
         return ResponseEntity.ok(result);
+    }
+
+    private Map<String, String> fetchUserinfo(String userinfoEndpoint, String accessToken) {
+        try {
+            HttpClient httpClient = SecurityUtil.getHttpClient(securityProperties);
+            HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(userinfoEndpoint))
+                .header("Authorization", "Bearer " + accessToken)
+                .header("Accept", "application/json")
+                .GET()
+                .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                logger.debug("Userinfo endpoint returned HTTP {}", response.statusCode());
+                return Map.of();
+            }
+            Map<String, Object> claims = objectMapper.readValue(response.body(), new TypeReference<>() {});
+            return buildUserinfoFromClaims(claims);
+        } catch (Exception e) {
+            logger.debug("Userinfo fetch failed: {}", e.getMessage());
+            return Map.of();
+        }
+    }
+
+    /**
+     * Extracts user identity claims from an ID token JWT without signature validation.
+     * The token was received over TLS from the authorization server's token endpoint,
+     * so transport-level trust is sufficient for claim extraction.
+     */
+    static Map<String, String> extractClaimsFromIdToken(String idToken) {
+        try {
+            SignedJWT jwt = SignedJWT.parse(idToken);
+            Map<String, Object> claims = jwt.getJWTClaimsSet().getClaims();
+            return buildUserinfoFromClaims(claims);
+        } catch (Exception e) {
+            logger.debug("Failed to extract claims from id_token: {}", e.getMessage());
+            return Map.of();
+        }
+    }
+
+    static Map<String, String> buildUserinfoFromClaims(Map<String, Object> claims) {
+        Map<String, String> userInfo = new LinkedHashMap<>();
+
+        String name = (String) claims.get("name");
+        if (name == null) name = (String) claims.get("preferred_username");
+        if (name == null) {
+            String given = (String) claims.get("given_name");
+            String family = (String) claims.get("family_name");
+            if (given != null || family != null) {
+                name = ((given != null ? given : "") + " " + (family != null ? family : "")).trim();
+            }
+        }
+        if (name == null) name = (String) claims.get("email");
+        if (name != null) userInfo.put("name", name);
+
+        String fhirUser = (String) claims.get("fhirUser");
+        if (fhirUser != null) {
+            userInfo.put("fhirUser", fhirUser);
+            String fhirUserType = extractFhirUserType(fhirUser);
+            if (fhirUserType != null) {
+                userInfo.put("fhirUserType", fhirUserType);
+            }
+        }
+        return userInfo;
+    }
+
+    private static String extractFhirUserType(String fhirUser) {
+        try {
+            URI uri = URI.create(fhirUser);
+            String path = uri.getPath();
+            if (path != null && !path.isBlank()) {
+                String fromPath = extractResourceTypeFromPath(path);
+                if (fromPath != null) {
+                    return fromPath;
+                }
+            }
+        } catch (IllegalArgumentException e) {
+            // Fall through to relative-reference parsing.
+        }
+        return extractResourceTypeFromPath(fhirUser);
+    }
+
+    private static String extractResourceTypeFromPath(String value) {
+        String[] segments = value.split("/");
+        for (int i = segments.length - 1; i >= 0; i--) {
+            String segment = segments[i];
+            if (isLikelyFhirResourceType(segment)) {
+                return segment;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isLikelyFhirResourceType(String segment) {
+        if (segment == null || segment.isBlank() || !Character.isUpperCase(segment.charAt(0))) {
+            return false;
+        }
+        for (int i = 0; i < segment.length(); i++) {
+            if (!Character.isLetter(segment.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void pruneExpiredFlows() {
@@ -211,24 +477,42 @@ public class SpaAuthController {
         pendingFlows.entrySet().removeIf(entry -> entry.getValue().createdAt().isBefore(cutoff));
     }
 
+    /**
+     * Builds token exchange parameters, selecting the correct token endpoint
+     * and client_id based on whether this is a primary or custom server flow.
+     */
     Map<String, String> buildTokenParams(PendingFlow flow, String code) throws Exception {
-        String clientAssertion = buildClientAssertion(udapClient.getTokenEndpoint());
+        String tokenEndpoint;
+        String clientId;
+
+        if (flow.serverUrl() != null) {
+            tokenEndpoint = flow.tokenEndpoint();
+            clientId = flow.clientId();
+        } else {
+            tokenEndpoint = udapClient.getTokenEndpoint();
+            clientId = udapClient.getClientId();
+        }
+
+        String clientAssertion = buildClientAssertionFor(tokenEndpoint, clientId);
         Map<String, String> tokenParams = new LinkedHashMap<>();
         tokenParams.put("grant_type", "authorization_code");
         tokenParams.put("code", code);
         tokenParams.put("redirect_uri", flow.redirectUri());
         tokenParams.put("code_verifier", flow.codeVerifier());
-        tokenParams.put("client_id", udapClient.getClientId());
+        tokenParams.put("client_id", clientId);
         tokenParams.put("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
         tokenParams.put("client_assertion", clientAssertion);
         tokenParams.put("udap", "1");
         return tokenParams;
     }
 
-    String buildClientAssertion(String tokenEndpoint) throws Exception {
+    /**
+     * Builds a signed client assertion JWT for the specified token endpoint and client.
+     */
+    String buildClientAssertionFor(String tokenEndpoint, String clientId) throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
-            .issuer(udapClient.getClientId())
-            .subject(udapClient.getClientId())
+            .issuer(clientId)
+            .subject(clientId)
             .audience(tokenEndpoint)
             .expirationTime(Date.from(Instant.now().plusSeconds(300)))
             .issueTime(new Date())
@@ -243,6 +527,10 @@ public class SpaAuthController {
         SignedJWT signedJwt = new SignedJWT(header, claims);
         signedJwt.sign(new RSASSASigner(certificateHolder.getSigningKey()));
         return signedJwt.serialize();
+    }
+
+    String buildClientAssertion(String tokenEndpoint) throws Exception {
+        return buildClientAssertionFor(tokenEndpoint, udapClient.getClientId());
     }
 
     private static String formEncode(Map<String, String> params) {
@@ -265,7 +553,7 @@ public class SpaAuthController {
 
     /**
      * Invalidates the server-side session so the next login presents the form.
-     * Explicitly removes session attributes before invalidation to prevent
+     * Clears all per-server token attributes before invalidation to prevent
      * Spring Security's filter chain from re-saving the security context.
      */
     @PostMapping("/logout")
@@ -275,6 +563,8 @@ public class SpaAuthController {
         if (session != null) {
             session.removeAttribute(SESSION_ACCESS_TOKEN);
             session.removeAttribute(SESSION_ID_TOKEN);
+            session.removeAttribute(SESSION_SERVER_URL);
+            session.removeAttribute(SESSION_USERINFO);
             session.removeAttribute("SPRING_SECURITY_CONTEXT");
             session.invalidate();
         }
