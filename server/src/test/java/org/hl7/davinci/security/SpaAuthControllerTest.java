@@ -1,5 +1,6 @@
 package org.hl7.davinci.security;
 
+import java.net.ConnectException;
 import java.time.Instant;
 import java.util.Map;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -109,6 +110,18 @@ class SpaAuthControllerTest {
         controller.login(null, null);
 
         assertEquals(2, controller.getPendingFlows().size());
+    }
+
+    @Test
+    void login_withoutExternalBaseUrl_redirectsToRelativeLoginOnConnectFailure() throws Exception {
+        securityProperties.setExternalBaseUrl(null);
+        udapClient.setFailEnsureRegistered(true);
+
+        ResponseEntity<?> response = controller.login(null, null);
+
+        assertEquals(302, response.getStatusCode().value());
+        assertEquals("/login?error=auth_server_unavailable",
+            response.getHeaders().getLocation().toString());
     }
 
     @Test
@@ -382,6 +395,7 @@ class SpaAuthControllerTest {
         private String tokenEndpoint = "https://localhost:5001/connect/token";
         private String redirectUri = "http://localhost:3000/callback";
         private boolean customRegistrationCached = true;
+        private boolean failEnsureRegistered = false;
         private int discoverCallCount = 0;
 
         StubUdapClientRegistration(SecurityProperties securityProperties,
@@ -391,8 +405,10 @@ class SpaAuthControllerTest {
         }
 
         @Override
-        public void ensureRegistered() {
-            // Test stub: avoid network discovery and registration.
+        public void ensureRegistered() throws Exception {
+            if (failEnsureRegistered) {
+                throw new ConnectException("UDAP auth server unavailable");
+            }
         }
 
         @Override
@@ -443,6 +459,10 @@ class SpaAuthControllerTest {
 
         void setCustomRegistrationCached(boolean customRegistrationCached) {
             this.customRegistrationCached = customRegistrationCached;
+        }
+
+        void setFailEnsureRegistered(boolean failEnsureRegistered) {
+            this.failEnsureRegistered = failEnsureRegistered;
         }
 
         int getDiscoverCallCount() {

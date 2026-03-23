@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { handleCallback } from "@/lib/auth";
+import { getUserInfo, handleCallback } from "@/lib/auth";
 
 export const Route = createFileRoute("/callback")({
   component: CallbackPage,
@@ -32,7 +32,15 @@ function CallbackPage() {
         // Clear the pre-login session query cache so stale { authenticated: false }
         // doesn't race with the freshly stored auth state
         queryClient.removeQueries({ queryKey: ["auth", "session"] });
-        navigate({ to: "/" });
+
+        const userInfo = getUserInfo();
+        const dest =
+          userInfo?.fhirUserType === "Practitioner"
+            ? "/practitioner"
+            : userInfo?.fhirUserType === "Patient"
+              ? "/patient"
+              : "/";
+        navigate({ to: dest });
       })
       .catch((e) => setError(e.message));
   }, [navigate, queryClient]);

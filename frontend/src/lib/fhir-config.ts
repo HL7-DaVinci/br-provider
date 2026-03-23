@@ -8,6 +8,11 @@ export interface CdsServer {
   url: string;
 }
 
+export interface CustomAuthTarget {
+  serverUrl: string;
+  idp?: string;
+}
+
 interface AppConfig {
   fhirServers?: FhirServer[];
   cdsServers?: CdsServer[];
@@ -70,6 +75,7 @@ function parseFhirServers(): FhirServer[] {
 export const FHIR_SERVERS: FhirServer[] = parseFhirServers();
 
 const STORAGE_KEY = "fhir-server-url";
+const CUSTOM_AUTH_TARGET_STORAGE_KEY = "fhir-custom-auth-target";
 
 function normalizeServerUrl(url: string): string {
   return url.replace(/\/+$/, "");
@@ -101,6 +107,66 @@ export function getStoredServerUrl(): string {
 export function setStoredServerUrl(url: string): void {
   if (typeof window !== "undefined") {
     localStorage.setItem(STORAGE_KEY, normalizeServerUrl(url));
+  }
+}
+
+export function getStoredCustomAuthTarget(): CustomAuthTarget | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const stored = localStorage.getItem(CUSTOM_AUTH_TARGET_STORAGE_KEY);
+  if (!stored) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(stored);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof parsed.serverUrl !== "string" ||
+      parsed.serverUrl.length === 0
+    ) {
+      return null;
+    }
+
+    const serverUrl = normalizeServerUrl(parsed.serverUrl);
+    const idp =
+      typeof parsed.idp === "string" && parsed.idp.length > 0
+        ? normalizeServerUrl(parsed.idp)
+        : undefined;
+
+    return {
+      serverUrl,
+      ...(idp ? { idp } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredCustomAuthTarget(
+  serverUrl: string,
+  idp?: string,
+): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const normalizedIdp = idp ? normalizeServerUrl(idp) : undefined;
+  localStorage.setItem(
+    CUSTOM_AUTH_TARGET_STORAGE_KEY,
+    JSON.stringify({
+      serverUrl: normalizeServerUrl(serverUrl),
+      ...(normalizedIdp ? { idp: normalizedIdp } : {}),
+    }),
+  );
+}
+
+export function clearStoredCustomAuthTarget(): void {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(CUSTOM_AUTH_TARGET_STORAGE_KEY);
   }
 }
 

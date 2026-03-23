@@ -1,120 +1,187 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { startLogin } from "@/lib/auth";
 
 interface TestAccount {
   username: string;
   password: string;
   displayName: string;
   fhirResource: string;
+  resourceType: string;
 }
+
+const ERROR_MESSAGES: Record<string, string> = {
+  auth_server_unavailable:
+    "The authorization server is not reachable. Make sure it is running and try again.",
+  login_failed: "Unable to start the sign-in process. Please try again.",
+};
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
+  validateSearch: (search: Record<string, unknown>) => ({
+    error: search.error as string | undefined,
+  }),
 });
 
 function LoginPage() {
-  const [testAccounts, setTestAccounts] = useState<TestAccount[]>([]);
+  const { error: urlError } = Route.useSearch();
+  const [accounts, setAccounts] = useState<TestAccount[]>([]);
+  const [error, setError] = useState<string | undefined>(
+    () =>
+      urlError && (ERROR_MESSAGES[urlError] ?? `Unknown error: ${urlError}`),
+  );
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     fetch("/api/users")
       .then((res) => res.json())
-      .then((data) => setTestAccounts(data))
+      .then((data) => setAccounts(data))
       .catch(() => {});
   }, []);
 
+  const practitioners = useMemo(
+    () => accounts.filter((a) => a.resourceType === "Practitioner"),
+    [accounts],
+  );
+  const patients = useMemo(
+    () => accounts.filter((a) => a.resourceType === "Patient"),
+    [accounts],
+  );
+
+  const [selectedUsername, setSelectedUsername] = useState<string>();
+  const [activeTab, setActiveTab] = useState<"practitioner" | "patient">(
+    "practitioner",
+  );
+
+  async function submitLogin() {
+    const account = accounts.find((a) => a.username === selectedUsername);
+    if (!account) return;
+
+    setError(undefined);
+    setSubmitting(true);
+    try {
+      // Authenticate with Spring Security first (establishes session cookie)
+      await fetch("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          username: account.username,
+          password: account.password,
+        }),
+        credentials: "include",
+        redirect: "manual",
+      });
+
+      // Now start the OAuth flow -- Spring Authorization Server will see the
+      // authenticated session and skip the form login redirect entirely
+      startLogin();
+    } catch {
+      setError("Unable to reach the server.");
+      setSubmitting(false);
+    }
+  }
+
+  function handleTabChange(value: string) {
+    setActiveTab(value as "practitioner" | "patient");
+    setSelectedUsername(undefined);
+  }
+
   return (
-    <div className="flex min-h-screen flex-col bg-background">
-      <header className="flex h-12 shrink-0 items-center px-4 bg-[#7CAEAE]">
-        <span className="text-lg font-semibold text-white">
-          Da Vinci Provider
-        </span>
-      </header>
+    <div className="flex flex-1 items-start justify-center pt-16">
+      <div className="w-full max-w-md rounded-lg border bg-card p-8 shadow-sm">
+        <h2 className="mb-2 text-xl font-semibold">Sign In</h2>
+        <p className="mb-6 text-sm text-muted-foreground">
+          Choose an account type, then select a user to sign in.
+        </p>
 
-      <div className="flex flex-1 items-start justify-center pt-16">
-        <div className="w-full max-w-md rounded-lg border bg-card p-8 shadow-sm">
-          <h2 className="mb-6 text-xl font-semibold">Sign In</h2>
+        <Tabs value={activeTab} onValueChange={handleTabChange}>
+          <TabsList className="w-full">
+            <TabsTrigger value="practitioner" className="flex-1 cursor-pointer">
+              Practitioners
+            </TabsTrigger>
+            <TabsTrigger value="patient" className="flex-1 cursor-pointer">
+              Patients
+            </TabsTrigger>
+          </TabsList>
 
-          <form method="POST" action="/login">
-            <div className="mb-4">
-              <label
-                htmlFor="username"
-                className="mb-1 block text-sm font-medium"
-              >
-                Username
-              </label>
-              <input
-                type="text"
-                id="username"
-                name="username"
-                autoComplete="username"
-                required
-                className="w-full rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#7CAEAE]"
-              />
-            </div>
-            <div className="mb-6">
-              <label
-                htmlFor="password"
-                className="mb-1 block text-sm font-medium"
-              >
-                Password
-              </label>
-              <input
-                type="password"
-                id="password"
-                name="password"
-                autoComplete="current-password"
-                required
-                className="w-full rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#7CAEAE]"
-              />
-            </div>
-            <button
-              type="submit"
-              className="w-full rounded-md bg-[#7CAEAE] px-4 py-2 text-sm font-medium text-white hover:bg-[#6a9a9a]"
-            >
-              Sign In
-            </button>
-          </form>
+          <TabsContent value="practitioner">
+            <AccountSelect
+              accounts={practitioners}
+              value={selectedUsername}
+              placeholder="Select a practitioner..."
+              onSelect={setSelectedUsername}
+            />
+          </TabsContent>
 
-          {testAccounts.length > 0 && (
-            <div className="mt-6">
-              <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Test Accounts
-              </h3>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b">
-                    <th className="py-1 text-left font-medium">Username</th>
-                    <th className="py-1 text-left font-medium">Password</th>
-                    <th className="py-1 text-left font-medium">Role</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {testAccounts.map((account) => (
-                    <tr
-                      key={account.username}
-                      className="border-b border-muted"
-                    >
-                      <td className="py-1">
-                        <code className="rounded bg-muted px-1">
-                          {account.username}
-                        </code>
-                      </td>
-                      <td className="py-1">
-                        <code className="rounded bg-muted px-1">
-                          {account.password}
-                        </code>
-                      </td>
-                      <td className="py-1 text-muted-foreground">
-                        {account.displayName}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+          <TabsContent value="patient">
+            <AccountSelect
+              accounts={patients}
+              value={selectedUsername}
+              placeholder="Select a patient..."
+              onSelect={setSelectedUsername}
+            />
+          </TabsContent>
+        </Tabs>
+
+        {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
+
+        <button
+          type="button"
+          disabled={!selectedUsername || submitting}
+          onClick={submitLogin}
+          className="mt-6 w-full cursor-pointer rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand/85 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {submitting ? "Signing in..." : "Sign In"}
+        </button>
       </div>
     </div>
+  );
+}
+
+function AccountSelect({
+  accounts,
+  value,
+  placeholder,
+  onSelect,
+}: {
+  accounts: TestAccount[];
+  value?: string;
+  placeholder: string;
+  onSelect: (username: string) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={onSelect}>
+      <SelectTrigger className="mt-3 w-full">
+        <SelectValue placeholder={placeholder} />
+      </SelectTrigger>
+      <SelectContent
+        position="popper"
+        className="w-(--radix-select-trigger-width)"
+      >
+        {accounts.map((account) => (
+          <SelectItem
+            key={account.username}
+            value={account.username}
+            textValue={account.displayName}
+          >
+            <div>
+              <div className="text-sm font-medium">{account.displayName}</div>
+              <div className="text-xs text-muted-foreground">
+                {account.username}
+              </div>
+            </div>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }

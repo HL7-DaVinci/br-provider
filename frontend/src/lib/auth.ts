@@ -1,3 +1,9 @@
+import {
+  getServerByUrl,
+  getStoredCustomAuthTarget,
+  getStoredServerUrl,
+} from "@/lib/fhir-config";
+
 const USERINFO_KEY = "spa_userinfo";
 const SESSION_SERVER_KEY = "spa_session_server";
 const callbackRequests = new Map<string, Promise<void>>();
@@ -10,12 +16,41 @@ export function clearAuthStorage(): void {
 // Redirects to the server which initiates the OAuth2 flow.
 // Without serverUrl, uses the primary FAST RI flow (Tiered OAuth).
 // With serverUrl, targets a custom server's issuer (requires prior discovery).
-export function startLogin(serverUrl?: string, idp?: string): void {
+function resolveLoginTarget(
+  serverUrl?: string,
+  idp?: string,
+): {
+  serverUrl?: string;
+  idp?: string;
+} {
+  if (serverUrl) {
+    return { serverUrl, idp };
+  }
+
+  const selectedServerUrl = getStoredServerUrl();
+  if (getServerByUrl(selectedServerUrl)) {
+    return {};
+  }
+
+  const storedCustomAuthTarget = getStoredCustomAuthTarget();
+  if (storedCustomAuthTarget?.serverUrl !== selectedServerUrl) {
+    return {};
+  }
+
+  return storedCustomAuthTarget;
+}
+
+export function buildLoginPath(serverUrl?: string, idp?: string): string {
+  const target = resolveLoginTarget(serverUrl, idp);
   const params = new URLSearchParams();
-  if (serverUrl) params.set("server", serverUrl);
-  if (idp) params.set("idp", idp);
+  if (target.serverUrl) params.set("server", target.serverUrl);
+  if (target.idp) params.set("idp", target.idp);
   const query = params.toString();
-  window.location.href = query ? `/auth/login?${query}` : "/auth/login";
+  return query ? `/auth/login?${query}` : "/auth/login";
+}
+
+export function startLogin(serverUrl?: string, idp?: string): void {
+  window.location.href = buildLoginPath(serverUrl, idp);
 }
 
 // Called by the callback route after receiving the authorization code
@@ -69,10 +104,15 @@ export async function checkSession(): Promise<{
   const data = await response.json();
   if (!data.authenticated) {
     clearAuthStorage();
-  } else if (data.serverUrl) {
-    sessionStorage.setItem(SESSION_SERVER_KEY, data.serverUrl);
   } else {
-    sessionStorage.removeItem(SESSION_SERVER_KEY);
+    if (data.userinfo) {
+      sessionStorage.setItem(USERINFO_KEY, JSON.stringify(data.userinfo));
+    }
+    if (data.serverUrl) {
+      sessionStorage.setItem(SESSION_SERVER_KEY, data.serverUrl);
+    } else {
+      sessionStorage.removeItem(SESSION_SERVER_KEY);
+    }
   }
   return data;
 }

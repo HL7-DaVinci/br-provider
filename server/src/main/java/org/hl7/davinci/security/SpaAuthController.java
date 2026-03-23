@@ -133,33 +133,51 @@ public class SpaAuthController {
     @GetMapping("/login")
     public ResponseEntity<?> login(
             @RequestParam(name = "server", required = false) String server,
-            @RequestParam(name = "idp", required = false) String idp) throws Exception {
-        if (server != null && !server.isEmpty()) {
-            return loginToCustomServer(server, idp);
+            @RequestParam(name = "idp", required = false) String idp) {
+        try {
+            if (server != null && !server.isEmpty()) {
+                return loginToCustomServer(server, idp);
+            }
+
+            udapClient.ensureRegistered();
+
+            String codeVerifier = generateCodeVerifier();
+            String codeChallenge = generateCodeChallenge(codeVerifier);
+            String state = UUID.randomUUID().toString();
+            String redirectUri = udapClient.getRedirectUri();
+
+            pendingFlows.put(state, new PendingFlow(codeVerifier, redirectUri, Instant.now()));
+
+            String authorizeUrl = udapClient.getAuthorizeEndpoint()
+                + "?response_type=code"
+                + "&client_id=" + udapClient.getClientId()
+                + "&redirect_uri=" + URI.create(redirectUri).toASCIIString()
+                + "&scope=" + securityProperties.getScope().replace(" ", "+")
+                + "&code_challenge=" + codeChallenge
+                + "&code_challenge_method=S256"
+                + "&state=" + state
+                + "&idp=" + securityProperties.getServerBaseUrl()
+                + "&prompt=login";
+
+            logger.debug("SPA login redirect to: {}", authorizeUrl);
+            return ResponseEntity.status(302).location(URI.create(authorizeUrl)).build();
+
+        } catch (java.net.ConnectException e) {
+            logger.error("Cannot reach authorization server: {}", e.getMessage());
+            return redirectToLoginWithError("auth_server_unavailable");
+        } catch (Exception e) {
+            logger.error("Login initiation failed: {}", e.getMessage(), e);
+            return redirectToLoginWithError("login_failed");
         }
+    }
 
-        udapClient.ensureRegistered();
-
-        String codeVerifier = generateCodeVerifier();
-        String codeChallenge = generateCodeChallenge(codeVerifier);
-        String state = UUID.randomUUID().toString();
-        String redirectUri = udapClient.getRedirectUri();
-
-        pendingFlows.put(state, new PendingFlow(codeVerifier, redirectUri, Instant.now()));
-
-        String authorizeUrl = udapClient.getAuthorizeEndpoint()
-            + "?response_type=code"
-            + "&client_id=" + udapClient.getClientId()
-            + "&redirect_uri=" + URI.create(redirectUri).toASCIIString()
-            + "&scope=" + securityProperties.getScope().replace(" ", "+")
-            + "&code_challenge=" + codeChallenge
-            + "&code_challenge_method=S256"
-            + "&state=" + state
-            + "&idp=" + securityProperties.getServerBaseUrl()
-            + "&prompt=login";
-
-        logger.debug("SPA login redirect to: {}", authorizeUrl);
-        return ResponseEntity.status(302).location(URI.create(authorizeUrl)).build();
+    private ResponseEntity<?> redirectToLoginWithError(String errorCode) {
+        String loginPath = "/login?error=" + URLEncoder.encode(errorCode, StandardCharsets.UTF_8);
+        String externalBaseUrl = securityProperties.getExternalBaseUrl();
+        String loginUrl = (externalBaseUrl == null || externalBaseUrl.isBlank())
+            ? loginPath
+            : externalBaseUrl.replaceAll("/+$", "") + loginPath;
+        return ResponseEntity.status(302).location(URI.create(loginUrl)).build();
     }
 
     /**
@@ -336,37 +354,38 @@ public class SpaAuthController {
         var session = request.getSession(false);
         String serverUrl = (session != null)
             ? (String) session.getAttribute(SESSION_SERVER_URL) : null;
-        if (serverUrl == null) {
-            return ResponseEntity.ok(Map.of("authenticated", false));
-        }
 
-        String accessToken = (String) session.getAttribute(SESSION_ACCESS_TOKEN);
-        if (accessToken == null) {
-            return ResponseEntity.ok(Map.of("authenticated", false));
-        }
+        // BFF session path (OAuth2 flow)
+        if (serverUrl != null) {
+            String accessToken = (String) session.getAttribute(SESSION_ACCESS_TOKEN);
+            if (accessToken != null) {
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("authenticated", true);
+                result.put("access_token", accessToken);
+                result.put("serverUrl", serverUrl);
 
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("authenticated", true);
-        result.put("access_token", accessToken);
-        result.put("serverUrl", serverUrl);
-
-        @SuppressWarnings("unchecked")
-        Map<String, String> userInfo = (Map<String, String>) session.getAttribute(SESSION_USERINFO);
-        if (userInfo != null && !userInfo.isEmpty()) {
-            result.put("userinfo", userInfo);
-        } else {
-            // Fallback: try Spring Security context (primary login session restoration)
-            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-            if (auth != null && auth.getPrincipal() instanceof FhirUserDetails user) {
-                userInfo = Map.of(
-                    "name", user.getDisplayName(),
-                    "fhirUser", user.getFhirResourceReference(),
-                    "fhirUserType", user.getFhirResourceType());
-                result.put("userinfo", userInfo);
+                @SuppressWarnings("unchecked")
+                Map<String, String> userInfo = (Map<String, String>) session.getAttribute(SESSION_USERINFO);
+                if (userInfo != null && !userInfo.isEmpty()) {
+                    result.put("userinfo", userInfo);
+                }
+                return ResponseEntity.ok(result);
             }
         }
 
-        return ResponseEntity.ok(result);
+        // Fallback: Spring Security form login session
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.getPrincipal() instanceof FhirUserDetails user) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("authenticated", true);
+            result.put("userinfo", Map.of(
+                "name", user.getDisplayName(),
+                "fhirUser", user.getFhirResourceReference(),
+                "fhirUserType", user.getFhirResourceType()));
+            return ResponseEntity.ok(result);
+        }
+
+        return ResponseEntity.ok(Map.of("authenticated", false));
     }
 
     private Map<String, String> fetchUserinfo(String userinfoEndpoint, String accessToken) {

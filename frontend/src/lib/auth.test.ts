@@ -2,7 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("handleCallback", () => {
   beforeEach(() => {
+    localStorage.clear();
     sessionStorage.clear();
+    window.APP_CONFIG = {
+      authEnabled: true,
+      fhirServers: [
+        { name: "Local Server", url: "http://localhost:8080/fhir" },
+      ],
+    };
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -68,7 +75,14 @@ describe("handleCallback", () => {
 
 describe("checkSession", () => {
   beforeEach(() => {
+    localStorage.clear();
     sessionStorage.clear();
+    window.APP_CONFIG = {
+      authEnabled: true,
+      fhirServers: [
+        { name: "Local Server", url: "http://localhost:8080/fhir" },
+      ],
+    };
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -115,5 +129,60 @@ describe("checkSession", () => {
     expect(result.authenticated).toBe(false);
     expect(getUserInfo()).toBeNull();
     expect(getSessionServerUrl()).toBeNull();
+  });
+});
+
+describe("buildLoginPath", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    window.APP_CONFIG = {
+      authEnabled: true,
+      fhirServers: [
+        { name: "Local Server", url: "http://localhost:8080/fhir" },
+      ],
+    };
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("defaults to the primary login flow for configured servers", async () => {
+    localStorage.setItem("fhir-server-url", "http://localhost:8080/fhir");
+
+    const { buildLoginPath } = await import("./auth");
+
+    expect(buildLoginPath()).toBe("/auth/login");
+  });
+
+  it("reuses the stored custom auth target for the selected custom server", async () => {
+    localStorage.setItem("fhir-server-url", "https://custom.fhir.org/fhir");
+    localStorage.setItem(
+      "fhir-custom-auth-target",
+      JSON.stringify({
+        serverUrl: "https://custom.fhir.org/fhir",
+        idp: "https://idp.example.org",
+      }),
+    );
+
+    const { buildLoginPath } = await import("./auth");
+
+    expect(buildLoginPath()).toBe(
+      "/auth/login?server=https%3A%2F%2Fcustom.fhir.org%2Ffhir&idp=https%3A%2F%2Fidp.example.org",
+    );
+  });
+
+  it("ignores a stored custom auth target when it does not match the selected server", async () => {
+    localStorage.setItem("fhir-server-url", "https://other.fhir.org/fhir");
+    localStorage.setItem(
+      "fhir-custom-auth-target",
+      JSON.stringify({
+        serverUrl: "https://custom.fhir.org/fhir",
+        idp: "https://idp.example.org",
+      }),
+    );
+
+    const { buildLoginPath } = await import("./auth");
+
+    expect(buildLoginPath()).toBe("/auth/login");
   });
 });

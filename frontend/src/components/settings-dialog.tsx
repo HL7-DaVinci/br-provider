@@ -23,7 +23,12 @@ import { Separator } from "@/components/ui/separator";
 import { useAuth } from "@/hooks/use-auth";
 import { useServerStatus } from "@/hooks/use-fhir-api";
 import { useFhirServer, useServerDiscovery } from "@/hooks/use-fhir-server";
-import { getAppConfig } from "@/lib/fhir-config";
+import {
+  clearStoredCustomAuthTarget,
+  getAppConfig,
+  getStoredCustomAuthTarget,
+  setStoredCustomAuthTarget,
+} from "@/lib/fhir-config";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -48,10 +53,15 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const wasOpen = useRef(false);
   useEffect(() => {
     if (open && !wasOpen.current) {
+      const storedCustomAuthTarget = getStoredCustomAuthTarget();
       setPendingUrl(isCustomServer ? serverUrl : "");
       setCustomUrlInput(isCustomServer ? serverUrl : "");
       setShowCustomInput(false);
-      setIdpUrl("");
+      setIdpUrl(
+        isCustomServer && storedCustomAuthTarget?.serverUrl === serverUrl
+          ? (storedCustomAuthTarget.idp ?? "")
+          : "",
+      );
     }
     wasOpen.current = open;
   });
@@ -104,6 +114,14 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     (!isPendingCustom || (discovery?.fhirServer === true && !isDiscovering));
 
   const handleSave = async () => {
+    if (switchingServer) {
+      if (needsAuth) {
+        setStoredCustomAuthTarget(pendingUrl, idpUrl || undefined);
+      } else {
+        clearStoredCustomAuthTarget();
+      }
+    }
+
     // Sign out of the current session before switching servers
     if (switchingServer && isAuthenticated) {
       await signOut();

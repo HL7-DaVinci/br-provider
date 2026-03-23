@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   checkSession,
@@ -12,16 +13,18 @@ import { getAppConfig } from "@/lib/fhir-config";
 export function useAuth() {
   const config = getAppConfig();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [, forceUpdate] = useState(0);
 
   const userInfo = getUserInfo();
 
   // Verify server-side session is still valid
-  const { data: sessionData } = useQuery({
+  const { data: sessionData, isPending: isSessionPending } = useQuery({
     queryKey: ["auth", "session"],
     queryFn: checkSession,
     staleTime: 60 * 1000,
     retry: false,
+    enabled: !!config.authEnabled,
   });
 
   // Sync local state with server session
@@ -45,6 +48,11 @@ export function useAuth() {
     }
   }, [sessionData, userInfo]);
 
+  const effectiveUserInfo =
+    userInfo ?? (sessionData?.authenticated ? sessionData.userinfo : undefined);
+  const isRestoringSession =
+    !!config.authEnabled && !userInfo && isSessionPending;
+
   const login = useCallback(
     (serverUrl?: string, idp?: string) => startLogin(serverUrl, idp),
     [],
@@ -53,15 +61,17 @@ export function useAuth() {
     await logout();
     queryClient.clear();
     forceUpdate((n) => n + 1);
-  }, [queryClient]);
+    navigate({ to: "/" });
+  }, [queryClient, navigate]);
 
   return {
-    isAuthenticated: !!userInfo,
+    isAuthenticated: !!effectiveUserInfo || sessionData?.authenticated === true,
+    isRestoringSession,
     authEnabled: !!config.authEnabled,
-    user: userInfo,
-    fhirUser: userInfo?.fhirUser,
-    fhirUserType: userInfo?.fhirUserType,
-    displayName: userInfo?.name,
+    user: effectiveUserInfo,
+    fhirUser: effectiveUserInfo?.fhirUser,
+    fhirUserType: effectiveUserInfo?.fhirUserType,
+    displayName: effectiveUserInfo?.name,
     login,
     logout: logoutAndRefresh,
   };

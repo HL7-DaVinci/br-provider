@@ -65,6 +65,11 @@ code,
   --sidebar-border: oklch(0.915 0.004 260);
   --sidebar-ring: oklch(0.55 0.14 250);
 
+  /* Brand: #7caeae bg */
+  --brand: oklch(0.72 0.053 196.03);
+  /* --brand-foreground: oklch(1 0 0); */
+  --brand-foreground: oklch(0.18 0.03 196);
+
   /* Status colors */
   --success: oklch(0.627 0.194 145.071);
   --success-foreground: oklch(0.985 0.002 260);
@@ -103,6 +108,10 @@ code,
   --sidebar-border: oklch(0.325 0.005 260);
   --sidebar-ring: oklch(0.65 0.12 250);
 
+  /* Brand: #14414c */
+  --brand: oklch(0.35 0.052 217.04);
+  --brand-foreground: oklch(1 0 0);
+
   /* Status colors */
   --success: oklch(0.627 0.194 145.071);
   --success-foreground: oklch(0.205 0.006 260);
@@ -132,6 +141,8 @@ code,
   --color-ring: var(--ring);
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
   --radius-sm: calc(var(--radius) - 4px);

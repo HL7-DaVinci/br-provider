@@ -12,6 +12,8 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as CallbackRouteImport } from './routes/callback'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as PractitionerIndexRouteImport } from './routes/practitioner/index'
+import { Route as PatientIndexRouteImport } from './routes/patient/index'
 import { Route as PatientsPatientIdRouteImport } from './routes/patients/$patientId'
 import { Route as PatientsPatientIdIndexRouteImport } from './routes/patients/$patientId/index'
 import { Route as PatientsPatientIdMedicationsRouteImport } from './routes/patients/$patientId/medications'
@@ -30,6 +32,16 @@ const CallbackRoute = CallbackRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PractitionerIndexRoute = PractitionerIndexRouteImport.update({
+  id: '/practitioner/',
+  path: '/practitioner/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PatientIndexRoute = PatientIndexRouteImport.update({
+  id: '/patient/',
+  path: '/patient/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PatientsPatientIdRoute = PatientsPatientIdRouteImport.update({
@@ -60,6 +72,8 @@ export interface FileRoutesByFullPath {
   '/callback': typeof CallbackRoute
   '/login': typeof LoginRoute
   '/patients/$patientId': typeof PatientsPatientIdRouteWithChildren
+  '/patient/': typeof PatientIndexRoute
+  '/practitioner/': typeof PractitionerIndexRoute
   '/patients/$patientId/conditions': typeof PatientsPatientIdConditionsRoute
   '/patients/$patientId/medications': typeof PatientsPatientIdMedicationsRoute
   '/patients/$patientId/': typeof PatientsPatientIdIndexRoute
@@ -68,6 +82,8 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/callback': typeof CallbackRoute
   '/login': typeof LoginRoute
+  '/patient': typeof PatientIndexRoute
+  '/practitioner': typeof PractitionerIndexRoute
   '/patients/$patientId/conditions': typeof PatientsPatientIdConditionsRoute
   '/patients/$patientId/medications': typeof PatientsPatientIdMedicationsRoute
   '/patients/$patientId': typeof PatientsPatientIdIndexRoute
@@ -78,6 +94,8 @@ export interface FileRoutesById {
   '/callback': typeof CallbackRoute
   '/login': typeof LoginRoute
   '/patients/$patientId': typeof PatientsPatientIdRouteWithChildren
+  '/patient/': typeof PatientIndexRoute
+  '/practitioner/': typeof PractitionerIndexRoute
   '/patients/$patientId/conditions': typeof PatientsPatientIdConditionsRoute
   '/patients/$patientId/medications': typeof PatientsPatientIdMedicationsRoute
   '/patients/$patientId/': typeof PatientsPatientIdIndexRoute
@@ -89,6 +107,8 @@ export interface FileRouteTypes {
     | '/callback'
     | '/login'
     | '/patients/$patientId'
+    | '/patient/'
+    | '/practitioner/'
     | '/patients/$patientId/conditions'
     | '/patients/$patientId/medications'
     | '/patients/$patientId/'
@@ -97,6 +117,8 @@ export interface FileRouteTypes {
     | '/'
     | '/callback'
     | '/login'
+    | '/patient'
+    | '/practitioner'
     | '/patients/$patientId/conditions'
     | '/patients/$patientId/medications'
     | '/patients/$patientId'
@@ -106,6 +128,8 @@ export interface FileRouteTypes {
     | '/callback'
     | '/login'
     | '/patients/$patientId'
+    | '/patient/'
+    | '/practitioner/'
     | '/patients/$patientId/conditions'
     | '/patients/$patientId/medications'
     | '/patients/$patientId/'
@@ -116,6 +140,8 @@ export interface RootRouteChildren {
   CallbackRoute: typeof CallbackRoute
   LoginRoute: typeof LoginRoute
   PatientsPatientIdRoute: typeof PatientsPatientIdRouteWithChildren
+  PatientIndexRoute: typeof PatientIndexRoute
+  PractitionerIndexRoute: typeof PractitionerIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -139,6 +165,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/practitioner/': {
+      id: '/practitioner/'
+      path: '/practitioner'
+      fullPath: '/practitioner/'
+      preLoaderRoute: typeof PractitionerIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/patient/': {
+      id: '/patient/'
+      path: '/patient'
+      fullPath: '/patient/'
+      preLoaderRoute: typeof PatientIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/patients/$patientId': {
@@ -192,6 +232,8 @@ const rootRouteChildren: RootRouteChildren = {
   CallbackRoute: CallbackRoute,
   LoginRoute: LoginRoute,
   PatientsPatientIdRoute: PatientsPatientIdRouteWithChildren,
+  PatientIndexRoute: PatientIndexRoute,
+  PractitionerIndexRoute: PractitionerIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
