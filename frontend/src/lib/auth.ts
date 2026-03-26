@@ -99,6 +99,7 @@ export async function checkSession(): Promise<{
   authenticated: boolean;
   userinfo?: { name?: string; fhirUser?: string; fhirUserType?: string };
   serverUrl?: string;
+  expiresAt?: string;
 }> {
   const response = await fetch("/auth/session", { credentials: "include" });
   const data = await response.json();

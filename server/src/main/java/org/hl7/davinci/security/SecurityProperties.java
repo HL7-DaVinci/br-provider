@@ -35,7 +35,7 @@ public class SecurityProperties {
     private String defaultUserPassword = "test";
     private String externalBaseUrl;
     private String serverBaseUrl;
-    private String scope = "openid udap fhirUser profile";
+    private String scope = "openid udap fhirUser profile offline_access";
     private String clientName = "Da Vinci Provider";
 
     @Value("${hapi.fhir.server_address:http://localhost:8080/fhir}")
@@ -98,4 +98,15 @@ public String getServerBaseUrl() { return serverBaseUrl; }
 
     public String getClientName() { return clientName; }
     public void setClientName(String clientName) { this.clientName = clientName; }
+
+    /**
+     * Returns the canonical provider base URL (no trailing slashes).
+     * Prefers externalBaseUrl when set, falls back to serverBaseUrl.
+     */
+    public String getProviderBaseUrl() {
+        if (externalBaseUrl != null && !externalBaseUrl.isBlank()) {
+            return externalBaseUrl.replaceAll("/+$", "");
+        }
+        return serverBaseUrl;
+    }
 }

@@ -33,7 +33,7 @@ describe("useAuth", () => {
     window.APP_CONFIG = {
       authEnabled: true,
       fhirServers: [
-        { name: "Local Server", url: "http://localhost:8080/fhir" },
+        { name: "Local Provider Server", url: "http://localhost:8080/fhir" },
       ],
     };
     navigateMock.mockReset();

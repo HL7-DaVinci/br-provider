@@ -13,9 +13,16 @@ export interface CustomAuthTarget {
   idp?: string;
 }
 
+export interface PayerServer {
+  name: string;
+  cdsUrl: string;
+  fhirUrl: string;
+}
+
 interface AppConfig {
   fhirServers?: FhirServer[];
   cdsServers?: CdsServer[];
+  payerServers?: PayerServer[];
   providerServerUrl?: string;
   authEnabled?: boolean;
 }
@@ -28,7 +35,7 @@ declare global {
 
 const DEFAULT_FHIR_SERVERS: FhirServer[] = [
   {
-    name: "Local Server",
+    name: "Local Provider Server",
     url: "http://localhost:8080/fhir",
   },
 ];
@@ -77,7 +84,7 @@ export const FHIR_SERVERS: FhirServer[] = parseFhirServers();
 const STORAGE_KEY = "fhir-server-url";
 const CUSTOM_AUTH_TARGET_STORAGE_KEY = "fhir-custom-auth-target";
 
-function normalizeServerUrl(url: string): string {
+export function normalizeServerUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
 

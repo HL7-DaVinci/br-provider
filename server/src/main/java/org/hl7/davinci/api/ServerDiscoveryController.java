@@ -9,11 +9,11 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.hl7.davinci.config.FhirServerProperties;
 import org.hl7.davinci.security.OutboundTargetValidator;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SecurityUtil;
 import org.hl7.davinci.security.UdapClientRegistration;
+import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -55,7 +55,7 @@ public class ServerDiscoveryController {
     @GetMapping("/discover")
     public ResponseEntity<Map<String, Object>> discover(
             @RequestParam("url") String fhirServerUrl) {
-        String normalizedUrl = FhirServerProperties.normalizeUrl(fhirServerUrl);
+        String normalizedUrl = UrlMatchUtil.normalizeUrl(fhirServerUrl);
         Map<String, Object> response = new LinkedHashMap<>();
 
         // Validate the URL points to a FHIR server before anything else

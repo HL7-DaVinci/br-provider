@@ -7,12 +7,12 @@ FROM oven/bun:1-slim AS build-frontend
 
 WORKDIR /app
 
-# Copy package files and lockfile
+# Copy workspace package files and lockfile
+COPY package.json bun.lock ./
 COPY frontend/package.json ./frontend/
-COPY frontend/bun.lock ./frontend/
 
 # Install dependencies
-WORKDIR /app/frontend
+WORKDIR /app
 RUN bun install --frozen-lockfile
 
 WORKDIR /app

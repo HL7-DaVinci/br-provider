@@ -14,10 +14,18 @@ import { Route as CallbackRouteImport } from './routes/callback'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as PractitionerIndexRouteImport } from './routes/practitioner/index'
 import { Route as PatientIndexRouteImport } from './routes/patient/index'
+import { Route as DtrIndexRouteImport } from './routes/dtr/index'
 import { Route as PatientsPatientIdRouteImport } from './routes/patients/$patientId'
+import { Route as DtrLaunchRouteImport } from './routes/dtr/launch'
 import { Route as PatientsPatientIdIndexRouteImport } from './routes/patients/$patientId/index'
+import { Route as PatientsPatientIdOrdersRouteImport } from './routes/patients/$patientId/orders'
 import { Route as PatientsPatientIdMedicationsRouteImport } from './routes/patients/$patientId/medications'
+import { Route as PatientsPatientIdEncounterRouteImport } from './routes/patients/$patientId/encounter'
+import { Route as PatientsPatientIdCoverageRouteImport } from './routes/patients/$patientId/coverage'
 import { Route as PatientsPatientIdConditionsRouteImport } from './routes/patients/$patientId/conditions'
+import { Route as PatientsPatientIdOrdersIndexRouteImport } from './routes/patients/$patientId/orders/index'
+import { Route as PatientsPatientIdOrdersNewRouteImport } from './routes/patients/$patientId/orders/new'
+import { Route as PatientsPatientIdOrdersOrderIdPasRouteImport } from './routes/patients/$patientId/orders/$orderId/pas'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -44,14 +52,29 @@ const PatientIndexRoute = PatientIndexRouteImport.update({
   path: '/patient/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DtrIndexRoute = DtrIndexRouteImport.update({
+  id: '/dtr/',
+  path: '/dtr/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PatientsPatientIdRoute = PatientsPatientIdRouteImport.update({
   id: '/patients/$patientId',
   path: '/patients/$patientId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DtrLaunchRoute = DtrLaunchRouteImport.update({
+  id: '/dtr/launch',
+  path: '/dtr/launch',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PatientsPatientIdIndexRoute = PatientsPatientIdIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => PatientsPatientIdRoute,
+} as any)
+const PatientsPatientIdOrdersRoute = PatientsPatientIdOrdersRouteImport.update({
+  id: '/orders',
+  path: '/orders',
   getParentRoute: () => PatientsPatientIdRoute,
 } as any)
 const PatientsPatientIdMedicationsRoute =
@@ -60,45 +83,98 @@ const PatientsPatientIdMedicationsRoute =
     path: '/medications',
     getParentRoute: () => PatientsPatientIdRoute,
   } as any)
+const PatientsPatientIdEncounterRoute =
+  PatientsPatientIdEncounterRouteImport.update({
+    id: '/encounter',
+    path: '/encounter',
+    getParentRoute: () => PatientsPatientIdRoute,
+  } as any)
+const PatientsPatientIdCoverageRoute =
+  PatientsPatientIdCoverageRouteImport.update({
+    id: '/coverage',
+    path: '/coverage',
+    getParentRoute: () => PatientsPatientIdRoute,
+  } as any)
 const PatientsPatientIdConditionsRoute =
   PatientsPatientIdConditionsRouteImport.update({
     id: '/conditions',
     path: '/conditions',
     getParentRoute: () => PatientsPatientIdRoute,
   } as any)
+const PatientsPatientIdOrdersIndexRoute =
+  PatientsPatientIdOrdersIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => PatientsPatientIdOrdersRoute,
+  } as any)
+const PatientsPatientIdOrdersNewRoute =
+  PatientsPatientIdOrdersNewRouteImport.update({
+    id: '/new',
+    path: '/new',
+    getParentRoute: () => PatientsPatientIdOrdersRoute,
+  } as any)
+const PatientsPatientIdOrdersOrderIdPasRoute =
+  PatientsPatientIdOrdersOrderIdPasRouteImport.update({
+    id: '/$orderId/pas',
+    path: '/$orderId/pas',
+    getParentRoute: () => PatientsPatientIdOrdersRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/callback': typeof CallbackRoute
   '/login': typeof LoginRoute
+  '/dtr/launch': typeof DtrLaunchRoute
   '/patients/$patientId': typeof PatientsPatientIdRouteWithChildren
+  '/dtr/': typeof DtrIndexRoute
   '/patient/': typeof PatientIndexRoute
   '/practitioner/': typeof PractitionerIndexRoute
   '/patients/$patientId/conditions': typeof PatientsPatientIdConditionsRoute
+  '/patients/$patientId/coverage': typeof PatientsPatientIdCoverageRoute
+  '/patients/$patientId/encounter': typeof PatientsPatientIdEncounterRoute
   '/patients/$patientId/medications': typeof PatientsPatientIdMedicationsRoute
+  '/patients/$patientId/orders': typeof PatientsPatientIdOrdersRouteWithChildren
   '/patients/$patientId/': typeof PatientsPatientIdIndexRoute
+  '/patients/$patientId/orders/new': typeof PatientsPatientIdOrdersNewRoute
+  '/patients/$patientId/orders/': typeof PatientsPatientIdOrdersIndexRoute
+  '/patients/$patientId/orders/$orderId/pas': typeof PatientsPatientIdOrdersOrderIdPasRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/callback': typeof CallbackRoute
   '/login': typeof LoginRoute
+  '/dtr/launch': typeof DtrLaunchRoute
+  '/dtr': typeof DtrIndexRoute
   '/patient': typeof PatientIndexRoute
   '/practitioner': typeof PractitionerIndexRoute
   '/patients/$patientId/conditions': typeof PatientsPatientIdConditionsRoute
+  '/patients/$patientId/coverage': typeof PatientsPatientIdCoverageRoute
+  '/patients/$patientId/encounter': typeof PatientsPatientIdEncounterRoute
   '/patients/$patientId/medications': typeof PatientsPatientIdMedicationsRoute
   '/patients/$patientId': typeof PatientsPatientIdIndexRoute
+  '/patients/$patientId/orders/new': typeof PatientsPatientIdOrdersNewRoute
+  '/patients/$patientId/orders': typeof PatientsPatientIdOrdersIndexRoute
+  '/patients/$patientId/orders/$orderId/pas': typeof PatientsPatientIdOrdersOrderIdPasRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/callback': typeof CallbackRoute
   '/login': typeof LoginRoute
+  '/dtr/launch': typeof DtrLaunchRoute
   '/patients/$patientId': typeof PatientsPatientIdRouteWithChildren
+  '/dtr/': typeof DtrIndexRoute
   '/patient/': typeof PatientIndexRoute
   '/practitioner/': typeof PractitionerIndexRoute
   '/patients/$patientId/conditions': typeof PatientsPatientIdConditionsRoute
+  '/patients/$patientId/coverage': typeof PatientsPatientIdCoverageRoute
+  '/patients/$patientId/encounter': typeof PatientsPatientIdEncounterRoute
   '/patients/$patientId/medications': typeof PatientsPatientIdMedicationsRoute
+  '/patients/$patientId/orders': typeof PatientsPatientIdOrdersRouteWithChildren
   '/patients/$patientId/': typeof PatientsPatientIdIndexRoute
+  '/patients/$patientId/orders/new': typeof PatientsPatientIdOrdersNewRoute
+  '/patients/$patientId/orders/': typeof PatientsPatientIdOrdersIndexRoute
+  '/patients/$patientId/orders/$orderId/pas': typeof PatientsPatientIdOrdersOrderIdPasRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -106,40 +182,65 @@ export interface FileRouteTypes {
     | '/'
     | '/callback'
     | '/login'
+    | '/dtr/launch'
     | '/patients/$patientId'
+    | '/dtr/'
     | '/patient/'
     | '/practitioner/'
     | '/patients/$patientId/conditions'
+    | '/patients/$patientId/coverage'
+    | '/patients/$patientId/encounter'
     | '/patients/$patientId/medications'
+    | '/patients/$patientId/orders'
     | '/patients/$patientId/'
+    | '/patients/$patientId/orders/new'
+    | '/patients/$patientId/orders/'
+    | '/patients/$patientId/orders/$orderId/pas'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/callback'
     | '/login'
+    | '/dtr/launch'
+    | '/dtr'
     | '/patient'
     | '/practitioner'
     | '/patients/$patientId/conditions'
+    | '/patients/$patientId/coverage'
+    | '/patients/$patientId/encounter'
     | '/patients/$patientId/medications'
     | '/patients/$patientId'
+    | '/patients/$patientId/orders/new'
+    | '/patients/$patientId/orders'
+    | '/patients/$patientId/orders/$orderId/pas'
   id:
     | '__root__'
     | '/'
     | '/callback'
     | '/login'
+    | '/dtr/launch'
     | '/patients/$patientId'
+    | '/dtr/'
     | '/patient/'
     | '/practitioner/'
     | '/patients/$patientId/conditions'
+    | '/patients/$patientId/coverage'
+    | '/patients/$patientId/encounter'
     | '/patients/$patientId/medications'
+    | '/patients/$patientId/orders'
     | '/patients/$patientId/'
+    | '/patients/$patientId/orders/new'
+    | '/patients/$patientId/orders/'
+    | '/patients/$patientId/orders/$orderId/pas'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CallbackRoute: typeof CallbackRoute
   LoginRoute: typeof LoginRoute
+  DtrLaunchRoute: typeof DtrLaunchRoute
   PatientsPatientIdRoute: typeof PatientsPatientIdRouteWithChildren
+  DtrIndexRoute: typeof DtrIndexRoute
   PatientIndexRoute: typeof PatientIndexRoute
   PractitionerIndexRoute: typeof PractitionerIndexRoute
 }
@@ -181,11 +282,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PatientIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/dtr/': {
+      id: '/dtr/'
+      path: '/dtr'
+      fullPath: '/dtr/'
+      preLoaderRoute: typeof DtrIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/patients/$patientId': {
       id: '/patients/$patientId'
       path: '/patients/$patientId'
       fullPath: '/patients/$patientId'
       preLoaderRoute: typeof PatientsPatientIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dtr/launch': {
+      id: '/dtr/launch'
+      path: '/dtr/launch'
+      fullPath: '/dtr/launch'
+      preLoaderRoute: typeof DtrLaunchRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/patients/$patientId/': {
@@ -195,11 +310,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PatientsPatientIdIndexRouteImport
       parentRoute: typeof PatientsPatientIdRoute
     }
+    '/patients/$patientId/orders': {
+      id: '/patients/$patientId/orders'
+      path: '/orders'
+      fullPath: '/patients/$patientId/orders'
+      preLoaderRoute: typeof PatientsPatientIdOrdersRouteImport
+      parentRoute: typeof PatientsPatientIdRoute
+    }
     '/patients/$patientId/medications': {
       id: '/patients/$patientId/medications'
       path: '/medications'
       fullPath: '/patients/$patientId/medications'
       preLoaderRoute: typeof PatientsPatientIdMedicationsRouteImport
+      parentRoute: typeof PatientsPatientIdRoute
+    }
+    '/patients/$patientId/encounter': {
+      id: '/patients/$patientId/encounter'
+      path: '/encounter'
+      fullPath: '/patients/$patientId/encounter'
+      preLoaderRoute: typeof PatientsPatientIdEncounterRouteImport
+      parentRoute: typeof PatientsPatientIdRoute
+    }
+    '/patients/$patientId/coverage': {
+      id: '/patients/$patientId/coverage'
+      path: '/coverage'
+      fullPath: '/patients/$patientId/coverage'
+      preLoaderRoute: typeof PatientsPatientIdCoverageRouteImport
       parentRoute: typeof PatientsPatientIdRoute
     }
     '/patients/$patientId/conditions': {
@@ -209,18 +345,64 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PatientsPatientIdConditionsRouteImport
       parentRoute: typeof PatientsPatientIdRoute
     }
+    '/patients/$patientId/orders/': {
+      id: '/patients/$patientId/orders/'
+      path: '/'
+      fullPath: '/patients/$patientId/orders/'
+      preLoaderRoute: typeof PatientsPatientIdOrdersIndexRouteImport
+      parentRoute: typeof PatientsPatientIdOrdersRoute
+    }
+    '/patients/$patientId/orders/new': {
+      id: '/patients/$patientId/orders/new'
+      path: '/new'
+      fullPath: '/patients/$patientId/orders/new'
+      preLoaderRoute: typeof PatientsPatientIdOrdersNewRouteImport
+      parentRoute: typeof PatientsPatientIdOrdersRoute
+    }
+    '/patients/$patientId/orders/$orderId/pas': {
+      id: '/patients/$patientId/orders/$orderId/pas'
+      path: '/$orderId/pas'
+      fullPath: '/patients/$patientId/orders/$orderId/pas'
+      preLoaderRoute: typeof PatientsPatientIdOrdersOrderIdPasRouteImport
+      parentRoute: typeof PatientsPatientIdOrdersRoute
+    }
   }
 }
 
+interface PatientsPatientIdOrdersRouteChildren {
+  PatientsPatientIdOrdersNewRoute: typeof PatientsPatientIdOrdersNewRoute
+  PatientsPatientIdOrdersIndexRoute: typeof PatientsPatientIdOrdersIndexRoute
+  PatientsPatientIdOrdersOrderIdPasRoute: typeof PatientsPatientIdOrdersOrderIdPasRoute
+}
+
+const PatientsPatientIdOrdersRouteChildren: PatientsPatientIdOrdersRouteChildren =
+  {
+    PatientsPatientIdOrdersNewRoute: PatientsPatientIdOrdersNewRoute,
+    PatientsPatientIdOrdersIndexRoute: PatientsPatientIdOrdersIndexRoute,
+    PatientsPatientIdOrdersOrderIdPasRoute:
+      PatientsPatientIdOrdersOrderIdPasRoute,
+  }
+
+const PatientsPatientIdOrdersRouteWithChildren =
+  PatientsPatientIdOrdersRoute._addFileChildren(
+    PatientsPatientIdOrdersRouteChildren,
+  )
+
 interface PatientsPatientIdRouteChildren {
   PatientsPatientIdConditionsRoute: typeof PatientsPatientIdConditionsRoute
+  PatientsPatientIdCoverageRoute: typeof PatientsPatientIdCoverageRoute
+  PatientsPatientIdEncounterRoute: typeof PatientsPatientIdEncounterRoute
   PatientsPatientIdMedicationsRoute: typeof PatientsPatientIdMedicationsRoute
+  PatientsPatientIdOrdersRoute: typeof PatientsPatientIdOrdersRouteWithChildren
   PatientsPatientIdIndexRoute: typeof PatientsPatientIdIndexRoute
 }
 
 const PatientsPatientIdRouteChildren: PatientsPatientIdRouteChildren = {
   PatientsPatientIdConditionsRoute: PatientsPatientIdConditionsRoute,
+  PatientsPatientIdCoverageRoute: PatientsPatientIdCoverageRoute,
+  PatientsPatientIdEncounterRoute: PatientsPatientIdEncounterRoute,
   PatientsPatientIdMedicationsRoute: PatientsPatientIdMedicationsRoute,
+  PatientsPatientIdOrdersRoute: PatientsPatientIdOrdersRouteWithChildren,
   PatientsPatientIdIndexRoute: PatientsPatientIdIndexRoute,
 }
 
@@ -231,7 +413,9 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CallbackRoute: CallbackRoute,
   LoginRoute: LoginRoute,
+  DtrLaunchRoute: DtrLaunchRoute,
   PatientsPatientIdRoute: PatientsPatientIdRouteWithChildren,
+  DtrIndexRoute: DtrIndexRoute,
   PatientIndexRoute: PatientIndexRoute,
   PractitionerIndexRoute: PractitionerIndexRoute,
 }

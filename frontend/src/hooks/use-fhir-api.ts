@@ -122,6 +122,11 @@ export async function fhirFetch<T>(url: string): Promise<T> {
     throw error;
   }
 
+  // On 401, nudge the server to refresh the token before TanStack Query retries
+  if (response.status === 401) {
+    await fetch("/auth/session", { credentials: "include" }).catch(() => {});
+  }
+
   if (!response.ok) {
     const error: FhirError = new Error(
       `FHIR request failed: ${response.status} ${response.statusText}`,
@@ -212,6 +217,40 @@ export function useServerStatus(serverUrl: string) {
     staleTime: 30 * 1000, // 30 seconds
     retry: 0,
     enabled: !!serverUrl,
+  });
+
+  return {
+    ...query,
+    isConnected: query.isSuccess,
+    isDisconnected: query.isError,
+    latency: query.data?.latency,
+  };
+}
+
+/**
+ * Like useServerStatus but routes through the BFF proxy with payer=true
+ * to use B2B client_credentials auth instead of the user session token.
+ * This allows the same server to serve both provider and payer roles.
+ */
+export function usePayerStatus(fhirUrl: string) {
+  const query = useQuery({
+    queryKey: ["payer", "status", fhirUrl],
+    queryFn: async () => {
+      const start = Date.now();
+      const proxyUrl = `/api/fhir-proxy?${new URLSearchParams({ url: `${fhirUrl}/metadata`, payer: "true" })}`;
+      const response = await fetch(proxyUrl, {
+        headers: { Accept: "application/fhir+json" },
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(`Payer server returned ${response.status}`);
+      }
+      const latency = Date.now() - start;
+      return { connected: true, latency };
+    },
+    staleTime: 30 * 1000,
+    retry: 0,
+    enabled: !!fhirUrl,
   });
 
   return {

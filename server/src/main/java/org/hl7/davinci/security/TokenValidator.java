@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.jwk.source.JWKSourceBuilder;
 import com.nimbusds.jose.proc.JWSVerificationKeySelector;
@@ -25,9 +26,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * Validates FAST RI-issued JWTs using remote JWKS discovery.
- * Tokens are issued by the FAST RI authorization server (the trust community authority)
- * and validated against its published public keys.
+ * Validates JWTs from two trusted issuers:
+ * 1. The FAST RI authorization server (trust community authority) for user tokens
+ * 2. This server's own Spring Authorization Server for B2B client_credentials tokens
+ *
+ * Tokens are validated against the issuer's published JWKS. The issuer claim
+ * determines which key source is used for signature verification.
  */
 @Component
 public class TokenValidator {
@@ -36,18 +40,21 @@ public class TokenValidator {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     private final SecurityProperties securityProperties;
-    private volatile JWKSource<SecurityContext> jwkSource;
+    private final CertificateHolder certificateHolder;
+    private volatile JWKSource<SecurityContext> remoteJwkSource;
     private final Object jwkSourceLock = new Object();
 
     @Autowired
-    public TokenValidator(SecurityProperties securityProperties) {
+    public TokenValidator(SecurityProperties securityProperties, CertificateHolder certificateHolder) {
         this.securityProperties = securityProperties;
+        this.certificateHolder = certificateHolder;
     }
 
     // Package-private constructor for testability with injected JWKSource
     TokenValidator(SecurityProperties securityProperties, JWKSource<SecurityContext> jwkSource) {
         this.securityProperties = securityProperties;
-        this.jwkSource = jwkSource;
+        this.certificateHolder = null;
+        this.remoteJwkSource = jwkSource;
     }
 
     public JWTClaimsSet validate(String token) throws Exception {
@@ -55,23 +62,33 @@ public class TokenValidator {
             throw new JOSEException("Authentication is disabled");
         }
 
-        JWKSource<SecurityContext> source = getJwkSource();
+        String localIssuer = securityProperties.getServerBaseUrl();
+        String remoteIssuer = SecurityUtil.resolveIssuer(securityProperties);
+
+        // Peek at the token's issuer to select the correct key source
+        String tokenIssuer = peekIssuer(token);
+        JWKSource<SecurityContext> source;
+
+        if (tokenIssuer != null && isLocalIssuer(tokenIssuer, localIssuer)) {
+            source = getLocalJwkSource();
+            logger.debug("Validating locally-issued token (B2B client_credentials)");
+        } else {
+            source = getRemoteJwkSource();
+        }
 
         DefaultJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
-        // UDAP IG does not constrain access token type or format
         processor.setJWSTypeVerifier((type, context) -> {});
         processor.setJWSKeySelector(new JWSVerificationKeySelector<>(JWSAlgorithm.RS256, source));
-
-        // Require expiration claim, no audience validation per UDAP IG
         processor.setJWTClaimsSetVerifier(new DefaultJWTClaimsVerifier<>(null, null));
 
         JWTClaimsSet claims = processor.process(token, null);
 
-        // Validate issuer against the FAST RI
-        String expectedIssuer = SecurityUtil.resolveIssuer(securityProperties);
-        if (expectedIssuer != null && !expectedIssuer.equals(claims.getIssuer())) {
-            throw new JOSEException("Invalid issuer: expected " + expectedIssuer
-                + " got " + claims.getIssuer());
+        // Validate issuer is one of the two trusted issuers
+        String claimedIssuer = claims.getIssuer();
+        boolean isLocal = isLocalIssuer(claimedIssuer, localIssuer);
+        boolean isRemote = remoteIssuer != null && remoteIssuer.equals(claimedIssuer);
+        if (!isLocal && !isRemote) {
+            throw new JOSEException("Untrusted issuer: " + claimedIssuer);
         }
 
         if (claims.getExpirationTime() == null || claims.getExpirationTime().before(new Date())) {
@@ -81,18 +98,52 @@ public class TokenValidator {
         return claims;
     }
 
-    private JWKSource<SecurityContext> getJwkSource() throws Exception {
-        JWKSource<SecurityContext> source = this.jwkSource;
+    /**
+     * Extracts the issuer from the JWT payload without full validation,
+     * used to route to the correct key source.
+     */
+    private String peekIssuer(String token) {
+        try {
+            String[] parts = token.split("\\.");
+            if (parts.length >= 2) {
+                String payload = new String(java.util.Base64.getUrlDecoder().decode(parts[1]));
+                return objectMapper.readTree(payload).path("iss").asText(null);
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to peek at token issuer", e);
+        }
+        return null;
+    }
+
+    /**
+     * Checks if the token issuer matches this server. Spring Authorization Server
+     * uses the request URL as the issuer, so we normalize for comparison.
+     */
+    private boolean isLocalIssuer(String tokenIssuer, String localBase) {
+        if (tokenIssuer == null || localBase == null) return false;
+        String normalized = tokenIssuer.replaceAll("/+$", "");
+        return normalized.equals(localBase.replaceAll("/+$", ""));
+    }
+
+    private JWKSource<SecurityContext> getLocalJwkSource() throws JOSEException {
+        if (certificateHolder == null || !certificateHolder.isInitialized()) {
+            throw new JOSEException("Local signing keys not available");
+        }
+        return new ImmutableJWKSet<>(certificateHolder.getJwkSet());
+    }
+
+    private JWKSource<SecurityContext> getRemoteJwkSource() throws Exception {
+        JWKSource<SecurityContext> source = this.remoteJwkSource;
         if (source != null) {
             return source;
         }
         synchronized (jwkSourceLock) {
-            source = this.jwkSource;
+            source = this.remoteJwkSource;
             if (source != null) {
                 return source;
             }
             source = discoverJwkSource();
-            this.jwkSource = source;
+            this.remoteJwkSource = source;
             return source;
         }
     }

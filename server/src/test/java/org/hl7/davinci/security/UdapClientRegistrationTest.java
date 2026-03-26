@@ -70,7 +70,7 @@ class UdapClientRegistrationTest {
 
     @Test
     void scopeDefaults() {
-        assertEquals("openid udap fhirUser profile", props.getScope());
+        assertEquals("openid udap fhirUser profile offline_access", props.getScope());
         assertEquals("Da Vinci Provider", props.getClientName());
     }
 

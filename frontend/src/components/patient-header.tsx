@@ -1,4 +1,7 @@
+import { Link } from "@tanstack/react-router";
 import type { Coverage, Patient } from "fhir/r4";
+import { ArrowLeft, Play } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useCoverage, useOrganization } from "@/hooks/use-clinical-api";
 import {
   calculateAge,
@@ -18,8 +21,6 @@ export function PatientHeader({ patient, stats }: PatientHeaderProps) {
   const dob = formatClinicalDate(patient.birthDate);
   const age = calculateAge(patient.birthDate);
   const mrn = getPrimaryIdentifier(patient.identifier);
-  const today = new Date();
-  const todayStr = today.toLocaleDateString();
   // Coverage details
   const patientId = typeof patient.id === "string" ? patient.id : "";
   const { data: coverageBundle, isLoading: coverageLoading } =
@@ -62,10 +63,23 @@ export function PatientHeader({ patient, stats }: PatientHeaderProps) {
   return (
     <div className="p-4 bg-card border-b">
       <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold truncate">{name}</h1>
-        <span className="text-sm text-muted-foreground">
-          Today's Date : {todayStr}
-        </span>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/practitioner"
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
+          <h1 className="text-lg font-semibold truncate">{name}</h1>
+        </div>
+        <div className="flex items-center gap-3">
+          <Link to="/patients/$patientId/encounter" params={{ patientId }}>
+            <Button size="sm" variant="outline">
+              <Play className="h-3.5 w-3.5 mr-1" />
+              Start Encounter
+            </Button>
+          </Link>
+        </div>
       </div>
       <div className="flex flex-wrap items-center gap-y-1 text-sm text-muted-foreground mt-0.5">
         {meta.map((item, i) => (

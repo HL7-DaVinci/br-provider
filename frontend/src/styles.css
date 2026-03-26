@@ -24,6 +24,8 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   letter-spacing: -0.011em;
+  color: var(--foreground) !important;
+  background-color: var(--background) !important;
 }
 
 code,
@@ -44,7 +46,7 @@ code,
   --primary-foreground: oklch(0.985 0.002 260);
   --secondary: oklch(0.965 0.003 260);
   --secondary-foreground: oklch(0.205 0.004 260);
-  --muted: oklch(0.965 0.003 260);
+  --muted: oklch(0.85 0.003 260);
   --muted-foreground: oklch(0.525 0.006 260);
   --accent: oklch(0.965 0.003 260);
   --accent-foreground: oklch(0.205 0.004 260);
@@ -194,6 +196,203 @@ code,
     font-variant-numeric: tabular-nums;
     @apply font-mono;
   }
+}
+
+/* LHC-Forms appends an autocomplete container to <body>. Keep it out of
+   normal flow so it doesn't add document height when hidden. */
+#lhc-tools-searchResults {
+  position: absolute;
+  inset: 0 auto auto 0;
+  max-height: min(24rem, 50vh);
+  overflow-y: auto;
+}
+
+/* Counter LHC-Forms / Ant Design global resets that bleed outside the form.
+   Their CSS sets body { color: #000000d9 }, h1-h6 { color: #000000d9 },
+   a:hover { color: #40a9ff } etc. as unscoped element selectors. */
+h1, h2, h3, h4, h5, h6 {
+  color: inherit;
+}
+
+a:hover {
+  color: inherit;
+}
+
+/* LHC-Forms overrides to blend with the design system.
+   The LHC-Forms stylesheet is inserted before app styles so these rules
+   win by source order without needing !important. */
+.lhc-form-container .lhc-form {
+  font-family: inherit;
+  font-size: 0.875rem;
+  background-color: transparent;
+  color: var(--foreground);
+}
+
+/* Hide the built-in form title -- we render our own via React */
+.lhc-form-container .lhc-form-title {
+  display: none;
+}
+
+/* LHC mounts into a custom element; block layout avoids Firefox baseline
+   overflow from the inline custom-element default. */
+.lhc-form-container wc-lhc-form {
+  display: block;
+}
+
+/* Remove extra wrapper spacing and keep LHC internals from nudging the
+   page wider/taller than the viewport. */
+.lhc-form-container .lhc-form-view {
+  margin: 0;
+  overflow-x: clip;
+}
+
+.lhc-form-container .lhc-form-body {
+  margin-bottom: 0;
+  padding: 0.5rem;
+  border-color: var(--lhc-section-divider);
+  background-color: color-mix(in oklch, var(--background) 96%, var(--muted));
+  border-radius: calc(var(--radius) + 2px);
+}
+
+.lhc-form-container {
+  overflow-x: clip;
+  --lhc-divider: color-mix(in oklch, var(--foreground) 12%, transparent);
+  --lhc-section-divider: color-mix(in oklch, var(--border) 65%, transparent);
+  --lhc-section-bg: color-mix(in oklch, var(--muted) 82%, var(--background));
+}
+
+.dark .lhc-form-container {
+  --lhc-divider: color-mix(in oklch, var(--foreground) 10%, transparent);
+  --lhc-section-divider: color-mix(in oklch, var(--foreground) 14%, transparent);
+  --lhc-section-bg: color-mix(in oklch, var(--muted) 72%, var(--background));
+}
+
+.lhc-form-container .lhc-form .lhc-form-table-row {
+  border-top-width: 0;
+  margin: 0 0.875rem;
+  padding-block: 0.35rem;
+}
+
+.lhc-form-container .lhc-form .lhc-form-table-row + .lhc-form-table-row {
+  box-shadow: inset 0 1px 0 color-mix(in oklch, var(--foreground) 6%, transparent);
+}
+
+.dark .lhc-form-container .lhc-form .lhc-form-table-row + .lhc-form-table-row {
+  box-shadow: inset 0 1px 0 color-mix(in oklch, var(--foreground) 5%, transparent);
+}
+
+.lhc-form-container .lhc-form .lhc-form-matrix-table,
+.lhc-form-container .lhc-form .lhc-form-matrix-table td {
+  border-color: var(--lhc-divider);
+}
+
+/* Section/group headers */
+.lhc-form-container .lhc-item-group-title {
+  background-color: var(--lhc-section-bg);
+  color: var(--foreground);
+  border-radius: var(--radius);
+  border-top-color: var(--lhc-section-divider);
+  font-weight: 600;
+  font-size: 0.875rem;
+  margin: 0.25rem 0 0.5rem 0;
+}
+
+.lhc-form-container .lhc-form .lhc-form-table-row.lhc-item-group,
+.lhc-form-container .lhc-form .lhc-item.lhc-datatype-TITLE .lhc-item-display,
+.lhc-form-container .lhc-layout-horizontal .lhc-form-horizontal-table-title,
+.lhc-form-container .lhc-form .lhc-form-matrix-table-title {
+  background-color: var(--lhc-section-bg);
+  border-top-color: var(--lhc-section-divider);
+}
+
+/* Blanket color/background reset for all Ant Design components inside the form.
+   Many ant-* classes hardcode color:#000000d9 and background:#fff. */
+.lhc-form-container .lhc-form,
+.lhc-form-container .lhc-form tr,
+.lhc-form-container .lhc-form td,
+.lhc-form-container .lhc-form .lf-form-table-row,
+.lhc-form-container .lhc-form .lhc-item,
+.lhc-form-container .lhc-form [class*="ant-"] {
+  background-color: transparent;
+  background: transparent;
+  color: var(--foreground);
+}
+
+/* Form controls */
+.lhc-form-container .lhc-form input[type="text"],
+.lhc-form-container .lhc-form input[type="number"],
+.lhc-form-container .lhc-form input[type="date"],
+.lhc-form-container .lhc-form textarea,
+.lhc-form-container .lhc-form select,
+.lhc-form-container .lhc-form .ant-select-selector,
+.lhc-form-container .lhc-form .ant-picker,
+.lhc-form-container .lhc-form .ant-picker-input > input,
+.lhc-form-container .lhc-form .ant-input {
+  border: 1px solid var(--input);
+  border-radius: var(--radius);
+  font-size: 0.875rem;
+  font-weight: 400;
+  font-family: inherit;
+  background-color: var(--background);
+  color: var(--foreground);
+  padding: 0.375rem 0.5rem;
+}
+
+.lhc-form-container .lhc-form input:focus,
+.lhc-form-container .lhc-form textarea:focus,
+.lhc-form-container .lhc-form select:focus {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+  border-color: var(--ring);
+  background-color: var(--background);
+}
+
+/* Override readonly/disabled backgrounds */
+.lhc-form-container .lhc-form input[readonly],
+.lhc-form-container .lhc-form textarea[readonly] {
+  background-color: var(--muted);
+  color: var(--muted-foreground);
+}
+
+/* Labels, text, and icons */
+.lhc-form-container .lhc-form label,
+.lhc-form-container .lhc-form .lhc-item-question,
+.lhc-form-container .lhc-form span,
+.lhc-form-container .lhc-form .anticon {
+  color: var(--foreground);
+  font-family: inherit;
+}
+
+.lhc-form-container .lhc-form .anticon svg {
+  fill: currentColor;
+}
+
+/* Override active/focus row highlight (#afeeee) and pre-population highlight (#e6f7ff) */
+.lhc-form-container .lhc-active-row {
+  background-color: color-mix(in oklch, var(--primary) 12%, transparent);
+}
+
+.lhc-form-container .lhc-form .lhc-item-changed {
+  background-color: color-mix(in oklch, var(--primary) 15%, transparent);
+}
+
+/* Dropdown/autocomplete panels */
+.lhc-form-container .lhc-form .autocomp_selected,
+.lhc-form-container .lhc-form .ant-select-dropdown {
+  background-color: var(--popover);
+  color: var(--popover-foreground);
+  border-color: var(--border);
+}
+
+/* Buttons inside the form */
+.lhc-form-container .lhc-form .lhc-float-button {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+  border-radius: var(--radius);
+}
+
+.lhc-question {
+  margin: 0.5rem;
 }
 
 /* Sonner toast styling */

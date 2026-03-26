@@ -21,8 +21,9 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { useAuth } from "@/hooks/use-auth";
-import { useServerStatus } from "@/hooks/use-fhir-api";
+import { usePayerStatus, useServerStatus } from "@/hooks/use-fhir-api";
 import { useFhirServer, useServerDiscovery } from "@/hooks/use-fhir-server";
+import { usePayerServer } from "@/hooks/use-payer-server";
 import {
   clearStoredCustomAuthTarget,
   getAppConfig,
@@ -38,8 +39,13 @@ interface SettingsDialogProps {
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const { serverUrl, presetServers, setServerUrl, isCustomServer } =
     useFhirServer();
-  const { isConnected, isLoading, latency, error, refetch } =
-    useServerStatus(serverUrl);
+  const {
+    isConnected: providerConnected,
+    isLoading: providerChecking,
+    latency: providerLatency,
+    error: providerError,
+    refetch: refetchProvider,
+  } = useServerStatus(serverUrl);
   const { login, logout: signOut, isAuthenticated } = useAuth();
   const navigate = useNavigate();
 
@@ -48,6 +54,21 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [customUrlInput, setCustomUrlInput] = useState("");
   const [showCustomInput, setShowCustomInput] = useState(false);
   const [idpUrl, setIdpUrl] = useState("");
+
+  // Payer server state
+  const { payerServer, payerServers, cdsUrl, fhirUrl, setPayerServer } =
+    usePayerServer();
+  const {
+    isConnected: payerConnected,
+    isLoading: payerChecking,
+    latency: payerLatency,
+    error: payerError,
+    refetch: refetchPayer,
+  } = usePayerStatus(fhirUrl);
+  const [pendingPayer, setPendingPayer] = useState<string>("");
+  const [showCustomPayer, setShowCustomPayer] = useState(false);
+  const [customPayerCdsUrl, setCustomPayerCdsUrl] = useState("");
+  const [customPayerFhirUrl, setCustomPayerFhirUrl] = useState("");
 
   // Reset local state when dialog opens
   const wasOpen = useRef(false);
@@ -62,6 +83,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           ? (storedCustomAuthTarget.idp ?? "")
           : "",
       );
+      setPendingPayer("");
+      setShowCustomPayer(false);
+      setCustomPayerCdsUrl("");
+      setCustomPayerFhirUrl("");
     }
     wasOpen.current = open;
   });
@@ -108,10 +133,28 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
   const switchingServer = !!pendingUrl && pendingUrl !== serverUrl;
 
+  // Payer server change tracking
+  const isPayerPreset = payerServers.some((s) => s.name === pendingPayer);
+  const switchingPayer =
+    (isPayerPreset && pendingPayer !== payerServer.name) ||
+    (showCustomPayer &&
+      !!customPayerCdsUrl.trim() &&
+      !!customPayerFhirUrl.trim());
+
+  const handlePayerChange = (value: string) => {
+    if (value === "custom") {
+      setShowCustomPayer(true);
+      setPendingPayer("");
+      return;
+    }
+    setShowCustomPayer(false);
+    setPendingPayer(value);
+  };
+
   // Custom servers must pass the metadata check before save is allowed
-  const canSave =
-    switchingServer &&
-    (!isPendingCustom || (discovery?.fhirServer === true && !isDiscovering));
+  const canSave = switchingServer
+    ? !isPendingCustom || (discovery?.fhirServer === true && !isDiscovering)
+    : switchingPayer;
 
   const handleSave = async () => {
     if (switchingServer) {
@@ -129,6 +172,20 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     if (switchingServer) {
       setServerUrl(pendingUrl);
     }
+    // Save payer server selection (no auth impact)
+    if (switchingPayer) {
+      if (showCustomPayer) {
+        setPayerServer({
+          name: "Custom Payer",
+          cdsUrl: customPayerCdsUrl.trim().replace(/\/+$/, ""),
+          fhirUrl: customPayerFhirUrl.trim().replace(/\/+$/, ""),
+        });
+      } else {
+        const preset = payerServers.find((s) => s.name === pendingPayer);
+        if (preset) setPayerServer(preset);
+      }
+    }
+
     if (needsAuth) {
       login(pendingUrl, idpUrl || undefined);
       return;
@@ -148,120 +205,156 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             Settings
           </DialogTitle>
           <DialogDescription>
-            Configure your FHIR server connection
+            Configure provider and payer server connections
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
-          <div className="space-y-2">
-            <Label htmlFor="server-select">FHIR Server</Label>
-            <Select
-              value={
-                pendingPreset ? pendingUrl : showCustom ? "custom" : serverUrl
-              }
-              onValueChange={handleServerChange}
-            >
-              <SelectTrigger id="server-select">
-                <SelectValue placeholder="Select a server" />
-              </SelectTrigger>
-              <SelectContent>
-                {presetServers.map((s) => (
-                  <SelectItem key={s.url} value={s.url}>
-                    {s.name}
-                  </SelectItem>
-                ))}
-                <SelectItem value="custom">Custom URL...</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {/* Provider Server Section */}
+          <fieldset className="space-y-3">
+            <legend className="text-sm font-semibold">Provider Server</legend>
 
-          {showCustom && (
             <div className="space-y-2">
-              <Label htmlFor="custom-url">Custom Server URL</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="custom-url"
-                  placeholder="https://your-fhir-server.com/fhir"
-                  value={customUrlInput}
-                  onChange={(e) => setCustomUrlInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleConnect();
-                  }}
-                  className="flex-1"
-                />
-                {canConnect && (
-                  <Button variant="outline" size="sm" onClick={handleConnect}>
-                    Test Connection
-                  </Button>
-                )}
-              </div>
+              <Label htmlFor="server-select">FHIR Server</Label>
+              <Select
+                value={
+                  pendingPreset ? pendingUrl : showCustom ? "custom" : serverUrl
+                }
+                onValueChange={handleServerChange}
+              >
+                <SelectTrigger id="server-select">
+                  <SelectValue placeholder="Select a server" />
+                </SelectTrigger>
+                <SelectContent>
+                  {presetServers.map((s) => (
+                    <SelectItem key={s.url} value={s.url}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value="custom">Custom URL...</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-          )}
 
-          {isPendingCustom && (
-            <DiscoveryStatusSection
-              discovery={discovery}
-              isDiscovering={isDiscovering}
-              idpUrl={idpUrl}
-              setIdpUrl={setIdpUrl}
+            {showCustom && (
+              <div className="space-y-2">
+                <Label htmlFor="custom-url">Custom Server URL</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="custom-url"
+                    placeholder="https://your-fhir-server.com/fhir"
+                    value={customUrlInput}
+                    onChange={(e) => setCustomUrlInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleConnect();
+                    }}
+                    className="flex-1"
+                  />
+                  {canConnect && (
+                    <Button variant="outline" size="sm" onClick={handleConnect}>
+                      Test Connection
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {isPendingCustom && (
+              <DiscoveryStatusSection
+                discovery={discovery}
+                isDiscovering={isDiscovering}
+                idpUrl={idpUrl}
+                setIdpUrl={setIdpUrl}
+              />
+            )}
+
+            <ConnectionStatus
+              isLoading={providerChecking}
+              isConnected={providerConnected}
+              latency={providerLatency}
+              error={providerError}
+              onTest={refetchProvider}
+              url={serverUrl}
             />
-          )}
+          </fieldset>
 
           <Separator />
 
-          <div className="space-y-2">
-            <Label>Connection Status</Label>
-            <div className="flex items-center justify-between p-3 rounded-md border bg-muted/50">
-              <div className="flex items-center gap-2">
-                {isLoading ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin text-warning" />
-                    <span className="text-sm">Connecting...</span>
-                  </>
-                ) : isConnected ? (
-                  <>
-                    <CheckCircle className="h-4 w-4 text-success" />
-                    <span className="text-sm text-success">Connected</span>
-                    {latency && (
-                      <span className="text-xs text-muted-foreground">
-                        ({latency}ms)
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <XCircle className="h-4 w-4 text-destructive" />
-                    <span className="text-sm text-destructive">
-                      Disconnected
-                    </span>
-                  </>
-                )}
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => refetch()}
-                disabled={isLoading}
+          {/* Payer Server Section */}
+          <fieldset className="space-y-3">
+            <legend className="text-sm font-semibold">Payer Server</legend>
+
+            <div className="space-y-2">
+              <Label htmlFor="payer-select">Server</Label>
+              <Select
+                value={
+                  isPayerPreset
+                    ? pendingPayer
+                    : showCustomPayer
+                      ? "custom"
+                      : payerServer.name
+                }
+                onValueChange={handlePayerChange}
               >
-                Test
-              </Button>
+                <SelectTrigger id="payer-select">
+                  <SelectValue placeholder="Select a payer server" />
+                </SelectTrigger>
+                <SelectContent>
+                  {payerServers.map((s) => (
+                    <SelectItem key={s.name} value={s.name}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value="custom">Custom...</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
-            {!isConnected && !isLoading && error && (
-              <p className="text-xs text-destructive">
-                {error instanceof Error
-                  ? error.message
-                  : "Failed to connect to FHIR server"}
-              </p>
+            {showCustomPayer && (
+              <div className="space-y-2">
+                <div className="space-y-1">
+                  <Label
+                    htmlFor="payer-cds-url"
+                    className="text-xs text-muted-foreground"
+                  >
+                    CDS Services URL
+                  </Label>
+                  <Input
+                    id="payer-cds-url"
+                    placeholder="http://payer.example.com/cds-services"
+                    value={customPayerCdsUrl}
+                    onChange={(e) => setCustomPayerCdsUrl(e.target.value)}
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label
+                    htmlFor="payer-fhir-url"
+                    className="text-xs text-muted-foreground"
+                  >
+                    FHIR URL
+                  </Label>
+                  <Input
+                    id="payer-fhir-url"
+                    placeholder="http://payer.example.com/fhir"
+                    value={customPayerFhirUrl}
+                    onChange={(e) => setCustomPayerFhirUrl(e.target.value)}
+                    className="h-8 text-xs"
+                  />
+                </div>
+              </div>
             )}
 
-            <div className="text-xs text-muted-foreground">
-              <span className="font-medium">URL:</span>{" "}
-              <code className="bg-muted px-1 py-0.5 rounded text-xs break-all">
-                {serverUrl}
-              </code>
-            </div>
-          </div>
+            <ConnectionStatus
+              isLoading={payerChecking}
+              isConnected={payerConnected}
+              latency={payerLatency}
+              error={payerError}
+              onTest={refetchPayer}
+              url={fhirUrl}
+              secondaryUrl={cdsUrl}
+            />
+          </fieldset>
         </div>
 
         {switchingServer && isAuthenticated && (
@@ -284,6 +377,89 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+interface ConnectionStatusProps {
+  isLoading: boolean;
+  isConnected: boolean;
+  latency?: number;
+  error: Error | null;
+  onTest: () => void;
+  url: string;
+  secondaryUrl?: string;
+}
+
+function ConnectionStatus({
+  isLoading,
+  isConnected,
+  latency,
+  error,
+  onTest,
+  url,
+  secondaryUrl,
+}: ConnectionStatusProps) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between p-2.5 rounded-md border bg-muted/50">
+        <div className="flex items-center gap-2">
+          {isLoading ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin text-warning" />
+              <span className="text-sm">Connecting...</span>
+            </>
+          ) : isConnected ? (
+            <>
+              <CheckCircle className="h-4 w-4 text-success" />
+              <span className="text-sm text-success">Connected</span>
+              {latency && (
+                <span className="text-xs text-muted-foreground">
+                  ({latency}ms)
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <XCircle className="h-4 w-4 text-destructive" />
+              <span className="text-sm text-destructive">Disconnected</span>
+            </>
+          )}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onTest()}
+          disabled={isLoading}
+        >
+          Test
+        </Button>
+      </div>
+
+      {!isConnected && !isLoading && error && (
+        <p className="text-xs text-destructive">
+          {error instanceof Error
+            ? error.message
+            : "Failed to connect to server"}
+        </p>
+      )}
+
+      <div className="text-xs text-muted-foreground space-y-0.5">
+        {secondaryUrl && (
+          <div>
+            <span className="font-medium">CDS:</span>{" "}
+            <code className="bg-muted px-1 py-0.5 rounded text-xs break-all">
+              {secondaryUrl}
+            </code>
+          </div>
+        )}
+        <div>
+          <span className="font-medium">{secondaryUrl ? "FHIR" : "URL"}:</span>{" "}
+          <code className="bg-muted px-1 py-0.5 rounded text-xs break-all">
+            {url}
+          </code>
+        </div>
+      </div>
+    </div>
   );
 }
 

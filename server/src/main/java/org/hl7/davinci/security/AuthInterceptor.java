@@ -2,6 +2,7 @@ package org.hl7.davinci.security;
 
 import ca.uhn.fhir.interceptor.api.Hook;
 import ca.uhn.fhir.interceptor.api.Pointcut;
+import com.nimbusds.jwt.JWTClaimsSet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.hl7.davinci.common.BaseInterceptor;
@@ -45,7 +46,8 @@ public class AuthInterceptor extends BaseInterceptor {
         String errMsg = null;
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             try {
-                tokenValidator.validate(authHeader.substring(7));
+                JWTClaimsSet claims = tokenValidator.validate(authHeader.substring(7));
+                logTokenAccess(claims, path);
                 return true;
             } catch (Exception e) {
                 errMsg = e.getMessage();
@@ -59,5 +61,24 @@ public class AuthInterceptor extends BaseInterceptor {
         response.getWriter().write("{\"error\":\"invalid_token\",\"error_description\":\"" +
             "No valid Bearer token found: " + errMsg + "\"}");
         return false;
+    }
+
+    /**
+     * Logs access details for audit. Distinguishes user tokens (with fhirUser)
+     * from B2B system tokens (client_credentials, identified by sub only).
+     */
+    private void logTokenAccess(JWTClaimsSet claims, String path) {
+        try {
+            String fhirUser = claims.getStringClaim("fhirUser");
+            if (fhirUser != null) {
+                logger.debug("User token access: fhirUser={}, path={}", fhirUser, path);
+            } else {
+                String sub = claims.getSubject();
+                Object scope = claims.getClaim("scope");
+                logger.info("B2B system token access: sub={}, scope={}, path={}", sub, scope, path);
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to extract token claims for audit log", e);
+        }
     }
 }

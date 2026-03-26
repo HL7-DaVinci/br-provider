@@ -18,11 +18,20 @@ export function useAuth() {
 
   const userInfo = getUserInfo();
 
-  // Verify server-side session is still valid
+  // Verify server-side session is still valid.
+  // The session endpoint refreshes the token server-side if near expiry.
+  // We poll more frequently as the token approaches expiration.
   const { data: sessionData, isPending: isSessionPending } = useQuery({
     queryKey: ["auth", "session"],
     queryFn: checkSession,
     staleTime: 60 * 1000,
+    refetchInterval: (query) => {
+      const expiresAt = query.state.data?.expiresAt;
+      if (!expiresAt) return 60_000;
+      const msUntilExpiry = new Date(expiresAt).getTime() - Date.now();
+      if (msUntilExpiry < 120_000) return 15_000;
+      return 60_000;
+    },
     retry: false,
     enabled: !!config.authEnabled,
   });

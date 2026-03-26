@@ -1,6 +1,7 @@
 package org.hl7.davinci.api;
 
-import org.hl7.davinci.config.FhirServerProperties;
+import java.util.List;
+import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SpaAuthController;
 import org.junit.jupiter.api.BeforeEach;
@@ -14,15 +15,15 @@ class FhirProxyControllerTest {
     static final String LOCAL_SERVER = "http://fhir.test/fhir";
 
     SecurityProperties securityProperties;
-    FhirServerProperties fhirServerProperties;
+    ServerProperties serverProperties;
     FhirProxyController controller;
 
     @BeforeEach
     void setUp() {
         securityProperties = new SecurityProperties();
         securityProperties.setSslVerify(false);
-        fhirServerProperties = new FhirServerProperties(LOCAL_SERVER, "");
-        controller = new FhirProxyController(securityProperties, fhirServerProperties);
+        serverProperties = new ServerProperties(LOCAL_SERVER, null);
+        controller = new FhirProxyController(securityProperties, serverProperties, null, null);
     }
 
     // --- Scheme validation (400) ---
@@ -32,7 +33,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest();
         var response = new MockHttpServletResponse();
 
-        controller.proxy("file:///etc/passwd", request, response);
+        controller.proxy("file:///etc/passwd", false, request, response);
 
         assertEquals(400, response.getStatus());
     }
@@ -42,7 +43,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest();
         var response = new MockHttpServletResponse();
 
-        controller.proxy("ftp://example.org/file", request, response);
+        controller.proxy("ftp://example.org/file", false, request, response);
 
         assertEquals(400, response.getStatus());
     }
@@ -52,7 +53,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest();
         var response = new MockHttpServletResponse();
 
-        controller.proxy("not-a-url", request, response);
+        controller.proxy("not-a-url", false, request, response);
 
         assertEquals(400, response.getStatus());
     }
@@ -64,7 +65,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
 
-        controller.proxy("https://hapi.fhir.org/baseR4/Patient", request, response);
+        controller.proxy("https://hapi.fhir.org/baseR4/Patient", false, request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -74,7 +75,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
 
-        controller.proxy("http://169.254.169.254/latest/meta-data", request, response);
+        controller.proxy("http://169.254.169.254/latest/meta-data", false, request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -84,7 +85,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
 
-        controller.proxy("http://localhost:6379/keys", request, response);
+        controller.proxy("http://localhost:6379/keys", false, request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -95,7 +96,7 @@ class FhirProxyControllerTest {
         var response = new MockHttpServletResponse();
 
         // http://localhost:8080/fhir is trusted, but fhir.evil.com should not match
-        controller.proxy("http://localhost:8080/fhir.evil.com/Patient", request, response);
+        controller.proxy("http://localhost:8080/fhir.evil.com/Patient", false, request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -108,7 +109,7 @@ class FhirProxyControllerTest {
         var response = new MockHttpServletResponse();
 
         try {
-            controller.proxy(LOCAL_SERVER + "/metadata", request, response);
+            controller.proxy(LOCAL_SERVER + "/metadata", false, request, response);
         } catch (Exception e) {
             // Connection refused is expected; the key assertion is no 401/403
         }
@@ -125,7 +126,7 @@ class FhirProxyControllerTest {
         var response = new MockHttpServletResponse();
 
         try {
-            controller.proxy(LOCAL_SERVER + "/Patient", request, response);
+            controller.proxy(LOCAL_SERVER + "/Patient", false, request, response);
         } catch (Exception e) {
             // Connection refused is expected
         }
@@ -147,7 +148,7 @@ class FhirProxyControllerTest {
 
         var response = new MockHttpServletResponse();
         try {
-            controller.proxy(customServer + "/Patient", request, response);
+            controller.proxy(customServer + "/Patient", false, request, response);
         } catch (Exception e) {
             // Connection refused is expected
         }
@@ -194,15 +195,17 @@ class FhirProxyControllerTest {
 
     @Test
     void proxy_configuredExternalServer_allowed() throws Exception {
-        String serversJson = "[{\"name\":\"External\",\"url\":\"https://external.fhir.org/fhir\"}]";
-        var props = new FhirServerProperties(LOCAL_SERVER, serversJson);
-        var ctrl = new FhirProxyController(securityProperties, props);
+        var external = new ServerProperties.ProviderServer();
+        external.setName("External");
+        external.setUrl("https://external.fhir.org/fhir");
+        var props = new ServerProperties(LOCAL_SERVER, List.of(external));
+        var ctrl = new FhirProxyController(securityProperties, props, null, null);
 
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
 
         try {
-            ctrl.proxy("https://external.fhir.org/fhir/Patient", request, response);
+            ctrl.proxy("https://external.fhir.org/fhir/Patient", false, request, response);
         } catch (Exception e) {
             // Connection refused is expected
         }

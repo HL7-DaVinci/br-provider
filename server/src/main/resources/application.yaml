@@ -200,7 +200,7 @@ hapi:
       hl7fhirusdavincicrd:
         name: hl7.fhir.us.davinci-crd
         version: 2.2.0
-        packageUrl: https://build.fhir.org/ig/HL7/davinci-crd/package.tgz
+        # packageUrl: https://build.fhir.org/ig/HL7/davinci-crd/package.tgz
         installMode: STORE_AND_INSTALL
       hl7fhirusdavincidtr:
         name: hl7.fhir.us.davinci-dtr
@@ -210,7 +210,7 @@ hapi:
       hl7fhirusdavincipas:
         name: hl7.fhir.us.davinci-pas
         version: 2.2.0
-        packageUrl: https://build.fhir.org/ig/HL7/davinci-pas/package.tgz
+        # packageUrl: https://build.fhir.org/ig/HL7/davinci-pas/package.tgz
         installMode: STORE_AND_INSTALL
     #   swiss:
     #     name: swiss.mednet.fhir
@@ -234,7 +234,7 @@ hapi:
     # C. Clinical Reasoning / CQL / Care Gaps / CDS Hooks
     # -------------------------------------------------------------------------------
     cr:
-      enabled: false # exposes Clinical Reasoning operation endpoints
+      enabled: true # exposes Clinical Reasoning operation endpoints
       caregaps:
         reporter: "default"
         section_author: "default"
@@ -461,6 +461,15 @@ initial-data:
   - examples-dtr
   - examples-pas
   - seed-data
+
+app:
+  provider-servers:
+    - name: "Local Provider Server"
+      url: "http://localhost:8080/fhir"
+  payer-servers:
+    - name: "Local Payer Server"
+      cds-url: "http://localhost:8081/cds-services"
+      fhir-url: "http://localhost:8081/fhir"
 
 # -------------------------------------------------------------------------------------
 # Security Configuration

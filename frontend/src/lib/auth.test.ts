@@ -7,7 +7,7 @@ describe("handleCallback", () => {
     window.APP_CONFIG = {
       authEnabled: true,
       fhirServers: [
-        { name: "Local Server", url: "http://localhost:8080/fhir" },
+        { name: "Local Provider Server", url: "http://localhost:8080/fhir" },
       ],
     };
     vi.restoreAllMocks();
@@ -80,7 +80,7 @@ describe("checkSession", () => {
     window.APP_CONFIG = {
       authEnabled: true,
       fhirServers: [
-        { name: "Local Server", url: "http://localhost:8080/fhir" },
+        { name: "Local Provider Server", url: "http://localhost:8080/fhir" },
       ],
     };
     vi.restoreAllMocks();
@@ -139,7 +139,7 @@ describe("buildLoginPath", () => {
     window.APP_CONFIG = {
       authEnabled: true,
       fhirServers: [
-        { name: "Local Server", url: "http://localhost:8080/fhir" },
+        { name: "Local Provider Server", url: "http://localhost:8080/fhir" },
       ],
     };
     vi.restoreAllMocks();

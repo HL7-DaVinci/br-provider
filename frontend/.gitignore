@@ -1,5 +1,6 @@
 node_modules
 dist
+public/lforms
 *.local
 .env
 .env.*

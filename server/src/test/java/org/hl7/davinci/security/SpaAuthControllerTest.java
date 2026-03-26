@@ -8,7 +8,8 @@ import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
-import org.hl7.davinci.config.FhirServerProperties;
+import org.hl7.davinci.config.ServerProperties;
+import org.hl7.davinci.util.UrlMatchUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ResponseEntity;
@@ -24,7 +25,7 @@ class SpaAuthControllerTest {
     StubUdapClientRegistration udapClient;
     CertificateHolder certificateHolder;
     SecurityProperties securityProperties;
-    FhirServerProperties fhirServerProperties;
+    ServerProperties serverProperties;
     SpaAuthController controller;
 
     @BeforeEach
@@ -32,10 +33,10 @@ class SpaAuthControllerTest {
         securityProperties = new SecurityProperties();
         securityProperties.setServerBaseUrl("http://localhost:8080");
         certificateHolder = testCertificateHolder();
-        fhirServerProperties = new FhirServerProperties(LOCAL_SERVER, "");
+        serverProperties = new ServerProperties(LOCAL_SERVER, null);
         udapClient = new StubUdapClientRegistration(
             securityProperties, certificateHolder, new OutboundTargetValidator(securityProperties));
-        controller = new SpaAuthController(udapClient, certificateHolder, securityProperties, fhirServerProperties);
+        controller = new SpaAuthController(udapClient, certificateHolder, securityProperties, serverProperties);
     }
 
     @Test
@@ -435,7 +436,7 @@ class SpaAuthControllerTest {
         public DiscoveryResult discoverAndRegister(String fhirServerUrl) {
             discoverCallCount++;
             if ("https://custom.fhir.org/fhir".equals(
-                    org.hl7.davinci.config.FhirServerProperties.normalizeUrl(fhirServerUrl))) {
+                    org.hl7.davinci.util.UrlMatchUtil.normalizeUrl(fhirServerUrl))) {
                 customRegistrationCached = true;
                 return new DiscoveryResult(
                     true, "https://custom-issuer.org", "https://custom-issuer.org/authorize",
@@ -447,7 +448,7 @@ class SpaAuthControllerTest {
         @Override
         public ServerRegistration getRegistrationForServer(String fhirServerUrl) {
             if ("https://custom.fhir.org/fhir".equals(
-                    org.hl7.davinci.config.FhirServerProperties.normalizeUrl(fhirServerUrl))
+                    org.hl7.davinci.util.UrlMatchUtil.normalizeUrl(fhirServerUrl))
                     && customRegistrationCached) {
                 return new ServerRegistration(
                     "custom-client-id", "https://custom-issuer.org/authorize",

@@ -18,7 +18,7 @@ import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
-import org.hl7.davinci.config.FhirServerProperties;
+import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -112,7 +112,7 @@ public class UdapClientRegistration {
         this.redirectUri = result.redirectUri();
         this.registered = true;
 
-        issuerRegistrations.put(FhirServerProperties.normalizeUrl(issuer), result);
+        issuerRegistrations.put(UrlMatchUtil.normalizeUrl(issuer), result);
         logger.info("UDAP client registered successfully with client_id: {}", clientId);
     }
 
@@ -133,7 +133,7 @@ public class UdapClientRegistration {
      * one registration. This method is idempotent.
      */
     public DiscoveryResult discoverAndRegister(String fhirServerUrl) {
-        String normalizedUrl = FhirServerProperties.normalizeUrl(fhirServerUrl);
+        String normalizedUrl = UrlMatchUtil.normalizeUrl(fhirServerUrl);
         String udapUrl = normalizedUrl + "/.well-known/udap";
 
         try {
@@ -177,7 +177,7 @@ public class UdapClientRegistration {
                 issuer = authUri.getScheme() + "://" + authUri.getAuthority();
                 logger.warn("UDAP metadata missing issuer, derived from authorization_endpoint: {}", issuer);
             }
-            String normalizedIssuer = FhirServerProperties.normalizeUrl(issuer);
+            String normalizedIssuer = UrlMatchUtil.normalizeUrl(issuer);
 
             // Detect Tiered OAuth support from UDAP metadata
             boolean tieredOauthSupported = false;
@@ -220,7 +220,7 @@ public class UdapClientRegistration {
      * server-to-issuer mapping. Returns null if the server has not been discovered.
      */
     public ServerRegistration getRegistrationForServer(String fhirServerUrl) {
-        String normalizedUrl = FhirServerProperties.normalizeUrl(fhirServerUrl);
+        String normalizedUrl = UrlMatchUtil.normalizeUrl(fhirServerUrl);
         String issuer = serverToIssuerMap.get(normalizedUrl);
         if (issuer == null) return null;
         return issuerRegistrations.get(issuer);

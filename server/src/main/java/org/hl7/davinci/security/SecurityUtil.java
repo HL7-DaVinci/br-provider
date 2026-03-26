@@ -14,6 +14,9 @@ public class SecurityUtil {
 
     private static final Logger logger = LoggerFactory.getLogger(SecurityUtil.class);
 
+    private static final HttpClient DEFAULT_CLIENT = HttpClient.newHttpClient();
+    private static volatile HttpClient trustAllClient;
+
     /**
      * Returns a trust-all SSLContext when SSL verification is disabled,
      * or null to indicate the JVM default should be used.
@@ -36,14 +39,24 @@ public class SecurityUtil {
         }
     }
 
+    /**
+     * Returns a cached HttpClient appropriate for the SSL verification setting.
+     * Reuses connections across requests to the same host.
+     */
     public static HttpClient getHttpClient(SecurityProperties securityProperties) {
-        SSLContext sslContext = getTrustAllSslContext(securityProperties);
-        if (sslContext == null) {
-            return HttpClient.newHttpClient();
+        if (securityProperties.isSslVerify()) {
+            return DEFAULT_CLIENT;
         }
-        return HttpClient.newBuilder()
-            .sslContext(sslContext)
-            .build();
+        HttpClient local = trustAllClient;
+        if (local == null) {
+            SSLContext sslContext = getTrustAllSslContext(securityProperties);
+            if (sslContext == null) {
+                return DEFAULT_CLIENT;
+            }
+            local = HttpClient.newBuilder().sslContext(sslContext).build();
+            trustAllClient = local;
+        }
+        return local;
     }
 
     public static String resolveIssuer(SecurityProperties securityProperties) {

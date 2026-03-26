@@ -23,7 +23,8 @@ import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
-import org.hl7.davinci.config.FhirServerProperties;
+import org.hl7.davinci.config.ServerProperties;
+import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import jakarta.servlet.http.Cookie;
@@ -70,10 +71,22 @@ public class SpaAuthController {
     /** Session attribute holding userinfo claims for the authenticated user */
     public static final String SESSION_USERINFO = "bff.userinfo";
 
+    /** Session attribute holding token expiry time */
+    public static final String SESSION_TOKEN_EXPIRES_AT = "bff.token_expires_at";
+
+    /** Session attribute holding the refresh token */
+    public static final String SESSION_REFRESH_TOKEN = "bff.refresh_token";
+
+    /** Session attribute holding the token endpoint used for the active session */
+    public static final String SESSION_TOKEN_ENDPOINT = "bff.token_endpoint";
+
+    /** Session attribute holding the client id used for the active session */
+    public static final String SESSION_CLIENT_ID = "bff.client_id";
+
     private final UdapClientRegistration udapClient;
     private final CertificateHolder certificateHolder;
     private final SecurityProperties securityProperties;
-    private final FhirServerProperties fhirServerProperties;
+    private final ServerProperties serverProperties;
     private final ConcurrentHashMap<String, PendingFlow> pendingFlows = new ConcurrentHashMap<>();
 
     /**
@@ -92,11 +105,11 @@ public class SpaAuthController {
             UdapClientRegistration udapClient,
             CertificateHolder certificateHolder,
             SecurityProperties securityProperties,
-            FhirServerProperties fhirServerProperties) {
+            ServerProperties serverProperties) {
         this.udapClient = udapClient;
         this.certificateHolder = certificateHolder;
         this.securityProperties = securityProperties;
-        this.fhirServerProperties = fhirServerProperties;
+        this.serverProperties = serverProperties;
     }
 
     /**
@@ -104,11 +117,41 @@ public class SpaAuthController {
      */
     public static void storeServerToken(HttpSession session, String serverUrl,
             String accessToken, String idToken) {
-        String normalized = FhirServerProperties.normalizeUrl(serverUrl);
+        storeServerToken(session, serverUrl, accessToken, idToken, null, null, null, null);
+    }
+
+    /**
+     * Stores an access token with expiry and refresh token for the single authenticated server.
+     */
+    public static void storeServerToken(HttpSession session, String serverUrl,
+            String accessToken, String idToken, Long expiresIn, String refreshToken) {
+        storeServerToken(session, serverUrl, accessToken, idToken, expiresIn, refreshToken, null, null);
+    }
+
+    /**
+     * Stores token metadata required to refresh the active server session.
+     */
+    public static void storeServerToken(HttpSession session, String serverUrl,
+            String accessToken, String idToken, Long expiresIn, String refreshToken,
+            String tokenEndpoint, String clientId) {
+        String normalized = UrlMatchUtil.normalizeUrl(serverUrl);
         session.setAttribute(SESSION_ACCESS_TOKEN, accessToken);
         session.setAttribute(SESSION_SERVER_URL, normalized);
         if (idToken != null) {
             session.setAttribute(SESSION_ID_TOKEN, idToken);
+        }
+        if (expiresIn != null) {
+            session.setAttribute(SESSION_TOKEN_EXPIRES_AT,
+                Instant.now().plusSeconds(expiresIn));
+        }
+        if (refreshToken != null) {
+            session.setAttribute(SESSION_REFRESH_TOKEN, refreshToken);
+        }
+        if (tokenEndpoint != null) {
+            session.setAttribute(SESSION_TOKEN_ENDPOINT, tokenEndpoint);
+        }
+        if (clientId != null) {
+            session.setAttribute(SESSION_CLIENT_ID, clientId);
         }
     }
 
@@ -120,8 +163,88 @@ public class SpaAuthController {
         if (session == null) return null;
         String serverUrl = (String) session.getAttribute(SESSION_SERVER_URL);
         if (serverUrl == null) return null;
-        if (!FhirServerProperties.matchesBaseUrl(targetUrl, serverUrl)) return null;
+        if (!UrlMatchUtil.matchesBaseUrl(targetUrl, serverUrl)) return null;
         return (String) session.getAttribute(SESSION_ACCESS_TOKEN);
+    }
+
+    /**
+     * Returns true if the session token is expired or within 30 seconds of expiry.
+     */
+    public static boolean isTokenNearExpiry(HttpSession session) {
+        if (session == null) return false;
+        Object expiresAtObj = session.getAttribute(SESSION_TOKEN_EXPIRES_AT);
+        if (!(expiresAtObj instanceof Instant expiresAt)) return false;
+        return Instant.now().isAfter(expiresAt.minusSeconds(30));
+    }
+
+    /**
+     * Refreshes the session access token using the stored refresh token if the
+     * current token is near expiry. No-op if no refresh token is available or
+     * the token is still valid.
+     */
+    public static void refreshTokenIfNeeded(HttpSession session,
+            SecurityProperties securityProperties,
+            CertificateHolder certificateHolder) {
+        if (session == null || !isTokenNearExpiry(session)) return;
+        String refreshToken = (String) session.getAttribute(SESSION_REFRESH_TOKEN);
+        if (refreshToken == null) return;
+
+        String serverUrl = (String) session.getAttribute(SESSION_SERVER_URL);
+        Logger log = LoggerFactory.getLogger(SpaAuthController.class);
+        log.info("Refreshing expired token for server: {}", serverUrl);
+
+        try {
+            String tokenEndpoint = (String) session.getAttribute(SESSION_TOKEN_ENDPOINT);
+            String clientId = (String) session.getAttribute(SESSION_CLIENT_ID);
+            if (tokenEndpoint == null || clientId == null) {
+                log.warn("Missing refresh token metadata for server: {}", serverUrl);
+                return;
+            }
+
+            String clientAssertion = buildClientAssertionFor(
+                certificateHolder, tokenEndpoint, clientId);
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put("grant_type", "refresh_token");
+            params.put("refresh_token", refreshToken);
+            params.put("client_id", clientId);
+            params.put("client_assertion_type",
+                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+            params.put("client_assertion", clientAssertion);
+
+            HttpClient httpClient = SecurityUtil.getHttpClient(securityProperties);
+            HttpRequest tokenRequest = HttpRequest.newBuilder()
+                .uri(URI.create(tokenEndpoint))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(formEncode(params)))
+                .build();
+
+            HttpResponse<String> tokenResponse = httpClient.send(
+                tokenRequest, HttpResponse.BodyHandlers.ofString());
+
+            if (tokenResponse.statusCode() == 200) {
+                ObjectMapper om = new ObjectMapper();
+                Map<String, Object> tokens = om.readValue(
+                    tokenResponse.body(), new com.fasterxml.jackson.core.type.TypeReference<>() {});
+                String newAccessToken = (String) tokens.get("access_token");
+                String newRefreshToken = tokens.containsKey("refresh_token")
+                    ? (String) tokens.get("refresh_token") : refreshToken;
+                Object expiresInObj = tokens.get("expires_in");
+                Long expiresIn = expiresInObj instanceof Number n ? n.longValue() : null;
+
+                storeServerToken(session, serverUrl, newAccessToken, null, expiresIn,
+                    newRefreshToken, tokenEndpoint, clientId);
+                log.info("Token refreshed successfully for server: {}", serverUrl);
+            } else {
+                log.warn("Token refresh failed: HTTP {} - clearing session", tokenResponse.statusCode());
+                session.removeAttribute(SESSION_ACCESS_TOKEN);
+                session.removeAttribute(SESSION_TOKEN_EXPIRES_AT);
+                session.removeAttribute(SESSION_REFRESH_TOKEN);
+                session.removeAttribute(SESSION_TOKEN_ENDPOINT);
+                session.removeAttribute(SESSION_CLIENT_ID);
+            }
+        } catch (Exception e) {
+            log.warn("Token refresh error: {}", e.getMessage());
+        }
     }
 
     /**
@@ -266,7 +389,7 @@ public class SpaAuthController {
             String tokenEndpoint = isCustomServerFlow
                 ? flow.tokenEndpoint() : udapClient.getTokenEndpoint();
             String serverUrl = isCustomServerFlow
-                ? flow.serverUrl() : fhirServerProperties.getLocalServerAddress();
+                ? flow.serverUrl() : serverProperties.getLocalServerAddress();
 
             Map<String, String> tokenParams = buildTokenParams(flow, code);
 
@@ -290,13 +413,19 @@ public class SpaAuthController {
 
             // Store tokens in server-side session, keyed by server URL
             var session = request.getSession(true);
+            Object expiresInObj = tokens.get("expires_in");
+            Long expiresIn = expiresInObj instanceof Number n ? n.longValue() : null;
+            String refreshToken = tokens.containsKey("refresh_token")
+                ? (String) tokens.get("refresh_token") : null;
+            String clientId = isCustomServerFlow ? flow.clientId() : udapClient.getClientId();
             storeServerToken(session, serverUrl,
                 (String) tokens.get("access_token"),
-                tokens.containsKey("id_token") ? (String) tokens.get("id_token") : null);
+                tokens.containsKey("id_token") ? (String) tokens.get("id_token") : null,
+                expiresIn, refreshToken, tokenEndpoint, clientId);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("authenticated", true);
-            result.put("serverUrl", FhirServerProperties.normalizeUrl(serverUrl));
+            result.put("serverUrl", UrlMatchUtil.normalizeUrl(serverUrl));
 
             Map<String, String> userInfo = new LinkedHashMap<>();
 
@@ -357,20 +486,41 @@ public class SpaAuthController {
 
         // BFF session path (OAuth2 flow)
         if (serverUrl != null) {
-            String accessToken = (String) session.getAttribute(SESSION_ACCESS_TOKEN);
-            if (accessToken != null) {
-                Map<String, Object> result = new LinkedHashMap<>();
-                result.put("authenticated", true);
-                result.put("access_token", accessToken);
-                result.put("serverUrl", serverUrl);
+            // Attempt to refresh the token if it's near expiry
+            refreshTokenIfNeeded(session, securityProperties, certificateHolder);
 
-                @SuppressWarnings("unchecked")
-                Map<String, String> userInfo = (Map<String, String>) session.getAttribute(SESSION_USERINFO);
-                if (userInfo != null && !userInfo.isEmpty()) {
-                    result.put("userinfo", userInfo);
-                }
-                return ResponseEntity.ok(result);
+            String accessToken = (String) session.getAttribute(SESSION_ACCESS_TOKEN);
+
+            // If token is expired/missing after refresh attempt, clear the entire
+            // session so the stale Spring Security context does not persist
+            if (accessToken == null || isTokenNearExpiry(session)) {
+                logger.info("Token expired or missing, invalidating session");
+                SecurityContextHolder.clearContext();
+                session.invalidate();
+                return ResponseEntity.ok(Map.of("authenticated", false));
             }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("authenticated", true);
+            result.put("access_token", accessToken);
+            result.put("serverUrl", serverUrl);
+
+            // Include token expiry so the frontend can schedule proactive checks
+            Object expiresAt = session.getAttribute(SESSION_TOKEN_EXPIRES_AT);
+            if (expiresAt instanceof Instant) {
+                result.put("expiresAt", expiresAt.toString());
+            }
+
+            // Include refresh token presence for debugging
+            String refreshToken = (String) session.getAttribute(SESSION_REFRESH_TOKEN);
+            result.put("hasRefreshToken", refreshToken != null);
+
+            @SuppressWarnings("unchecked")
+            Map<String, String> userInfo = (Map<String, String>) session.getAttribute(SESSION_USERINFO);
+            if (userInfo != null && !userInfo.isEmpty()) {
+                result.put("userinfo", userInfo);
+            }
+            return ResponseEntity.ok(result);
         }
 
         // Fallback: Spring Security form login session
@@ -528,7 +678,9 @@ public class SpaAuthController {
     /**
      * Builds a signed client assertion JWT for the specified token endpoint and client.
      */
-    String buildClientAssertionFor(String tokenEndpoint, String clientId) throws Exception {
+    static String buildClientAssertionFor(
+            CertificateHolder certificateHolder, String tokenEndpoint, String clientId)
+            throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
             .issuer(clientId)
             .subject(clientId)
@@ -546,6 +698,10 @@ public class SpaAuthController {
         SignedJWT signedJwt = new SignedJWT(header, claims);
         signedJwt.sign(new RSASSASigner(certificateHolder.getSigningKey()));
         return signedJwt.serialize();
+    }
+
+    String buildClientAssertionFor(String tokenEndpoint, String clientId) throws Exception {
+        return buildClientAssertionFor(certificateHolder, tokenEndpoint, clientId);
     }
 
     String buildClientAssertion(String tokenEndpoint) throws Exception {
@@ -584,6 +740,8 @@ public class SpaAuthController {
             session.removeAttribute(SESSION_ID_TOKEN);
             session.removeAttribute(SESSION_SERVER_URL);
             session.removeAttribute(SESSION_USERINFO);
+            session.removeAttribute(SESSION_TOKEN_ENDPOINT);
+            session.removeAttribute(SESSION_CLIENT_ID);
             session.removeAttribute("SPRING_SECURITY_CONTEXT");
             session.invalidate();
         }
