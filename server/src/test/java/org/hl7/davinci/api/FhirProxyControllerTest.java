@@ -212,4 +212,17 @@ class FhirProxyControllerTest {
 
         assertNotEquals(403, response.getStatus());
     }
+
+    @Test
+    void shouldRelayResponseHeader_blocksSetCookieHeaders() {
+        assertFalse(FhirProxyController.shouldRelayResponseHeader("set-cookie"));
+        assertFalse(FhirProxyController.shouldRelayResponseHeader("Set-Cookie"));
+        assertFalse(FhirProxyController.shouldRelayResponseHeader("set-cookie2"));
+    }
+
+    @Test
+    void shouldRelayResponseHeader_allowsRegularResponseHeaders() {
+        assertTrue(FhirProxyController.shouldRelayResponseHeader("content-type"));
+        assertTrue(FhirProxyController.shouldRelayResponseHeader("etag"));
+    }
 }

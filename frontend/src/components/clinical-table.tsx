@@ -13,6 +13,7 @@ interface ClinicalTableProps<T> {
   loading?: boolean;
   skeletonRows?: number;
   emptyMessage?: string;
+  onRowClick?: (row: T, index: number) => void;
 }
 
 export function ClinicalTable<T>({
@@ -22,6 +23,7 @@ export function ClinicalTable<T>({
   loading = false,
   skeletonRows = 5,
   emptyMessage = "No data available",
+  onRowClick,
 }: ClinicalTableProps<T>) {
   if (!loading && data.length === 0) {
     return <p className="py-8 text-sm text-muted-foreground">{emptyMessage}</p>;
@@ -61,8 +63,21 @@ export function ClinicalTable<T>({
             : data.map((row, i) => (
                 <tr
                   key={keyExtractor ? keyExtractor(row, i) : i}
-                  className="stagger-item transition-colors hover:[box-shadow:inset_2px_0_0_var(--primary)]"
+                  className={`stagger-item transition-colors hover:[box-shadow:inset_2px_0_0_var(--primary)] ${onRowClick ? "cursor-pointer" : ""}`}
                   style={{ animationDelay: `${i * 30}ms` }}
+                  onClick={onRowClick ? () => onRowClick(row, i) : undefined}
+                  onKeyDown={
+                    onRowClick
+                      ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onRowClick(row, i);
+                          }
+                        }
+                      : undefined
+                  }
+                  role={onRowClick ? "button" : undefined}
+                  tabIndex={onRowClick ? 0 : undefined}
                 >
                   {columns.map((col) => (
                     <td

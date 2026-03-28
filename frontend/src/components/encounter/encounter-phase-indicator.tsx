@@ -9,6 +9,7 @@ const PHASES: { key: EncounterPhase; label: string }[] = [
   { key: "start", label: "Start" },
   { key: "select", label: "Select Orders" },
   { key: "sign", label: "Sign" },
+  { key: "review", label: "Review" },
   { key: "summary", label: "Summary" },
 ];
 
@@ -16,7 +17,8 @@ const PHASE_INDEX: Record<EncounterPhase, number> = {
   start: 0,
   select: 1,
   sign: 2,
-  summary: 3,
+  review: 3,
+  summary: 4,
 };
 
 export function EncounterPhaseIndicator() {

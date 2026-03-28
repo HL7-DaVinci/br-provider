@@ -36,7 +36,7 @@ export function PhaseSign({ onConfirmSign }: PhaseSignProps) {
           type: "action",
         },
       });
-      dispatch({ type: "ADVANCE_PHASE", payload: "summary" });
+      dispatch({ type: "ADVANCE_PHASE", payload: "review" });
     } catch (err) {
       dispatch({
         type: "ADD_TIMELINE_EVENT",

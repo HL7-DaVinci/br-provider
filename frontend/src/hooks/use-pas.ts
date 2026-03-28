@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import type { ClaimResponse } from "fhir/r4";
+import type { Bundle, ClaimResponse } from "fhir/r4";
+import { ACTIVE_PROVIDER_FHIR_BASE_HEADER } from "@/lib/api";
 
 export interface PasSubmitParams {
   patientId: string;
@@ -8,6 +9,7 @@ export interface PasSubmitParams {
   coverageId: string;
   questionnaireResponseIds: string[];
   payerFhirUrl: string;
+  providerFhirUrl: string;
 }
 
 /**
@@ -20,7 +22,10 @@ export function usePasSubmit() {
     mutationFn: async (params: PasSubmitParams) => {
       const response = await fetch("/api/pas/submit", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          [ACTIVE_PROVIDER_FHIR_BASE_HEADER]: params.providerFhirUrl,
+        },
         body: JSON.stringify(params),
         credentials: "same-origin",
       });
@@ -28,9 +33,26 @@ export function usePasSubmit() {
         const body = await response.json().catch(() => null);
         throw new Error(body?.error ?? `PAS submit failed: ${response.status}`);
       }
-      return response.json();
+      const body = await response.json();
+      return extractClaimResponse(body);
     },
   });
+}
+
+/** Extract the ClaimResponse from a PAS response Bundle. */
+function extractClaimResponse(data: unknown): ClaimResponse {
+  const bundle = data as Bundle;
+  if (bundle.resourceType === "Bundle" && bundle.entry?.length) {
+    const cr = bundle.entry.find(
+      (e) => e.resource?.resourceType === "ClaimResponse",
+    )?.resource as ClaimResponse | undefined;
+    if (cr) return cr;
+  }
+  // If the server already unwrapped it, use as-is
+  if ((data as ClaimResponse).resourceType === "ClaimResponse") {
+    return data as ClaimResponse;
+  }
+  throw new Error("No ClaimResponse found in PAS response");
 }
 
 export interface PasInquiryParams {

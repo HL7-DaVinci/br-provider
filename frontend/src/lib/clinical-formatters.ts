@@ -1,16 +1,23 @@
-import type {
-  CodeableConcept,
-  CommunicationRequest,
-  DeviceRequest,
-  Dosage,
-  HumanName,
-  Identifier,
-  MedicationRequest,
-  NutritionOrder,
-  Resource,
-  ServiceRequest,
-  VisionPrescription,
-} from "fhir/r4";
+import type { CodeableConcept, Dosage, HumanName, Identifier } from "fhir/r4";
+
+export function formatQuestionnaireName(canonical?: string): string {
+  if (!canonical) return "Unknown";
+  const lastSegment = canonical.split("/").pop() ?? canonical;
+  return lastSegment.replace(/[-_]/g, " ");
+}
+
+export function formatDuration(start?: string, end?: string): string {
+  if (!start) return "--";
+  const startDate = new Date(start);
+  const endDate = end ? new Date(end) : new Date();
+  const diffMs = endDate.getTime() - startDate.getTime();
+  const minutes = Math.floor(diffMs / 60000);
+
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
 
 /**
  * Format a FHIR HumanName array into a display string.
@@ -146,78 +153,4 @@ export function getPrimaryIdentifier(
   );
 
   return mrn?.value ?? identifiers[0]?.value;
-}
-
-const ORDER_TYPE_LABELS: Record<string, string> = {
-  ServiceRequest: "Service",
-  MedicationRequest: "Medication",
-  DeviceRequest: "Device",
-  NutritionOrder: "Nutrition",
-  VisionPrescription: "Vision",
-  CommunicationRequest: "Communication",
-};
-
-/**
- * Human-friendly label for a FHIR order resource type.
- */
-export function formatOrderType(resourceType: string): string {
-  return ORDER_TYPE_LABELS[resourceType] ?? resourceType;
-}
-
-/**
- * Extract the primary CodeableConcept from any CRD order resource.
- */
-export function getOrderCode(resource: Resource): CodeableConcept | undefined {
-  switch (resource.resourceType) {
-    case "ServiceRequest":
-      return (resource as ServiceRequest).code;
-    case "MedicationRequest":
-      return (resource as MedicationRequest).medicationCodeableConcept;
-    case "DeviceRequest":
-      return (resource as DeviceRequest).codeCodeableConcept;
-    case "NutritionOrder":
-      return (resource as NutritionOrder).oralDiet?.type?.[0];
-    case "VisionPrescription":
-      return undefined; // VisionPrescription uses lensSpecification, no single code
-    case "CommunicationRequest":
-      return (resource as CommunicationRequest).category?.[0];
-    default:
-      return undefined;
-  }
-}
-
-/**
- * Extract the most relevant date from any CRD order resource.
- */
-export function getOrderDate(resource: Resource): string | undefined {
-  switch (resource.resourceType) {
-    case "ServiceRequest":
-      return (
-        (resource as ServiceRequest).authoredOn ?? resource.meta?.lastUpdated
-      );
-    case "MedicationRequest":
-      return (
-        (resource as MedicationRequest).authoredOn ?? resource.meta?.lastUpdated
-      );
-    case "DeviceRequest":
-      return (
-        (resource as DeviceRequest).authoredOn ?? resource.meta?.lastUpdated
-      );
-    case "NutritionOrder":
-      return (
-        (resource as NutritionOrder).dateTime ?? resource.meta?.lastUpdated
-      );
-    case "VisionPrescription":
-      return (
-        (resource as VisionPrescription).dateWritten ??
-        resource.meta?.lastUpdated
-      );
-    case "CommunicationRequest":
-      return (
-        (resource as CommunicationRequest).authoredOn ??
-        resource.meta?.lastUpdated
-      );
-    default:
-      return resource.meta?.lastUpdated;
-  }
 }

@@ -1,4 +1,4 @@
-import type { Encounter } from "fhir/r4";
+import type { Encounter, Resource } from "fhir/r4";
 import { createContext, type ReactNode, useContext, useReducer } from "react";
 import type {
   CdsCard,
@@ -7,7 +7,7 @@ import type {
 } from "@/lib/cds-types";
 import type { SelectedOrder } from "@/lib/order-templates";
 
-export type EncounterPhase = "start" | "select" | "sign" | "summary";
+export type EncounterPhase = "start" | "select" | "sign" | "review" | "summary";
 
 export interface TimelineEvent {
   time: Date;
@@ -26,6 +26,7 @@ interface OrderFormState {
   cdsCards: CdsCard[];
   lastHookName: string | null;
   lastRawResponse: CdsHookResponse | null;
+  systemActionResources: Map<string, Resource>;
   isHookLoading: boolean;
   hookError: Error | null;
   currentPhase: EncounterPhase;
@@ -48,6 +49,7 @@ type OrderFormAction =
         cards: CdsCard[];
         hookName: string;
         rawResponse: CdsHookResponse | null;
+        systemActionResources: Map<string, Resource>;
       };
     }
   | { type: "SET_HOOK_LOADING"; payload: boolean }
@@ -56,6 +58,17 @@ type OrderFormAction =
   | { type: "SIGN_COMPLETE"; payload: string[] }
   | { type: "ADVANCE_PHASE"; payload: EncounterPhase }
   | { type: "ADD_TIMELINE_EVENT"; payload: Omit<TimelineEvent, "time"> }
+  | {
+      type: "RESTORE_DRAFTS";
+      payload: {
+        selectedOrders: SelectedOrder[];
+        sharedFields: Record<string, unknown>;
+      };
+    }
+  | {
+      type: "SET_ORDER_SERVER_IDS";
+      payload: Map<string, string>;
+    }
   | { type: "RESET" };
 
 function createInitialState(
@@ -73,6 +86,7 @@ function createInitialState(
     cdsCards: [],
     lastHookName: null,
     lastRawResponse: null,
+    systemActionResources: new Map(),
     isHookLoading: false,
     hookError: null,
     currentPhase: "start",
@@ -138,6 +152,7 @@ function orderFormReducer(
         cdsCards: action.payload.cards,
         lastHookName: action.payload.hookName,
         lastRawResponse: action.payload.rawResponse,
+        systemActionResources: action.payload.systemActionResources,
         isHookLoading: false,
         hookError: null,
       };
@@ -160,6 +175,22 @@ function orderFormReducer(
           { ...action.payload, time: new Date() },
         ],
       };
+    case "RESTORE_DRAFTS":
+      return {
+        ...state,
+        selectedOrders: action.payload.selectedOrders,
+        sharedFields: { ...state.sharedFields, ...action.payload.sharedFields },
+      };
+    case "SET_ORDER_SERVER_IDS": {
+      const idMap = action.payload;
+      return {
+        ...state,
+        selectedOrders: state.selectedOrders.map((o) => {
+          const serverId = idMap.get(o.templateId);
+          return serverId ? { ...o, serverId } : o;
+        }),
+      };
+    }
     case "RESET":
       return createInitialState(state.patientId, state.practitionerId);
     default:

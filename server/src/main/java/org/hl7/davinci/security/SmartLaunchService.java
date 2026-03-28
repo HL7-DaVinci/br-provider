@@ -29,7 +29,7 @@ public class SmartLaunchService {
     public String createLaunchContext(String patientId, String encounterId,
                                       List<String> fhirContextReferences,
                                       String coverageAssertionId,
-                                      String questionnaire) {
+                                      List<String> questionnaire) {
         String launchToken = UUID.randomUUID().toString();
         launchContexts.put(launchToken, new LaunchContext(
             patientId, encounterId, fhirContextReferences,
@@ -54,7 +54,7 @@ public class SmartLaunchService {
         String encounterId,
         List<String> fhirContextReferences,
         String coverageAssertionId,
-        String questionnaire,
+        List<String> questionnaire,
         Instant createdAt
     ) {}
 }

@@ -65,13 +65,20 @@ public class SmartLaunchController {
 
         String encounterId = (String) body.get("encounterId");
         String coverageAssertionId = (String) body.get("coverageAssertionId");
-        String questionnaire = (String) body.get("questionnaire");
         String requestedProviderFhirUrl = (String) body.get("providerFhirUrl");
 
         List<String> fhirContext = null;
         Object fhirContextObj = body.get("fhirContext");
         if (fhirContextObj instanceof List<?> list) {
             fhirContext = (List<String>) (List<?>) list;
+        }
+
+        List<String> questionnaire = null;
+        Object questionnaireObj = body.get("questionnaire");
+        if (questionnaireObj instanceof List<?> qList) {
+            questionnaire = (List<String>) (List<?>) qList;
+        } else if (questionnaireObj instanceof String qs) {
+            questionnaire = List.of(qs);
         }
 
         String launchToken = smartLaunchService.createLaunchContext(

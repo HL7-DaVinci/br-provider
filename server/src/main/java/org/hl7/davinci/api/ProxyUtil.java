@@ -7,9 +7,13 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpSession;
+import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.B2BTokenService;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SecurityUtil;
+import org.hl7.davinci.security.SpaAuthController;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
 import org.springframework.http.ResponseEntity;
@@ -18,6 +22,8 @@ import org.springframework.http.ResponseEntity;
  * Shared utilities for proxy controllers.
  */
 public final class ProxyUtil {
+
+    public static final String ACTIVE_PROVIDER_FHIR_BASE_HEADER = "X-Provider-Fhir-Base";
 
     public static final List<String> DTR_SCOPES = List.of(
         "system/Questionnaire.rs", "system/ValueSet.rs", "system/Library.rs");
@@ -39,6 +45,57 @@ public final class ProxyUtil {
             throw new IllegalArgumentException(key + " is required");
         }
         return value.toString();
+    }
+
+    /**
+     * Resolves the active provider FHIR base URL for the current request.
+     * Uses an explicitly requested provider base when present, otherwise the
+     * authenticated session server, otherwise the built-in provider server.
+     */
+    public static String getActiveProviderFhirBase(
+            HttpServletRequest request,
+            ServerProperties serverProperties) {
+        String requestedProviderFhirBase = getRequestedProviderFhirBase(request);
+        if (requestedProviderFhirBase != null) {
+            return requestedProviderFhirBase;
+        }
+
+        return getActiveProviderFhirBase(
+            request != null ? request.getSession(false) : null,
+            serverProperties
+        );
+    }
+
+    /**
+     * Returns the provider FHIR base explicitly requested by the client, if any.
+     */
+    public static String getRequestedProviderFhirBase(HttpServletRequest request) {
+        if (request == null) {
+            return null;
+        }
+
+        String headerValue = request.getHeader(ACTIVE_PROVIDER_FHIR_BASE_HEADER);
+        if (headerValue == null || headerValue.isBlank()) {
+            return null;
+        }
+
+        return UrlMatchUtil.normalizeUrl(headerValue);
+    }
+
+    /**
+     * Resolves the active provider FHIR base URL for the current session.
+     */
+    public static String getActiveProviderFhirBase(
+            HttpSession session,
+            ServerProperties serverProperties) {
+        if (session != null) {
+            String sessionServer = (String) session.getAttribute(
+                SpaAuthController.SESSION_SERVER_URL);
+            if (sessionServer != null && !sessionServer.isBlank()) {
+                return UrlMatchUtil.normalizeUrl(sessionServer);
+            }
+        }
+        return serverProperties.getLocalServerAddress();
     }
 
     /**

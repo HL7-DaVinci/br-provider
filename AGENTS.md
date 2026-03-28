@@ -58,8 +58,8 @@ cd server && mvn clean package -DskipTests
 # Run frontend dev server (port 3000)
 cd frontend && bun dev
 
-# Run frontend tests
-cd frontend && bun test
+# Run frontend tests (use `bun run test`, not bare `bun test`)
+cd frontend && bun run test
 
 # Lint/format
 cd frontend && bun check    # biome check
@@ -79,11 +79,12 @@ nx run frontend:copy-to-server
 - **Structure**:
   - `src/main/java/ca/uhn/fhir/` - HAPI starter code (do NOT modify)
   - `src/main/java/org/hl7/davinci/` - Custom implementation code (all custom code goes here)
-    - `api/` - REST controllers for non-FHIR endpoints (UserController, ApiController)
+    - `api/` - REST controllers: CDS Hooks proxy, DTR populate/proxy, PAS proxy, FHIR proxy, SMART launch, server discovery
     - `common/` - Shared utilities and base classes (BaseProvider, BaseInterceptor)
     - `config/` - Spring configuration classes (CORS, beans)
     - `datainitializer/` - Seed data loading on startup from `initial-data` directories
     - `security/` - Auth stack (see Authentication section below)
+    - `util/` - Shared utilities (ProxyUtil, SecurityUtil)
 - **Database**: H2 in-memory (transient, reloaded each startup). PostgreSQL-ready via config.
 - **IGs**: CRD, DTR, PAS (v2.2.0) loaded from `hapi.fhir.implementationguides` in application.yaml
 
@@ -100,7 +101,10 @@ nx run frontend:copy-to-server
   - `src/lib/` - Core utilities (auth/PKCE client, FHIR config, types)
   - `src/components/ui/` - Radix-based UI primitives
 - **Path alias**: `@/` maps to `frontend/src/`
-- **Dev proxy**: Vite forwards `/fhir`, `/auth`, `/oauth2`, `/.well-known`, `/api`, `/actuator` to localhost:8080
+- **Dev proxy**: Vite forwards `/fhir`, `/auth`, `/oauth2`, `/.well-known`, `/api`, `/actuator`, `/login`, `/config.js` to localhost:8080
+- **Runtime config**: `public/config.js` for dynamic server URLs (not `.env` files)
+- **LForms**: FHIR form rendering library; postinstall copies web component assets to `public/lforms/`
+- **Biome**: 2-space indent, double quotes, organizeImports enabled. Excludes `routeTree.gen.ts` and `styles.css`.
 
 ---
 
@@ -170,6 +174,8 @@ The `X-Bypass-Auth` header can skip authentication (configured via `security.byp
 ### Dev URLs
 - Server: http://localhost:8080/fhir
 - Frontend: http://localhost:3000
+- FAST RI (issuer): https://localhost:5001
+
 ---
 
 ## Deployment

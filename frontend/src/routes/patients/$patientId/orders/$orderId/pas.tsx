@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ClaimResponse, Coverage, Resource } from "fhir/r4";
+import type { ClaimResponse, Coverage, Extension, Resource } from "fhir/r4";
 import {
   AlertCircle,
   ArrowLeft,
@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { useCoverage, usePatient } from "@/hooks/use-clinical-api";
+import { useFhirServer } from "@/hooks/use-fhir-server";
 import { usePasInquiry, usePasSubmit } from "@/hooks/use-pas";
 import { usePayerServer } from "@/hooks/use-payer-server";
 import {
@@ -43,6 +44,7 @@ export const Route = createFileRoute(
 function PasPage() {
   const { patientId, orderId } = Route.useParams();
   const { coverageId, qrIds, orderType } = Route.useSearch();
+  const { serverUrl: providerFhirUrl } = useFhirServer();
   const { fhirUrl: payerFhirUrl } = usePayerServer();
 
   const { data: patient } = usePatient(patientId);
@@ -89,6 +91,7 @@ function PasPage() {
         coverageId: resolvedCoverageId,
         questionnaireResponseIds,
         payerFhirUrl,
+        providerFhirUrl,
       },
       {
         onSuccess: (data) => {
@@ -265,6 +268,85 @@ function PasPage() {
   );
 }
 
+// -- PAS extension URL constants --------------------------------------------------
+
+const EXT_REVIEW_ACTION =
+  "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/extension-reviewAction";
+const EXT_REVIEW_ACTION_CODE =
+  "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/extension-reviewActionCode";
+const EXT_PRE_AUTH_PERIOD =
+  "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/extension-itemPreAuthPeriod";
+const EXT_PRE_AUTH_ISSUE_DATE =
+  "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/extension-itemPreAuthIssueDate";
+
+// -- Extension helpers ------------------------------------------------------------
+
+function findExt(exts: Extension[] | undefined, url: string) {
+  return exts?.find((e) => e.url === url);
+}
+
+interface ReviewAction {
+  code?: string;
+  display?: string;
+  authNumber?: string;
+}
+
+type ClaimResponseAdjudication = NonNullable<
+  NonNullable<ClaimResponse["item"]>[number]["adjudication"]
+>;
+
+function extractReviewAction(
+  adjudication: ClaimResponseAdjudication | undefined,
+): ReviewAction | undefined {
+  for (const adj of adjudication ?? []) {
+    const ra = findExt(adj.extension, EXT_REVIEW_ACTION);
+    if (!ra?.extension) continue;
+
+    const codeConcept = findExt(
+      ra.extension,
+      EXT_REVIEW_ACTION_CODE,
+    )?.valueCodeableConcept;
+    const authNum = ra.extension.find((e) => e.url === "number")?.valueString;
+
+    return {
+      code: codeConcept?.coding?.[0]?.code,
+      display: codeConcept?.coding?.[0]?.display,
+      authNumber: authNum,
+    };
+  }
+  return undefined;
+}
+
+interface ItemDetails {
+  sequence: number;
+  reviewAction?: ReviewAction;
+  preAuthPeriodStart?: string;
+  preAuthPeriodEnd?: string;
+  preAuthIssueDate?: string;
+}
+
+function extractItemDetails(
+  items: ClaimResponse["item"] | undefined,
+): ItemDetails[] {
+  if (!items) return [];
+  return items.map((item) => {
+    const period = findExt(item.extension, EXT_PRE_AUTH_PERIOD)?.valuePeriod;
+    const issueDate = findExt(
+      item.extension,
+      EXT_PRE_AUTH_ISSUE_DATE,
+    )?.valueDate;
+    return {
+      sequence: item.itemSequence,
+      reviewAction: extractReviewAction(item.adjudication),
+      preAuthPeriodStart: period?.start,
+      preAuthPeriodEnd: period?.end,
+      preAuthIssueDate: issueDate,
+    };
+  });
+}
+
+// -- Display components -----------------------------------------------------------
+
 function PasResponseDisplay({
   claimResponse,
   isPolling,
@@ -274,6 +356,7 @@ function PasResponseDisplay({
 }) {
   const outcome = claimResponse.outcome;
   const preAuthRef = claimResponse.preAuthRef;
+  const items = extractItemDetails(claimResponse.item);
 
   return (
     <Card>
@@ -281,25 +364,41 @@ function PasResponseDisplay({
         <CardTitle className="text-sm">Prior Authorization Response</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Status Badge */}
         <div className="flex items-center gap-3">
           <span className="text-sm text-muted-foreground">Status:</span>
           <StatusBadge outcome={outcome} />
         </div>
 
-        {/* PA Number for approved */}
         {preAuthRef && (
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Authorization Number:</span>
+          <DetailRow label="Authorization Number">
             <span className="font-mono font-semibold">{preAuthRef}</span>
-          </div>
+          </DetailRow>
         )}
 
-        {/* ClaimResponse ID */}
+        {claimResponse.disposition && (
+          <DetailRow label="Disposition">{claimResponse.disposition}</DetailRow>
+        )}
+
         {claimResponse.id && (
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">ClaimResponse ID:</span>
+          <DetailRow label="ClaimResponse ID">
             <span className="font-mono text-xs">{claimResponse.id}</span>
+          </DetailRow>
+        )}
+
+        {claimResponse.created && (
+          <DetailRow label="Created">
+            {formatClinicalDate(claimResponse.created)}
+          </DetailRow>
+        )}
+
+        {/* Item-level authorization details */}
+        {items.length > 0 && (
+          <div className="space-y-2 pt-1">
+            <Separator />
+            <span className="text-sm font-medium">Item Details</span>
+            {items.map((item) => (
+              <ItemDetailCard key={item.sequence} item={item} />
+            ))}
           </div>
         )}
 
@@ -323,7 +422,6 @@ function PasResponseDisplay({
           </div>
         )}
 
-        {/* Pended polling indicator */}
         {(outcome === "queued" || outcome === "partial") && (
           <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
             {isPolling ? (
@@ -336,6 +434,63 @@ function PasResponseDisplay({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function DetailRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      <span className="text-muted-foreground">{label}:</span>
+      {children}
+    </div>
+  );
+}
+
+function ItemDetailCard({ item }: { item: ItemDetails }) {
+  const ra = item.reviewAction;
+  return (
+    <div className="rounded-md border px-3 py-2 text-sm space-y-1">
+      <div className="flex items-center gap-2">
+        <span className="text-muted-foreground">Item {item.sequence}</span>
+        {ra?.display && (
+          <Badge variant="outline" className="text-xs">
+            {ra.display}
+          </Badge>
+        )}
+        {ra?.code && !ra.display && (
+          <Badge variant="outline" className="text-xs font-mono">
+            {ra.code}
+          </Badge>
+        )}
+      </div>
+      {ra?.authNumber && (
+        <div className="text-xs">
+          <span className="text-muted-foreground">Auth #:</span>{" "}
+          <span className="font-mono font-semibold">{ra.authNumber}</span>
+        </div>
+      )}
+      {item.preAuthIssueDate && (
+        <div className="text-xs">
+          <span className="text-muted-foreground">Issued:</span>{" "}
+          {formatClinicalDate(item.preAuthIssueDate)}
+        </div>
+      )}
+      {item.preAuthPeriodStart && (
+        <div className="text-xs">
+          <span className="text-muted-foreground">Valid:</span>{" "}
+          {formatClinicalDate(item.preAuthPeriodStart)}
+          {item.preAuthPeriodEnd
+            ? ` - ${formatClinicalDate(item.preAuthPeriodEnd)}`
+            : " - ongoing"}
+        </div>
+      )}
+    </div>
   );
 }
 

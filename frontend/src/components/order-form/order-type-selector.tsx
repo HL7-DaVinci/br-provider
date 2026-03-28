@@ -5,7 +5,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { OrderResourceType } from "@/lib/cds-types";
+import type { OrderResourceType } from "@/lib/order-types";
 
 const ORDER_TYPE_LABELS: Record<OrderResourceType, string> = {
   MedicationRequest: "Medication Order",

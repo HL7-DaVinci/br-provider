@@ -1,3 +1,4 @@
+import type { Resource } from "fhir/r4";
 import { Check, Code, Copy, Loader2 } from "lucide-react";
 import {
   lazy,
@@ -42,9 +43,7 @@ interface JsonViewerDialogProps {
 }
 
 /** Type guard to check if data looks like a FHIR resource */
-function isFhirLike(
-  data: unknown,
-): data is { resourceType: string; id?: string } {
+function isFhirLike(data: unknown): data is Resource {
   return (
     typeof data === "object" &&
     data !== null &&

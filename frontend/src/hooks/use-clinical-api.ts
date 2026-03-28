@@ -1,24 +1,32 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type {
   Bundle,
   BundleEntry,
-  CommunicationRequest,
   Condition,
-  DeviceRequest,
   Encounter,
   MedicationRequest,
-  NutritionOrder,
   Organization,
   Patient,
-  Resource,
-  ServiceRequest,
-  VisionPrescription,
+  QuestionnaireResponse,
 } from "fhir/r4";
-import type { OrderResourceType } from "@/lib/cds-types";
+import { fhirProxyUrl } from "@/lib/api";
 import {
+  type buildDraftSaveTransactionBundle,
   type buildSignedOrdersTransactionBundle,
   extractTransactionOrderIds,
 } from "@/lib/draft-orders";
+import {
+  ENCOUNTER_ORDER_TYPES,
+  isOrderResourceType,
+  ORDER_TYPES,
+  type OrderEntry,
+  type OrderResource,
+} from "@/lib/order-types";
 import { fhirFetch } from "./use-fhir-api";
 import { useFhirServer } from "./use-fhir-server";
 
@@ -216,7 +224,7 @@ export function useOrderCount(patientId: string) {
           },
         ],
       };
-      const proxyUrl = `/api/fhir-proxy?${new URLSearchParams({ url: serverUrl })}`;
+      const proxyUrl = fhirProxyUrl(serverUrl);
       return fetch(proxyUrl, {
         method: "POST",
         headers: { "Content-Type": "application/fhir+json" },
@@ -227,7 +235,7 @@ export function useOrderCount(patientId: string) {
         .then((bundle) => {
           const total = (bundle.entry || []).reduce(
             (sum: number, entry: BundleEntry) => {
-              const entryBundle = entry.resource as { total?: number };
+              const entryBundle = entry.resource as Bundle;
               return sum + (entryBundle.total ?? 0);
             },
             0,
@@ -241,27 +249,22 @@ export function useOrderCount(patientId: string) {
   });
 }
 
-export type OrderResource =
-  | ServiceRequest
-  | MedicationRequest
-  | DeviceRequest
-  | NutritionOrder
-  | VisionPrescription
-  | CommunicationRequest;
-
-export interface OrderEntry {
-  resource: OrderResource;
-  resourceType: string;
+function extractOrdersFromBatchResponse(bundle: Bundle): OrderEntry[] {
+  const orders: OrderEntry[] = [];
+  for (const entry of bundle.entry || []) {
+    const innerBundle = entry.resource as Bundle;
+    for (const innerEntry of innerBundle?.entry || []) {
+      const resource = innerEntry.resource;
+      if (resource && isOrderResourceType(resource.resourceType)) {
+        orders.push({
+          resource: resource as OrderResource,
+          resourceType: resource.resourceType,
+        });
+      }
+    }
+  }
+  return orders;
 }
-
-const ORDER_TYPES: readonly OrderResourceType[] = [
-  "ServiceRequest",
-  "MedicationRequest",
-  "DeviceRequest",
-  "NutritionOrder",
-  "VisionPrescription",
-  "CommunicationRequest",
-] as const satisfies readonly OrderResourceType[];
 
 /**
  * Batch-fetches all 6 CRD order resource types for a patient,
@@ -283,7 +286,7 @@ export function useOrders(patientId: string) {
           },
         })),
       };
-      const proxyUrl = `/api/fhir-proxy?${new URLSearchParams({ url: serverUrl })}`;
+      const proxyUrl = fhirProxyUrl(serverUrl);
       const response = await fetch(proxyUrl, {
         method: "POST",
         headers: { "Content-Type": "application/fhir+json" },
@@ -291,20 +294,7 @@ export function useOrders(patientId: string) {
         credentials: "include",
       });
       const bundle = (await response.json()) as Bundle;
-
-      const orders: OrderEntry[] = [];
-      for (const entry of bundle.entry || []) {
-        const innerBundle = entry.resource as Bundle;
-        for (const innerEntry of innerBundle?.entry || []) {
-          if (innerEntry.resource) {
-            orders.push({
-              resource: innerEntry.resource as OrderResource,
-              resourceType: (innerEntry.resource as Resource).resourceType,
-            });
-          }
-        }
-      }
-      return orders;
+      return extractOrdersFromBatchResponse(bundle);
     },
     staleTime: 30 * 1000,
     retry: 1,
@@ -312,7 +302,30 @@ export function useOrders(patientId: string) {
   });
 }
 
-export function useSaveOrders(patientId: string) {
+function invalidateOrderQueries(queryClient: QueryClient) {
+  queryClient.invalidateQueries({ queryKey: ["fhir", "Orders"] });
+  queryClient.invalidateQueries({ queryKey: ["fhir", "DraftOrders"] });
+  queryClient.invalidateQueries({ queryKey: ["fhir", "OrderCount"] });
+}
+
+function onEncounterMutationSuccess(
+  queryClient: QueryClient,
+  serverUrl: string | null,
+  updated: Encounter,
+) {
+  queryClient.setQueryData(
+    ["fhir", "Encounter", updated.id, serverUrl],
+    updated,
+  );
+  const patientId = updated.subject?.reference?.replace(/^Patient\//, "");
+  if (patientId) {
+    queryClient.invalidateQueries({
+      queryKey: ["fhir", "Encounter", "list", patientId, serverUrl],
+    });
+  }
+}
+
+export function useSaveOrders() {
   const { serverUrl } = useFhirServer();
   const queryClient = useQueryClient();
 
@@ -324,7 +337,7 @@ export function useSaveOrders(patientId: string) {
         throw new Error("No provider FHIR server selected.");
       }
 
-      const proxyUrl = `/api/fhir-proxy?${new URLSearchParams({ url: serverUrl })}`;
+      const proxyUrl = fhirProxyUrl(serverUrl);
       const response = await fetch(proxyUrl, {
         method: "POST",
         headers: {
@@ -342,14 +355,229 @@ export function useSaveOrders(patientId: string) {
       const transactionResponse = (await response.json()) as Bundle;
       return extractTransactionOrderIds(transactionResponse.entry);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["fhir", "Orders", patientId],
+    onSuccess: () => invalidateOrderQueries(queryClient),
+  });
+}
+
+/**
+ * Marks an encounter as finished by setting status and period.end.
+ */
+export function useFinishEncounter() {
+  const { serverUrl } = useFhirServer();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (encounter: Encounter) => {
+      const finished: Encounter = {
+        ...encounter,
+        status: "finished",
+        period: {
+          ...encounter.period,
+          end: encounter.period?.end ?? new Date().toISOString(),
+        },
+      };
+
+      const proxyUrl = fhirProxyUrl(`${serverUrl}/Encounter/${encounter.id}`);
+
+      const response = await fetch(proxyUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/fhir+json" },
+        body: JSON.stringify(finished),
+        credentials: "include",
       });
-      queryClient.invalidateQueries({
-        queryKey: ["fhir", "OrderCount", patientId],
-      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to finish encounter: ${response.status}`);
+      }
+
+      return (await response.json()) as Encounter;
     },
+    onSuccess: (updated) =>
+      onEncounterMutationSuccess(queryClient, serverUrl, updated),
+  });
+}
+
+export function useEncounter(encounterId: string) {
+  const { serverUrl } = useFhirServer();
+
+  return useQuery({
+    queryKey: ["fhir", "Encounter", encounterId, serverUrl],
+    queryFn: () =>
+      fhirFetch<Encounter>(`${serverUrl}/Encounter/${encounterId}`),
+    staleTime: 30 * 1000,
+    retry: 1,
+    enabled: !!serverUrl && !!encounterId,
+  });
+}
+
+export function useUpdateEncounter() {
+  const { serverUrl } = useFhirServer();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (encounter: Encounter) => {
+      const proxyUrl = fhirProxyUrl(`${serverUrl}/Encounter/${encounter.id}`);
+      const response = await fetch(proxyUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/fhir+json" },
+        body: JSON.stringify(encounter),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to update encounter: ${response.status}`);
+      }
+      return (await response.json()) as Encounter;
+    },
+    onSuccess: (updated) =>
+      onEncounterMutationSuccess(queryClient, serverUrl, updated),
+  });
+}
+
+async function fetchOrderBatch(
+  serverUrl: string,
+  types: readonly string[],
+  queryParams: string,
+): Promise<OrderEntry[]> {
+  const batchBundle = {
+    resourceType: "Bundle",
+    type: "batch",
+    entry: types.map((type) => ({
+      request: { method: "GET", url: `${type}?${queryParams}&_count=50` },
+    })),
+  };
+  const proxyUrl = fhirProxyUrl(serverUrl);
+  const response = await fetch(proxyUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/fhir+json" },
+    body: JSON.stringify(batchBundle),
+    credentials: "include",
+  });
+  return extractOrdersFromBatchResponse((await response.json()) as Bundle);
+}
+
+export function useEncounterOrders(encounterId: string, patientId: string) {
+  const { serverUrl } = useFhirServer();
+
+  return useQuery({
+    queryKey: ["fhir", "Orders", "encounter", encounterId, serverUrl],
+    queryFn: () =>
+      fetchOrderBatch(
+        serverUrl,
+        ENCOUNTER_ORDER_TYPES,
+        `patient=${patientId}&encounter=Encounter/${encounterId}`,
+      ),
+    staleTime: 30 * 1000,
+    retry: 1,
+    enabled: !!serverUrl && !!encounterId && !!patientId,
+  });
+}
+
+export function useDraftOrders(encounterId: string, patientId: string) {
+  const { serverUrl } = useFhirServer();
+
+  return useQuery({
+    queryKey: ["fhir", "DraftOrders", encounterId, serverUrl],
+    queryFn: () =>
+      fetchOrderBatch(
+        serverUrl,
+        ENCOUNTER_ORDER_TYPES,
+        `patient=${patientId}&encounter=Encounter/${encounterId}&status=draft`,
+      ),
+    staleTime: 30 * 1000,
+    retry: 1,
+    enabled: !!serverUrl && !!encounterId && !!patientId,
+  });
+}
+
+export function useSaveDraftOrders() {
+  const { serverUrl } = useFhirServer();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (
+      bundle: ReturnType<typeof buildDraftSaveTransactionBundle>,
+    ) => {
+      if (!serverUrl) {
+        throw new Error("No provider FHIR server selected.");
+      }
+      const proxyUrl = fhirProxyUrl(serverUrl);
+      const response = await fetch(proxyUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/fhir+json",
+          Prefer: "return=representation",
+        },
+        body: JSON.stringify(bundle),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to save draft orders: ${response.status}`);
+      }
+      const txResponse = (await response.json()) as Bundle;
+      return extractTransactionOrderIds(txResponse.entry);
+    },
+    onSuccess: () => invalidateOrderQueries(queryClient),
+  });
+}
+
+export function useDeleteDraftOrder() {
+  const { serverUrl } = useFhirServer();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      resourceType,
+      id,
+    }: {
+      resourceType: string;
+      id: string;
+    }) => {
+      const proxyUrl = fhirProxyUrl(`${serverUrl}/${resourceType}/${id}`);
+      const response = await fetch(proxyUrl, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to delete draft order: ${response.status}`);
+      }
+    },
+    onSuccess: () => invalidateOrderQueries(queryClient),
+  });
+}
+
+export function useClaimResponses(patientId: string) {
+  const { serverUrl } = useFhirServer();
+
+  return useQuery({
+    queryKey: ["fhir", "ClaimResponse", patientId, serverUrl],
+    queryFn: () =>
+      fhirFetch<Bundle>(
+        `${serverUrl}/ClaimResponse?patient=${patientId}&_include=ClaimResponse:request&_sort=-_lastUpdated&_count=20`,
+      ),
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+    enabled: !!serverUrl && !!patientId,
+  });
+}
+
+export function useEncounterQuestionnaireResponses(encounterId: string) {
+  const { serverUrl } = useFhirServer();
+
+  return useQuery({
+    queryKey: [
+      "fhir",
+      "QuestionnaireResponse",
+      "encounter",
+      encounterId,
+      serverUrl,
+    ],
+    queryFn: () =>
+      fhirFetch<Bundle<QuestionnaireResponse>>(
+        `${serverUrl}/QuestionnaireResponse?encounter=Encounter/${encounterId}&_sort=-_lastUpdated&_count=50`,
+      ),
+    staleTime: 30 * 1000,
+    retry: 1,
+    enabled: !!serverUrl && !!encounterId,
   });
 }
 

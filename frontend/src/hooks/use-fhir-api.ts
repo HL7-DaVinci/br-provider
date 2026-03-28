@@ -7,6 +7,7 @@ import type {
   Parameters,
 } from "fhir/r4";
 import { useMemo } from "react";
+import { fhirProxyUrl } from "@/lib/api";
 import { getSessionServerUrl } from "@/lib/auth";
 import {
   type FhirServer,
@@ -103,11 +104,9 @@ export async function fhirFetch<T>(url: string): Promise<T> {
     };
 
     if (shouldUseProxy(url)) {
-      // Trusted or authenticated server: route through BFF proxy with session credentials
-      const proxyUrl = `/api/fhir-proxy?${new URLSearchParams({ url })}`;
+      const proxyUrl = fhirProxyUrl(url);
       response = await fetch(proxyUrl, { headers, credentials: "include" });
     } else {
-      // Unauthenticated custom server: direct CORS request without credentials
       response = await fetch(url, { headers });
     }
   } catch (error) {
@@ -237,7 +236,7 @@ export function usePayerStatus(fhirUrl: string) {
     queryKey: ["payer", "status", fhirUrl],
     queryFn: async () => {
       const start = Date.now();
-      const proxyUrl = `/api/fhir-proxy?${new URLSearchParams({ url: `${fhirUrl}/metadata`, payer: "true" })}`;
+      const proxyUrl = fhirProxyUrl(`${fhirUrl}/metadata`, { payer: true });
       const response = await fetch(proxyUrl, {
         headers: { Accept: "application/fhir+json" },
         credentials: "include",

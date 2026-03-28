@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
+import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.CdsClientJwtService;
 import org.hl7.davinci.security.OutboundTargetValidator;
 import org.hl7.davinci.security.SecurityProperties;
@@ -42,16 +43,19 @@ public class CdsHooksProxyController {
 
     private final CdsClientJwtService cdsClientJwtService;
     private final SecurityProperties securityProperties;
+    private final ServerProperties serverProperties;
     private final OutboundTargetValidator outboundTargetValidator;
     private final ObjectMapper objectMapper;
 
     public CdsHooksProxyController(
             CdsClientJwtService cdsClientJwtService,
             SecurityProperties securityProperties,
+            ServerProperties serverProperties,
             OutboundTargetValidator outboundTargetValidator,
             ObjectMapper objectMapper) {
         this.cdsClientJwtService = cdsClientJwtService;
         this.securityProperties = securityProperties;
+        this.serverProperties = serverProperties;
         this.outboundTargetValidator = outboundTargetValidator;
         this.objectMapper = objectMapper;
     }
@@ -123,11 +127,12 @@ public class CdsHooksProxyController {
             var session = request.getSession(false);
             String accessToken = (session != null)
                 ? (String) session.getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN) : null;
+            String fhirServerBase = ProxyUtil.getActiveProviderFhirBase(
+                request, serverProperties);
+
+            hookRequest.put("fhirServer", fhirServerBase);
 
             if (accessToken != null) {
-                String fhirServerBase = securityProperties.getProviderBaseUrl() + "/fhir";
-                hookRequest.put("fhirServer", fhirServerBase);
-
                 Map<String, Object> fhirAuth = new LinkedHashMap<>();
                 fhirAuth.put("access_token", accessToken);
                 fhirAuth.put("token_type", "Bearer");

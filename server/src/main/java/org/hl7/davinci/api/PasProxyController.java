@@ -5,17 +5,24 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.UUID;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpSession;
+import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.B2BTokenService;
+import org.hl7.davinci.security.CertificateHolder;
 import org.hl7.davinci.security.OutboundTargetValidator;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SecurityUtil;
+import org.hl7.davinci.security.SpaAuthController;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,7 +34,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * BFF proxy for PAS (Prior Authorization Support) operations against payer FHIR servers.
- * Reads referenced resources from the local HAPI JPA store, builds a PAS request bundle,
+ * Reads referenced resources from the active provider FHIR server, builds a PAS request bundle,
  * authenticates to the payer using B2B client_credentials, and relays
  * Claim/$submit and Claim/$inquiry operations.
  *
@@ -43,16 +50,22 @@ public class PasProxyController {
 
     private final B2BTokenService b2bTokenService;
     private final SecurityProperties securityProperties;
+    private final ServerProperties serverProperties;
+    private final CertificateHolder certificateHolder;
     private final OutboundTargetValidator outboundTargetValidator;
     private final ObjectMapper objectMapper;
 
     public PasProxyController(
             B2BTokenService b2bTokenService,
             SecurityProperties securityProperties,
+            ServerProperties serverProperties,
+            CertificateHolder certificateHolder,
             OutboundTargetValidator outboundTargetValidator,
             ObjectMapper objectMapper) {
         this.b2bTokenService = b2bTokenService;
         this.securityProperties = securityProperties;
+        this.serverProperties = serverProperties;
+        this.certificateHolder = certificateHolder;
         this.outboundTargetValidator = outboundTargetValidator;
         this.objectMapper = objectMapper;
     }
@@ -60,7 +73,7 @@ public class PasProxyController {
     /**
      * Submits a prior authorization request to a payer's Claim/$submit endpoint.
      *
-     * Reads all referenced resources from the local HAPI JPA store, builds a PAS
+     * Reads all referenced resources from the active provider FHIR server, builds a PAS
      * request bundle (Claim + supporting resources), and POSTs it to the payer.
      *
      * Request body:
@@ -74,7 +87,9 @@ public class PasProxyController {
      * }
      */
     @PostMapping("/submit")
-    public ResponseEntity<?> submit(@RequestBody Map<String, Object> params) {
+    public ResponseEntity<?> submit(
+            @RequestBody Map<String, Object> params,
+            HttpServletRequest request) {
         try {
             String patientId = ProxyUtil.getRequiredParam(params, "patientId");
             String orderId = ProxyUtil.getRequiredParam(params, "orderId");
@@ -87,24 +102,29 @@ public class PasProxyController {
                 "questionnaireResponseIds", List.of());
 
             outboundTargetValidator.validate(UrlMatchUtil.normalizeUrl(payerFhirUrl));
+            HttpSession session = request.getSession(false);
+            validateRequestedProviderTarget(
+                ProxyUtil.getRequestedProviderFhirBase(request), session);
 
-            // Read all referenced resources from local HAPI store
-            Map<String, Object> patient = readLocalResource("Patient", patientId);
-            Map<String, Object> order = readLocalResource(orderType, orderId);
-            Map<String, Object> coverage = readLocalResource("Coverage", coverageId);
+            String providerFhirBase = ProxyUtil.getActiveProviderFhirBase(request, serverProperties);
 
-            // Read the Practitioner from the order's requester reference
-            Map<String, Object> practitioner = readPractitionerFromOrder(order);
-
-            // Read the insurer Organization from the coverage's payor reference
-            Map<String, Object> insurer = readInsurerFromCoverage(coverage);
+            Map<String, Object> patient = readProviderResource(
+                providerFhirBase, "Patient", patientId, session);
+            Map<String, Object> order = readProviderResource(
+                providerFhirBase, orderType, orderId, session);
+            Map<String, Object> coverage = readProviderResource(
+                providerFhirBase, "Coverage", coverageId, session);
+            Map<String, Object> practitioner = readPractitionerFromOrder(
+                providerFhirBase, order, session);
+            Map<String, Object> insurer = readInsurerFromCoverage(
+                providerFhirBase, coverage, session);
 
             List<Map<String, Object>> questionnaireResponses = new ArrayList<>();
             for (String qrId : qrIds) {
-                questionnaireResponses.add(readLocalResource("QuestionnaireResponse", qrId));
+                questionnaireResponses.add(readProviderResource(
+                    providerFhirBase, "QuestionnaireResponse", qrId, session));
             }
 
-            // Build the PAS request bundle
             Map<String, Object> bundle = buildPasBundle(
                 patient, practitioner, insurer, coverage, order, orderType,
                 questionnaireResponses);
@@ -113,7 +133,6 @@ public class PasProxyController {
             logger.info("PAS submit: sending bundle with {} entries to {}",
                 ((List<?>) bundle.get("entry")).size(), payerFhirUrl);
 
-            // Submit to payer
             String submitUrl = UrlMatchUtil.normalizeUrl(payerFhirUrl) + "/Claim/$submit";
             return relayToPayerFhir(submitUrl, payerFhirUrl, bundleJson);
 
@@ -158,24 +177,38 @@ public class PasProxyController {
     }
 
     /**
-     * Reads a FHIR resource from the local HAPI JPA store using internal HTTP with
-     * the bypass header so auth is not required for server-to-server calls.
+     * Reads a FHIR resource from the active provider FHIR server.
+     * Local reads use the bypass header; external provider reads reuse the
+     * authenticated session token for the selected provider when one exists,
+     * otherwise they fall back to anonymous reads for public servers.
      */
-    private Map<String, Object> readLocalResource(String resourceType, String id)
+    private Map<String, Object> readProviderResource(
+            String providerFhirBase,
+            String resourceType,
+            String id,
+            HttpSession session)
             throws Exception {
-        String fhirBase = securityProperties.getProviderBaseUrl() + "/fhir";
-        String url = fhirBase + "/" + resourceType + "/" + id;
+        String url = UrlMatchUtil.normalizeUrl(providerFhirBase) + "/" + resourceType + "/" + id;
 
         HttpClient client = SecurityUtil.getHttpClient(securityProperties);
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest.Builder request = HttpRequest.newBuilder()
             .uri(URI.create(url))
             .header("Accept", "application/fhir+json")
-            .header(securityProperties.getBypassHeader(), "1")
             .timeout(Duration.ofSeconds(10))
-            .GET()
-            .build();
+            .GET();
 
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (UrlMatchUtil.matchesBaseUrl(url, serverProperties.getLocalServerAddress())) {
+            request.header(securityProperties.getBypassHeader(), "1");
+        } else {
+            SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder);
+            String accessToken = SpaAuthController.getTokenForServer(session, url);
+            if (accessToken != null) {
+                request.header("Authorization", "Bearer " + accessToken);
+            }
+        }
+
+        HttpResponse<String> response = client.send(
+            request.build(), HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new IllegalArgumentException(
                 resourceType + "/" + id + " not found (HTTP " + response.statusCode() + ")");
@@ -188,7 +221,10 @@ public class PasProxyController {
      * Extracts and reads the Practitioner from an order's requester reference.
      * Returns a minimal placeholder if no requester is set.
      */
-    private Map<String, Object> readPractitionerFromOrder(Map<String, Object> order)
+    private Map<String, Object> readPractitionerFromOrder(
+            String providerFhirBase,
+            Map<String, Object> order,
+            HttpSession session)
             throws Exception {
         @SuppressWarnings("unchecked")
         Map<String, Object> requester = (Map<String, Object>) order.get("requester");
@@ -196,7 +232,7 @@ public class PasProxyController {
             String ref = (String) requester.get("reference");
             if (ref != null && ref.startsWith("Practitioner/")) {
                 String practId = ref.substring("Practitioner/".length());
-                return readLocalResource("Practitioner", practId);
+                return readProviderResource(providerFhirBase, "Practitioner", practId, session);
             }
         }
         // Fallback: return a minimal Practitioner placeholder
@@ -207,7 +243,10 @@ public class PasProxyController {
      * Extracts and reads the insurer Organization from a Coverage's payor reference.
      * Returns a minimal placeholder if no payor is set.
      */
-    private Map<String, Object> readInsurerFromCoverage(Map<String, Object> coverage)
+    private Map<String, Object> readInsurerFromCoverage(
+            String providerFhirBase,
+            Map<String, Object> coverage,
+            HttpSession session)
             throws Exception {
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> payors = (List<Map<String, Object>>) coverage.get("payor");
@@ -215,7 +254,7 @@ public class PasProxyController {
             String ref = (String) payors.get(0).get("reference");
             if (ref != null && ref.startsWith("Organization/")) {
                 String orgId = ref.substring("Organization/".length());
-                return readLocalResource("Organization", orgId);
+                return readProviderResource(providerFhirBase, "Organization", orgId, session);
             }
         }
         return Map.of("resourceType", "Organization", "id", "unknown");
@@ -240,7 +279,6 @@ public class PasProxyController {
         String insurerRef = "Organization/" + insurer.get("id");
         String coverageRef = "Coverage/" + coverage.get("id");
 
-        // Build the Claim resource
         Map<String, Object> claim = new LinkedHashMap<>();
         claim.put("resourceType", "Claim");
         claim.put("status", "active");
@@ -262,17 +300,14 @@ public class PasProxyController {
             ))
         ));
 
-        // Insurance
         claim.put("insurance", List.of(Map.of(
             "sequence", 1,
             "focal", true,
             "coverage", Map.of("reference", coverageRef)
         )));
 
-        // Item from the order resource
         claim.put("item", List.of(buildClaimItem(order, orderType)));
 
-        // SupportingInfo references to QuestionnaireResponses
         if (!questionnaireResponses.isEmpty()) {
             List<Map<String, Object>> supportingInfo = new ArrayList<>();
             for (int i = 0; i < questionnaireResponses.size(); i++) {
@@ -293,7 +328,6 @@ public class PasProxyController {
             claim.put("supportingInfo", supportingInfo);
         }
 
-        // Build the bundle entries
         List<Map<String, Object>> entries = new ArrayList<>();
         entries.add(bundleEntry(claim));
         entries.add(bundleEntry(patient));
@@ -307,7 +341,12 @@ public class PasProxyController {
 
         Map<String, Object> bundle = new LinkedHashMap<>();
         bundle.put("resourceType", "Bundle");
+        bundle.put("identifier", Map.of(
+            "system", "http://example.org/SUBMITTER_TRANSACTION_IDENTIFIER",
+            "value", UUID.randomUUID().toString()
+        ));
         bundle.put("type", "collection");
+        bundle.put("timestamp", Instant.now().toString());
         bundle.put("entry", entries);
 
         return bundle;
@@ -320,7 +359,6 @@ public class PasProxyController {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("sequence", 1);
 
-        // Extract the primary code from the order based on resource type
         Object code = extractOrderCode(order, orderType);
         if (code != null) {
             item.put("productOrService", code);
@@ -383,7 +421,10 @@ public class PasProxyController {
     }
 
     private Map<String, Object> bundleEntry(Map<String, Object> resource) {
-        return Map.of("resource", resource);
+        return Map.of(
+            "fullUrl", "urn:uuid:" + UUID.randomUUID(),
+            "resource", resource
+        );
     }
 
     private ResponseEntity<String> relayToPayerFhir(
@@ -398,6 +439,43 @@ public class PasProxyController {
         return ProxyUtil.relayGetToPayerFhir(
             url, payerFhirUrl, PAS_SCOPES,
             b2bTokenService, securityProperties, logger);
+    }
+
+    private void validateRequestedProviderTarget(
+            String requestedProviderFhirBase,
+            HttpSession session) {
+        if (requestedProviderFhirBase == null || requestedProviderFhirBase.isBlank()) {
+            return;
+        }
+
+        String normalizedRequested = UrlMatchUtil.normalizeUrl(requestedProviderFhirBase);
+        if (matchesKnownProvider(normalizedRequested, session)) {
+            return;
+        }
+
+        outboundTargetValidator.validate(normalizedRequested);
+    }
+
+    private boolean matchesKnownProvider(String targetUrl, HttpSession session) {
+        if (UrlMatchUtil.matchesBaseUrl(targetUrl, serverProperties.getLocalServerAddress())) {
+            return true;
+        }
+
+        for (String trustedProviderUrl : serverProperties.getTrustedProviderUrls()) {
+            if (UrlMatchUtil.matchesBaseUrl(targetUrl, trustedProviderUrl)) {
+                return true;
+            }
+        }
+
+        if (session != null) {
+            String sessionServer = (String) session.getAttribute(SpaAuthController.SESSION_SERVER_URL);
+            if (sessionServer != null
+                    && UrlMatchUtil.matchesBaseUrl(targetUrl, UrlMatchUtil.normalizeUrl(sessionServer))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
 }

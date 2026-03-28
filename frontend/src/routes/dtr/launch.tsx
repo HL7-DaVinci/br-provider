@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
 
 interface DtrLaunchSearch {
   iss: string;
@@ -70,7 +71,7 @@ function DtrLaunchPage() {
           encounterId: context.encounterId ?? "",
           fhirContext: context.fhirContext?.join(",") ?? "",
           coverageAssertionId: context.coverageAssertionId ?? undefined,
-          questionnaire: context.questionnaire ?? undefined,
+          questionnaire: serializeQuestionnaireSearch(context.questionnaire),
         },
       });
     } catch (err) {

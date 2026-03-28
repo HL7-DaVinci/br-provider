@@ -1,13 +1,13 @@
-export type CdsHookName = "encounter-start" | "order-select" | "order-sign";
+import type { Bundle, Resource, Task } from "fhir/r4";
 
-// Resource types supported by CRD hooks
-export type OrderResourceType =
-  | "MedicationRequest"
-  | "ServiceRequest"
-  | "DeviceRequest"
-  | "NutritionOrder"
-  | "VisionPrescription"
-  | "CommunicationRequest";
+export type { OrderResourceType } from "./order-types";
+
+export type CdsHookName =
+  | "encounter-start"
+  | "order-select"
+  | "order-sign"
+  | "order-dispatch"
+  | "encounter-discharge";
 
 // CDS Service Discovery
 export interface CdsServiceDiscovery {
@@ -34,28 +34,35 @@ export interface OrderSelectContext {
   patientId: string;
   encounterId?: string;
   selections: string[]; // IDs of selected resources
-  draftOrders: { resourceType: "Bundle"; entry: unknown[] };
+  draftOrders: Bundle;
 }
 
 export interface OrderSignContext {
   userId: string;
   patientId: string;
   encounterId?: string;
-  draftOrders: { resourceType: "Bundle"; entry: unknown[] };
+  draftOrders: Bundle;
 }
 
 export interface OrderDispatchContext {
   patientId: string;
   dispatchedOrders: string[];
   performer: string; // Practitioner/{id} or Organization/{id}
-  fulfillmentTask?: unknown;
+  fulfillmentTask?: Task;
+}
+
+export interface EncounterDischargeContext {
+  userId: string;
+  patientId: string;
+  encounterId: string;
 }
 
 export type HookContext =
   | EncounterStartContext
   | OrderSelectContext
   | OrderSignContext
-  | OrderDispatchContext;
+  | OrderDispatchContext
+  | EncounterDischargeContext;
 
 // CDS Hook Request
 export interface CdsHookRequest {
@@ -104,7 +111,7 @@ export interface CdsSuggestion {
 export interface SuggestionAction {
   type: "create" | "update" | "delete";
   description: string;
-  resource?: unknown;
+  resource?: Resource;
   resourceId?: string;
 }
 
@@ -117,7 +124,7 @@ export interface CdsLink {
 
 export interface SystemAction {
   type: "update" | "create" | "delete";
-  resource: unknown;
+  resource: Resource;
 }
 
 // CRD Coverage Information (parsed from system action extensions)
@@ -131,7 +138,7 @@ export interface CoverageInformation {
   reasonCode?: { system: string; code: string; display?: string }[];
   coverageAssertionId?: string;
   satisfiedPaId?: string;
-  questionnaire?: string; // Canonical URL for the DTR questionnaire
+  questionnaire?: string[]; // Canonical URLs for DTR questionnaires (0..*)
   date?: string;
   detail?: string[];
   contactUrl?: string;

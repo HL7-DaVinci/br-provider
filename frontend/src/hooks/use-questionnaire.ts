@@ -1,5 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Bundle, Questionnaire, QuestionnaireResponse } from "fhir/r4";
+import type {
+  Bundle,
+  ParametersParameter,
+  Questionnaire,
+  QuestionnaireResponse,
+} from "fhir/r4";
+import { fhirProxyUrl } from "@/lib/api";
 import { useFhirServer } from "./use-fhir-server";
 
 interface QuestionnairePackageParams {
@@ -8,7 +14,7 @@ interface QuestionnairePackageParams {
   coverageRef?: string;
   orderRef?: string;
   coverageAssertionId?: string;
-  questionnaire?: string;
+  questionnaire?: string[];
 }
 
 /**
@@ -25,7 +31,7 @@ export function useQuestionnairePackage(params: QuestionnairePackageParams) {
       params.providerFhirUrl,
       params.coverageRef,
       params.orderRef,
-      params.questionnaire,
+      params.questionnaire ?? [],
       params.coverageAssertionId,
     ],
     queryFn: async () => {
@@ -65,7 +71,9 @@ export function useQuestionnairePackage(params: QuestionnairePackageParams) {
     enabled:
       !!params.payerFhirUrl &&
       !!params.providerFhirUrl &&
-      (!!params.coverageRef || !!params.orderRef || !!params.questionnaire),
+      (!!params.coverageRef ||
+        !!params.orderRef ||
+        (params.questionnaire?.length ?? 0) > 0),
     staleTime: 5 * 60 * 1000,
     retry: 1,
   });
@@ -85,7 +93,7 @@ export function useSaveQuestionnaireResponse(providerFhirUrl?: string) {
       const fhirUrl = questionnaireResponse.id
         ? `${serverUrl}/QuestionnaireResponse/${questionnaireResponse.id}`
         : `${serverUrl}/QuestionnaireResponse`;
-      const proxyUrl = `/api/fhir-proxy?${new URLSearchParams({ url: fhirUrl })}`;
+      const proxyUrl = fhirProxyUrl(fhirUrl);
 
       const response = await fetch(proxyUrl, {
         method,
@@ -225,10 +233,10 @@ async function buildQuestionnairePackageParams(
     parameterList.push({ name: "order", resource: order });
   }
 
-  if (params.questionnaire) {
+  for (const canonical of params.questionnaire ?? []) {
     parameterList.push({
       name: "questionnaire",
-      valueCanonical: params.questionnaire,
+      valueCanonical: canonical,
     });
   }
 
@@ -250,7 +258,7 @@ async function fetchProviderResource(
   providerFhirUrl: string,
   ref: string,
 ): Promise<unknown | null> {
-  const url = `/api/fhir-proxy?${new URLSearchParams({ url: `${providerFhirUrl}/${ref}` })}`;
+  const url = fhirProxyUrl(`${providerFhirUrl}/${ref}`);
   const res = await fetch(url, { credentials: "include" });
   if (!res.ok) return null;
   return res.json();
@@ -270,12 +278,12 @@ function findResourceInResponse<T>(
   const obj = data as Record<string, unknown>;
 
   if (obj.resourceType === "Parameters" && Array.isArray(obj.parameter)) {
-    for (const param of obj.parameter as {
-      name: string;
-      resource?: Bundle;
-    }[]) {
+    for (const param of obj.parameter as ParametersParameter[]) {
       if (param.name === "packagebundle" && param.resource) {
-        const found = findResourceInBundle<T>(param.resource, resourceType);
+        const found = findResourceInBundle<T>(
+          param.resource as Bundle,
+          resourceType,
+        );
         if (found) return found;
       }
     }
@@ -347,12 +355,9 @@ function deriveServerUrls(data: unknown): {
   }
 
   if (obj.resourceType === "Parameters" && Array.isArray(obj.parameter)) {
-    for (const param of obj.parameter as {
-      name: string;
-      resource?: Bundle;
-    }[]) {
+    for (const param of obj.parameter as ParametersParameter[]) {
       if (param.name === "packagebundle" && param.resource) {
-        scanBundle(param.resource);
+        scanBundle(param.resource as Bundle);
         if (urls.content && urls.terminology) break;
       }
     }

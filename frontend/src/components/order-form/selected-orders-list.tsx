@@ -6,13 +6,25 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useDeleteDraftOrder } from "@/hooks/use-clinical-api";
 import { useOrderContext } from "@/hooks/use-order-context";
 import type { SelectedOrder } from "@/lib/order-templates";
 import { OrderCustomizationFields } from "./order-customization-fields";
 
 export function SelectedOrdersList() {
   const { state, dispatch } = useOrderContext();
+  const deleteDraft = useDeleteDraftOrder();
   const { selectedOrders } = state;
+
+  const handleRemove = (order: SelectedOrder) => {
+    dispatch({ type: "REMOVE_ORDER", payload: order.templateId });
+    if (order.serverId) {
+      deleteDraft.mutate({
+        resourceType: order.template.resourceType,
+        id: order.serverId,
+      });
+    }
+  };
 
   if (selectedOrders.length === 0) {
     return (
@@ -32,9 +44,7 @@ export function SelectedOrdersList() {
         <SelectedOrderItem
           key={order.templateId}
           order={order}
-          onRemove={() =>
-            dispatch({ type: "REMOVE_ORDER", payload: order.templateId })
-          }
+          onRemove={() => handleRemove(order)}
           onToggle={() =>
             dispatch({
               type: "TOGGLE_ORDER_EXPANDED",

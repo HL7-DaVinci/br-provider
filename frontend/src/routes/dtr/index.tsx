@@ -14,6 +14,7 @@ import {
   useQuestionnairePackage,
   useSaveQuestionnaireResponse,
 } from "@/hooks/use-questionnaire";
+import { parseQuestionnaireSearch } from "@/lib/dtr-search";
 import { normalizeServerUrl } from "@/lib/fhir-config";
 
 interface DtrSearch {
@@ -56,6 +57,9 @@ function DtrFormPage() {
   const providerFhirUrl = search.iss
     ? normalizeServerUrl(search.iss)
     : selectedProviderFhirUrl;
+  const questionnaireCanonicals = parseQuestionnaireSearch(
+    search.questionnaire,
+  );
 
   // Parse fhirContext references from comma-separated string
   const fhirContextRefs = search.fhirContext?.split(",").filter(Boolean) ?? [];
@@ -87,7 +91,7 @@ function DtrFormPage() {
     coverageRef,
     orderRef,
     coverageAssertionId: search.coverageAssertionId,
-    questionnaire: search.questionnaire,
+    questionnaire: questionnaireCanonicals,
   });
 
   // Provider-side pre-population via server-side CQL evaluation

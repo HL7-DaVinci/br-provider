@@ -5,6 +5,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -46,6 +47,18 @@ public class FhirProxyController {
     private static final Set<String> FORWARDED_HEADERS = Set.of(
         "accept", "content-type", "prefer", "if-match", "if-none-match",
         "x-bypass-auth"
+    );
+
+    /** Headers that must not be forwarded through a proxy. */
+    private static final Set<String> HOP_BY_HOP_HEADERS = Set.of(
+        "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+        "te", "trailers", "transfer-encoding", "upgrade",
+        ":status" // HTTP/2 pseudo-header included by java.net.http
+    );
+
+    /** End-to-end response headers that must never be replayed on the BFF origin. */
+    private static final Set<String> BLOCKED_RESPONSE_HEADERS = Set.of(
+        "set-cookie", "set-cookie2"
     );
 
     private static final List<String> PAYER_B2B_SCOPES = ProxyUtil.FHIR_READ_SCOPES;
@@ -125,6 +138,8 @@ public class FhirProxyController {
         if (request.getHeader("Accept") == null) {
             reqBuilder.header("Accept", "application/fhir+json");
         }
+        // Prevent the shared HttpClient from caching upstream responses
+        reqBuilder.header("Cache-Control", "no-store");
 
         String method = request.getMethod();
         if ("POST".equals(method) || "PUT".equals(method) || "PATCH".equals(method)) {
@@ -141,9 +156,20 @@ public class FhirProxyController {
             reqBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
 
         response.setStatus(upstream.statusCode());
-        upstream.headers().firstValue("Content-Type")
-            .ifPresent(ct -> response.setContentType(ct));
+        upstream.headers().map().forEach((name, values) -> {
+            if (shouldRelayResponseHeader(name)) {
+                for (String v : values) {
+                    response.addHeader(name, v);
+                }
+            }
+        });
         response.getOutputStream().write(upstream.body());
+    }
+
+    static boolean shouldRelayResponseHeader(String headerName) {
+        String normalized = headerName.toLowerCase(Locale.ROOT);
+        return !HOP_BY_HOP_HEADERS.contains(normalized)
+            && !BLOCKED_RESPONSE_HEADERS.contains(normalized);
     }
 
     /**

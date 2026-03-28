@@ -1,4 +1,5 @@
-import type { OrderResourceType } from "./cds-types";
+import type { Extension } from "fhir/r4";
+import type { OrderResourceType } from "./order-types";
 
 const HCPCS_SYSTEM = "http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets";
 
@@ -19,6 +20,8 @@ export interface SelectedOrder {
   template: OrderTemplate;
   customizations: Record<string, unknown>;
   expanded: boolean;
+  serverId?: string;
+  persistedExtensions?: Extension[];
 }
 
 const TEMPLATES: OrderTemplate[] = [
@@ -74,6 +77,15 @@ const TEMPLATES: OrderTemplate[] = [
     code: "A4217",
     display: "Sterile Water/Saline 500ml",
     description: "Sterile water/saline, 500 ml",
+    category: "DME",
+    resourceType: "DeviceRequest",
+    codeSystem: HCPCS_SYSTEM,
+  },
+  {
+    id: "dme-l8000",
+    code: "L8000",
+    display: "Breast prosthesis, mastectomy bra",
+    description: "Breast prosthesis, mastectomy bra",
     category: "DME",
     resourceType: "DeviceRequest",
     codeSystem: HCPCS_SYSTEM,

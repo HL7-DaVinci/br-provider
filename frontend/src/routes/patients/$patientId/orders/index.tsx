@@ -1,17 +1,16 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import { ClinicalTable } from "@/components/clinical-table";
+import { OrderCoverageActions } from "@/components/order-coverage-actions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import type { OrderEntry } from "@/hooks/use-clinical-api";
 import { useOrders } from "@/hooks/use-clinical-api";
 import {
   formatClinicalDate,
   formatCodeableConcept,
-  formatOrderType,
-  getOrderCode,
-  getOrderDate,
 } from "@/lib/clinical-formatters";
+import type { OrderEntry } from "@/lib/order-types";
+import { formatOrderType, getOrderCode, getOrderDate } from "@/lib/order-types";
 
 export const Route = createFileRoute("/patients/$patientId/orders/")({
   component: OrdersList,
@@ -80,6 +79,12 @@ function OrdersList() {
           {
             header: "Date",
             accessor: (o) => formatClinicalDate(getOrderDate(o.resource)),
+          },
+          {
+            header: "",
+            accessor: (o) => (
+              <OrderCoverageActions order={o} patientId={patientId} />
+            ),
           },
         ]}
         data={orders ?? []}

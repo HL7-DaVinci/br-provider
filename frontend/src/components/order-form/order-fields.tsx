@@ -1,4 +1,4 @@
-import type { OrderResourceType } from "@/lib/cds-types";
+import type { OrderResourceType } from "@/lib/order-types";
 import { CommunicationRequestFields } from "./communication-request-fields";
 import { DeviceRequestFields } from "./device-request-fields";
 import { MedicationRequestFields } from "./medication-request-fields";
@@ -15,11 +15,7 @@ interface OrderFieldsProps {
 /**
  * Renders the resource-specific order fields based on the given order type.
  */
-export function OrderFields({
-  orderType,
-  data,
-  onUpdate,
-}: OrderFieldsProps) {
+export function OrderFields({ orderType, data, onUpdate }: OrderFieldsProps) {
   switch (orderType) {
     case "MedicationRequest":
       return <MedicationRequestFields data={data} onUpdate={onUpdate} />;

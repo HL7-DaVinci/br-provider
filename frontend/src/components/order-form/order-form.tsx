@@ -21,7 +21,7 @@ export function OrderForm() {
   const { state, dispatch } = useOrderContext();
   const { cdsUrl } = usePayerServer();
   const { fireHook, discovery, isLoading: isHookLoading } = useCdsHooks(cdsUrl);
-  const saveOrders = useSaveOrders(state.patientId);
+  const saveOrders = useSaveOrders();
 
   const hasFiredEncounterStart = useRef(false);
   const orderSelectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -66,6 +66,7 @@ export function OrderForm() {
         {
           encounterId: state.encounter?.id,
           practitionerId: state.practitionerId,
+          systemActionResources: state.systemActionResources,
         },
       );
       const context: OrderSelectContext = {
@@ -91,6 +92,7 @@ export function OrderForm() {
     state.patientId,
     state.encounter,
     state.sharedFields,
+    state.systemActionResources,
     discovery,
     fireHook,
   ]);
@@ -105,6 +107,7 @@ export function OrderForm() {
       {
         encounterId: state.encounter?.id,
         practitionerId: state.practitionerId,
+        systemActionResources: state.systemActionResources,
       },
     );
     const context: OrderSignContext = {
@@ -113,7 +116,11 @@ export function OrderForm() {
       encounterId: state.encounter?.id,
       draftOrders: bundle,
     };
-    await fireHook("order-sign", context);
+    const hookResult = await fireHook("order-sign", context);
+    const systemActionResourcesToPersist = hookResult?.systemActionResources
+      ?.size
+      ? hookResult.systemActionResources
+      : state.systemActionResources;
 
     const savedOrderIds = await saveOrders.mutateAsync(
       buildSignedOrdersTransactionBundle(
@@ -123,6 +130,7 @@ export function OrderForm() {
         {
           encounterId: state.encounter?.id,
           practitionerId: state.practitionerId,
+          systemActionResources: systemActionResourcesToPersist,
         },
       ),
     );
