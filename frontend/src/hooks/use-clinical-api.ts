@@ -7,6 +7,8 @@ import {
 import type {
   Bundle,
   BundleEntry,
+  Claim,
+  ClaimResponse,
   Condition,
   Encounter,
   MedicationRequest,
@@ -14,6 +16,7 @@ import type {
   Patient,
   QuestionnaireResponse,
 } from "fhir/r4";
+import { useMemo } from "react";
 import { fhirProxyUrl } from "@/lib/api";
 import {
   type buildDraftSaveTransactionBundle,
@@ -27,6 +30,8 @@ import {
   type OrderEntry,
   type OrderResource,
 } from "@/lib/order-types";
+import { resolvePasOrderLink } from "@/lib/pas-utils";
+import { useDtrQuestionnaireResponseIds } from "./use-dtr-qr-store";
 import { fhirFetch } from "./use-fhir-api";
 import { useFhirServer } from "./use-fhir-server";
 
@@ -302,7 +307,7 @@ export function useOrders(patientId: string) {
   });
 }
 
-function invalidateOrderQueries(queryClient: QueryClient) {
+export function invalidateOrderQueries(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: ["fhir", "Orders"] });
   queryClient.invalidateQueries({ queryKey: ["fhir", "DraftOrders"] });
   queryClient.invalidateQueries({ queryKey: ["fhir", "OrderCount"] });
@@ -560,6 +565,94 @@ export function useClaimResponses(patientId: string) {
   });
 }
 
+/**
+ * Query QuestionnaireResponses linked to a specific order.
+ *
+ * The bundled HAPI server does not support `QuestionnaireResponse?context=`
+ * for the DTR qr-context extension out of the box, so this hook uses:
+ * - `based-on=` for ServiceRequest-backed DTR launches
+ * - localStorage-backed QR ids for all order types
+ */
+export function useOrderQuestionnaireResponses(
+  orderRef: string | undefined,
+  patientId: string | undefined,
+) {
+  const { serverUrl } = useFhirServer();
+  const localQrIds = useDtrQuestionnaireResponseIds(orderRef);
+
+  return useQuery({
+    queryKey: [
+      "fhir",
+      "QuestionnaireResponse",
+      "order",
+      orderRef,
+      patientId,
+      serverUrl,
+      localQrIds,
+    ],
+    queryFn: async () => {
+      const questionnairesById = new Map<string, QuestionnaireResponse>();
+
+      if (orderRef?.startsWith("ServiceRequest/")) {
+        const params = new URLSearchParams({
+          patient: patientId ?? "",
+          "based-on": orderRef,
+          _sort: "-_lastUpdated",
+          _count: "10",
+        });
+
+        try {
+          const bundle = await fhirFetch<Bundle<QuestionnaireResponse>>(
+            `${serverUrl}/QuestionnaireResponse?${params.toString()}`,
+          );
+          for (const entry of bundle.entry ?? []) {
+            const resource = entry.resource;
+            if (resource?.id) {
+              questionnairesById.set(resource.id, resource);
+            }
+          }
+        } catch {
+          // Ignore unsupported/empty search failures; local QR ids remain the
+          // primary order-scoped lookup path for non-ServiceRequest orders.
+        }
+      }
+
+      const localResults = await Promise.allSettled(
+        localQrIds.map((id) =>
+          fhirFetch<QuestionnaireResponse>(
+            `${serverUrl}/QuestionnaireResponse/${id}`,
+          ),
+        ),
+      );
+
+      for (const result of localResults) {
+        if (result.status !== "fulfilled") continue;
+        const qr = result.value;
+        if (!qr.id) continue;
+        questionnairesById.set(qr.id, qr);
+      }
+
+      const entries = [...questionnairesById.values()]
+        .sort((a, b) => {
+          const aDate = a.authored ?? a.meta?.lastUpdated ?? "";
+          const bDate = b.authored ?? b.meta?.lastUpdated ?? "";
+          return aDate < bDate ? 1 : aDate > bDate ? -1 : 0;
+        })
+        .map((resource) => ({ resource }));
+
+      return {
+        resourceType: "Bundle" as const,
+        type: "searchset" as const,
+        total: entries.length,
+        entry: entries,
+      } satisfies Bundle<QuestionnaireResponse>;
+    },
+    staleTime: 30 * 1000,
+    retry: 1,
+    enabled: !!serverUrl && !!orderRef && !!patientId,
+  });
+}
+
 export function useEncounterQuestionnaireResponses(encounterId: string) {
   const { serverUrl } = useFhirServer();
 
@@ -594,4 +687,63 @@ export function useEncounters(patientId: string) {
     retry: 1,
     enabled: !!serverUrl && !!patientId,
   });
+}
+
+export interface OrderPaStatus {
+  outcome: string;
+  disposition?: string;
+  preAuthRef?: string;
+  claimResponseId: string;
+  orderId: string;
+  orderType: string;
+  coverageId?: string;
+  created?: string;
+}
+
+/**
+ * Returns a Map<resourceType/id, OrderPaStatus> for all orders with PA submissions.
+ * Derives status from ClaimResponse data already fetched by useClaimResponses.
+ */
+export function useOrderPaStatusMap(patientId: string) {
+  const { data: claimResponseBundle } = useClaimResponses(patientId);
+
+  return useMemo(() => {
+    const statusMap = new Map<string, OrderPaStatus>();
+    if (!claimResponseBundle?.entry) return statusMap;
+
+    const claimsById = new Map<string, Claim>();
+    for (const entry of claimResponseBundle.entry) {
+      if (entry.resource?.resourceType === "Claim" && entry.resource.id) {
+        claimsById.set(entry.resource.id, entry.resource as Claim);
+      }
+    }
+
+    for (const entry of claimResponseBundle.entry) {
+      if (entry.resource?.resourceType !== "ClaimResponse") continue;
+      const cr = entry.resource as ClaimResponse;
+      if (!cr.id) continue;
+      const link = resolvePasOrderLink(cr, claimsById);
+      if (!link) continue;
+      const orderKey = `${link.orderType}/${link.orderId}`;
+
+      const existing = statusMap.get(orderKey);
+      if (
+        !existing ||
+        (cr.created && existing.created && cr.created > existing.created)
+      ) {
+        statusMap.set(orderKey, {
+          outcome: cr.outcome ?? "queued",
+          disposition: cr.disposition,
+          preAuthRef: cr.preAuthRef,
+          claimResponseId: cr.id,
+          orderId: link.orderId,
+          orderType: link.orderType,
+          coverageId: link.coverageId,
+          created: cr.created,
+        });
+      }
+    }
+
+    return statusMap;
+  }, [claimResponseBundle]);
 }

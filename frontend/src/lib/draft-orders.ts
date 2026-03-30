@@ -1,5 +1,10 @@
 import type { Bundle, BundleEntry, Resource } from "fhir/r4";
-import { getAllTemplates, type SelectedOrder } from "@/lib/order-templates";
+import type { SuggestionAction } from "@/lib/cds-types";
+import {
+  getAllTemplates,
+  type OrderTemplate,
+  type SelectedOrder,
+} from "@/lib/order-templates";
 import {
   getOrderCode,
   getOrderInsuranceReference,
@@ -355,4 +360,44 @@ export function extractTransactionOrderIds(
       `FHIR transaction response missing an order id for entry ${index + 1}.`,
     );
   });
+}
+
+/**
+ * Match a CDS suggestion resource to an existing order template.
+ * Skips ad-hoc templates so restored encounters
+ * remain compatible with restoreOrdersFromResources().
+ */
+export function matchSuggestionResourceToTemplate(
+  resource: Resource,
+): OrderTemplate | null {
+  const code = getOrderCode(resource as OrderResource);
+  if (!code?.coding?.[0]) return null;
+
+  const coding = code.coding[0];
+  return (
+    getAllTemplates().find(
+      (t) =>
+        t.resourceType === resource.resourceType &&
+        t.code === coding.code &&
+        t.codeSystem === coding.system,
+    ) ?? null
+  );
+}
+
+/**
+ * Normalize a suggestion action target to the same identity strings used
+ * elsewhere in the encounter workflow (draft-${templateId} and ${serverId}).
+ */
+export function getSuggestionTargetKeys(
+  action: SuggestionAction,
+  resourceType?: string,
+): string[] {
+  const rawId = action.resourceId ?? action.resource?.id;
+  if (!rawId || !resourceType) return [];
+
+  const keys = [`${resourceType}/${rawId}`];
+  if (rawId.startsWith("draft-")) {
+    keys.push(rawId.replace(/^draft-/, ""));
+  }
+  return keys;
 }

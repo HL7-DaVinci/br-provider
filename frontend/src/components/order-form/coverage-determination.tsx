@@ -28,6 +28,20 @@ function CoverageInfoEntry({ info }: { info: CoverageInformation }) {
         {info.docNeeded && <DocNeededBadge value={info.docNeeded} />}
       </div>
 
+      {/* Info needed indicators */}
+      {info.infoNeeded && info.infoNeeded.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+            Additional information needed for coverage determination:
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {info.infoNeeded.map((code) => (
+              <InfoNeededBadge key={code} value={code} />
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Billing code */}
       {info.billingCode && (
         <p className="text-muted-foreground">
@@ -141,4 +155,23 @@ function DocNeededBadge({
 
   const { label, className } = config[value];
   return <Badge className={cn(className)}>{label}</Badge>;
+}
+
+const INFO_NEEDED_LABELS: Record<string, string> = {
+  performer: "Performer Required",
+  location: "Location Required",
+  "billing-code": "Billing Code Required",
+  timeframe: "Timeframe Required",
+  "detail-code": "Detail Code Required",
+  "contract-window": "Contract Window Required",
+  OTH: "Additional Info Required",
+};
+
+function InfoNeededBadge({ value }: { value: string }) {
+  const label = INFO_NEEDED_LABELS[value] ?? value;
+  return (
+    <Badge className={cn("bg-amber-500 text-white border-amber-500")}>
+      {label}
+    </Badge>
+  );
 }

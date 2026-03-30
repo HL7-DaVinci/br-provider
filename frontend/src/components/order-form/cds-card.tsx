@@ -1,11 +1,18 @@
-import { ExternalLink, Lightbulb } from "lucide-react";
+import { Check, ExternalLink, Lightbulb } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import type { CdsCard as CdsCardType } from "@/lib/cds-types";
+import type {
+  CdsCard as CdsCardType,
+  CdsLink,
+  CdsSuggestion,
+} from "@/lib/cds-types";
 import { cn } from "@/lib/utils";
 
 interface CdsCardProps {
   card: CdsCardType;
+  onApplySuggestion?: (suggestion: CdsSuggestion) => void;
+  onSmartLaunch?: (link: CdsLink) => void;
+  appliedSuggestions?: Set<string>;
 }
 
 const INDICATOR_STYLES = {
@@ -20,7 +27,12 @@ const INDICATOR_BADGE_STYLES = {
   critical: "bg-red-600 text-white border-red-600",
 } as const;
 
-export function CdsCard({ card }: CdsCardProps) {
+export function CdsCard({
+  card,
+  onApplySuggestion,
+  onSmartLaunch,
+  appliedSuggestions,
+}: CdsCardProps) {
   return (
     <div
       className={cn(
@@ -67,35 +79,58 @@ export function CdsCard({ card }: CdsCardProps) {
       {/* Suggestions */}
       {card.suggestions && card.suggestions.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {card.suggestions.map((suggestion) => (
-            <Button
-              key={suggestion.uuid ?? suggestion.label}
-              variant={suggestion.isRecommended ? "default" : "outline"}
-              size="sm"
-              className="h-7 text-xs"
-            >
-              <Lightbulb className="h-3 w-3 mr-1" />
-              {suggestion.label}
-            </Button>
-          ))}
+          {card.suggestions.map((suggestion) => {
+            const suggestionKey = suggestion.uuid ?? suggestion.label;
+            const isApplied = appliedSuggestions?.has(suggestionKey) ?? false;
+            return (
+              <Button
+                key={suggestionKey}
+                variant={suggestion.isRecommended ? "default" : "outline"}
+                size="sm"
+                className="h-7 text-xs"
+                disabled={isApplied}
+                onClick={() => onApplySuggestion?.(suggestion)}
+              >
+                {isApplied ? (
+                  <Check className="mr-1 h-3 w-3" />
+                ) : (
+                  <Lightbulb className="mr-1 h-3 w-3" />
+                )}
+                {suggestion.label}
+              </Button>
+            );
+          })}
         </div>
       )}
 
       {/* Links */}
       {card.links && card.links.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">
-          {card.links.map((link) => (
-            <a
-              key={link.url}
-              href={link.url}
-              target={link.type === "absolute" ? "_blank" : undefined}
-              rel={link.type === "absolute" ? "noopener noreferrer" : undefined}
-              className="inline-flex items-center gap-1 text-xs text-primary underline hover:text-primary/80"
-            >
-              {link.type === "absolute" && <ExternalLink className="h-3 w-3" />}
-              {link.label}
-            </a>
-          ))}
+          {card.links.map((link) =>
+            link.type === "smart" ? (
+              <Button
+                key={link.url}
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => onSmartLaunch?.(link)}
+              >
+                <ExternalLink className="mr-1 h-3 w-3" />
+                {link.label}
+              </Button>
+            ) : (
+              <a
+                key={link.url}
+                href={link.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-primary underline hover:text-primary/80"
+              >
+                <ExternalLink className="h-3 w-3" />
+                {link.label}
+              </a>
+            ),
+          )}
         </div>
       )}
     </div>

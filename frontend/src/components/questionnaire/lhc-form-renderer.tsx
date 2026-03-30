@@ -1,6 +1,12 @@
 import type { Questionnaire, QuestionnaireResponse } from "fhir/r4";
 import { AlertCircle, Code, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { JsonViewerDialog } from "@/components/json-viewer-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -8,6 +14,12 @@ import {
   applyOriginTracking,
 } from "@/lib/information-origin";
 import { loadLhcForms } from "@/lib/lhc-forms-loader";
+
+export interface LhcFormRendererHandle {
+  extractQr: (
+    status: "in-progress" | "completed",
+  ) => QuestionnaireResponse | null;
+}
 
 interface LhcFormRendererProps {
   questionnaire: Questionnaire;
@@ -18,6 +30,9 @@ interface LhcFormRendererProps {
     status: "in-progress" | "completed",
   ) => void;
   isSaving?: boolean;
+  /** When true, the built-in footer buttons are hidden (for adaptive wrapper). */
+  hideFooter?: boolean;
+  ref?: React.Ref<LhcFormRendererHandle>;
 }
 
 /**
@@ -31,6 +46,8 @@ export function LhcFormRenderer({
   originIndex,
   onSave,
   isSaving = false,
+  hideFooter = false,
+  ref,
 }: LhcFormRendererProps) {
   const shellRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
@@ -125,6 +142,10 @@ export function LhcFormRenderer({
     },
     [originIndex],
   );
+
+  useImperativeHandle(ref, () => ({ extractQr: extractCurrentQr }), [
+    extractCurrentQr,
+  ]);
 
   const handleSave = useCallback(
     (status: "in-progress" | "completed") => {
@@ -256,7 +277,7 @@ export function LhcFormRenderer({
         )}
       </div>
 
-      {!loading && !error && (
+      {!loading && !error && !hideFooter && (
         <div
           ref={footerRef}
           className={`shrink-0 ${

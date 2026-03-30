@@ -176,18 +176,34 @@ export function useProviderPopulate(params: {
   });
 }
 
+const DTR_NEXT_QUESTION_INPUT_PROFILE =
+  "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/dtr-next-question-input-parameters";
+
 /**
  * Mutation for adaptive questionnaire $next-question operations.
+ * Wraps the QR in a Parameters resource per the DTR IG and unwraps
+ * the Parameters response to extract the returned QR.
  */
 export function useNextQuestion(payerFhirUrl: string) {
   return useMutation({
-    mutationFn: async (questionnaireResponse: QuestionnaireResponse) => {
+    mutationFn: async (
+      questionnaireResponse: QuestionnaireResponse,
+    ): Promise<QuestionnaireResponse> => {
+      // Wrap QR in Parameters per DTR IG
+      const parametersRequest = {
+        resourceType: "Parameters",
+        meta: { profile: [DTR_NEXT_QUESTION_INPUT_PROFILE] },
+        parameter: [
+          { name: "questionnaire-response", resource: questionnaireResponse },
+        ],
+      };
+
       const response = await fetch("/api/dtr/next-question", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           payerFhirUrl,
-          questionnaireResponse,
+          questionnaireResponse: parametersRequest,
         }),
         credentials: "same-origin",
       });
@@ -199,9 +215,40 @@ export function useNextQuestion(payerFhirUrl: string) {
         );
       }
 
-      return response.json() as Promise<QuestionnaireResponse>;
+      const data = await response.json();
+      return extractQrFromNextQuestionResponse(data);
     },
   });
+}
+
+/** Unwrap a QR from a $next-question Parameters response. */
+function extractQrFromNextQuestionResponse(
+  data: unknown,
+): QuestionnaireResponse {
+  const params = data as {
+    resourceType?: string;
+    parameter?: Array<{ name?: string; resource?: QuestionnaireResponse }>;
+  };
+
+  if (params.resourceType === "Parameters" && params.parameter) {
+    for (const param of params.parameter) {
+      if (
+        (param.name === "questionnaire-response" || param.name === "return") &&
+        param.resource?.resourceType === "QuestionnaireResponse"
+      ) {
+        return param.resource;
+      }
+    }
+  }
+
+  // Fallback: raw QR (some servers may not wrap in Parameters)
+  if (
+    (data as QuestionnaireResponse).resourceType === "QuestionnaireResponse"
+  ) {
+    return data as QuestionnaireResponse;
+  }
+
+  throw new Error("No QuestionnaireResponse found in $next-question response");
 }
 
 // -- Parameters builder --

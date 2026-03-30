@@ -4,8 +4,15 @@ import type {
   CdsCard,
   CdsHookResponse,
   CoverageInformation,
+  SuggestionAction,
 } from "@/lib/cds-types";
+import {
+  getSuggestionTargetKeys,
+  matchSuggestionResourceToTemplate,
+} from "@/lib/draft-orders";
 import type { SelectedOrder } from "@/lib/order-templates";
+import type { OrderResource } from "@/lib/order-types";
+import { isEncounterOrderResource } from "@/lib/order-types";
 
 export type EncounterPhase = "start" | "select" | "sign" | "review" | "summary";
 
@@ -27,6 +34,7 @@ interface OrderFormState {
   lastHookName: string | null;
   lastRawResponse: CdsHookResponse | null;
   systemActionResources: Map<string, Resource>;
+  appliedSuggestions: Set<string>;
   isHookLoading: boolean;
   hookError: Error | null;
   currentPhase: EncounterPhase;
@@ -69,6 +77,15 @@ type OrderFormAction =
       type: "SET_ORDER_SERVER_IDS";
       payload: Map<string, string>;
     }
+  | {
+      type: "APPLY_SUGGESTION";
+      payload: {
+        cardId: string;
+        suggestionId: string;
+        actions: SuggestionAction[];
+        disableIds?: string[];
+      };
+    }
   | { type: "RESET" };
 
 function createInitialState(
@@ -87,6 +104,7 @@ function createInitialState(
     lastHookName: null,
     lastRawResponse: null,
     systemActionResources: new Map(),
+    appliedSuggestions: new Set(),
     isHookLoading: false,
     hookError: null,
     currentPhase: "start",
@@ -189,6 +207,80 @@ function orderFormReducer(
           const serverId = idMap.get(o.templateId);
           return serverId ? { ...o, serverId } : o;
         }),
+      };
+    }
+    case "APPLY_SUGGESTION": {
+      const { suggestionId, actions, disableIds } = action.payload;
+      const nextApplied = new Set(state.appliedSuggestions);
+      nextApplied.add(suggestionId);
+      for (const id of disableIds ?? []) {
+        nextApplied.add(id);
+      }
+
+      let nextOrders = [...state.selectedOrders];
+
+      for (const sa of actions) {
+        if (sa.type === "create" && sa.resource) {
+          if (!isEncounterOrderResource(sa.resource as OrderResource)) continue;
+          const template = matchSuggestionResourceToTemplate(sa.resource);
+          if (!template) continue;
+          const alreadyExists = nextOrders.some(
+            (o) => o.templateId === template.id,
+          );
+          if (alreadyExists) continue;
+          nextOrders.push({
+            templateId: template.id,
+            template,
+            customizations: {},
+            expanded: false,
+          });
+        } else if (sa.type === "delete") {
+          const resourceType =
+            sa.resource?.resourceType ?? sa.resourceId?.split("/")[0];
+          const keys = getSuggestionTargetKeys(sa, resourceType);
+          if (keys.length === 0) continue;
+          nextOrders = nextOrders.filter((o) => {
+            const draftKey = `${o.template.resourceType}/draft-${o.templateId}`;
+            const serverKey = o.serverId
+              ? `${o.template.resourceType}/${o.serverId}`
+              : undefined;
+            return !keys.some(
+              (k) => k === draftKey || k === serverKey || k === o.templateId,
+            );
+          });
+        } else if (sa.type === "update" && sa.resource) {
+          const resourceType = sa.resource.resourceType;
+          const keys = getSuggestionTargetKeys(sa, resourceType);
+          if (keys.length === 0) continue;
+          nextOrders = nextOrders.map((o) => {
+            const draftKey = `${o.template.resourceType}/draft-${o.templateId}`;
+            const serverKey = o.serverId
+              ? `${o.template.resourceType}/${o.serverId}`
+              : undefined;
+            const isMatch = keys.some(
+              (k) => k === draftKey || k === serverKey || k === o.templateId,
+            );
+            if (!isMatch) return o;
+            const updatedResource = sa.resource as unknown as Record<
+              string,
+              unknown
+            >;
+            return {
+              ...o,
+              persistedExtensions:
+                "extension" in updatedResource &&
+                Array.isArray(updatedResource.extension)
+                  ? (updatedResource.extension as SelectedOrder["persistedExtensions"])
+                  : o.persistedExtensions,
+            };
+          });
+        }
+      }
+
+      return {
+        ...state,
+        selectedOrders: nextOrders,
+        appliedSuggestions: nextApplied,
       };
     }
     case "RESET":

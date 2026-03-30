@@ -93,3 +93,9 @@ export function parseCoverageInfoFromResource(
   }
   return results;
 }
+
+/** Whether a coverage-information block indicates DTR documentation is available. */
+export const hasDtrDoc = (ci: CoverageInformation): boolean =>
+  !!ci.docNeeded &&
+  ci.docNeeded !== "no-doc" &&
+  (ci.questionnaire?.length ?? 0) > 0;

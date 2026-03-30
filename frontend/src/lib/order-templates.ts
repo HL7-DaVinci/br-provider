@@ -93,10 +93,11 @@ const TEMPLATES: OrderTemplate[] = [
 
   // Services (ServiceRequest)
   {
-    id: "svc-g0180",
-    code: "G0180",
-    display: "Home Health Certification",
-    description: "Physician certification for home health plan of care",
+    id: "svc-g0151",
+    code: "G0151",
+    display: "Home Health Services",
+    description:
+      "Services performed by a qualified physical therapist in the home health setting",
     category: "Services",
     resourceType: "ServiceRequest",
     codeSystem: HCPCS_SYSTEM,

@@ -1,8 +1,9 @@
 import { Link } from "@tanstack/react-router";
 import type { Coverage, Patient } from "fhir/r4";
-import { ArrowLeft, Play } from "lucide-react";
+import { ArrowLeft, Loader2, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCoverage, useOrganization } from "@/hooks/use-clinical-api";
+import { useCreateEncounter } from "@/hooks/use-create-encounter";
 import {
   calculateAge,
   formatClinicalDate,
@@ -21,8 +22,11 @@ export function PatientHeader({ patient, stats }: PatientHeaderProps) {
   const dob = formatClinicalDate(patient.birthDate);
   const age = calculateAge(patient.birthDate);
   const mrn = getPrimaryIdentifier(patient.identifier);
-  // Coverage details
   const patientId = typeof patient.id === "string" ? patient.id : "";
+
+  const { createEncounter, isCreating } = useCreateEncounter(patientId);
+
+  // Coverage details
   const { data: coverageBundle, isLoading: coverageLoading } =
     useCoverage(patientId);
   const coverage = coverageBundle?.entry?.[0]?.resource as Coverage | undefined;
@@ -73,12 +77,19 @@ export function PatientHeader({ patient, stats }: PatientHeaderProps) {
           <h1 className="text-lg font-semibold truncate">{name}</h1>
         </div>
         <div className="flex items-center gap-3">
-          <Link to="/patients/$patientId/encounter" params={{ patientId }}>
-            <Button size="sm" variant="outline">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={createEncounter}
+            disabled={isCreating}
+          >
+            {isCreating ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+            ) : (
               <Play className="h-3.5 w-3.5 mr-1" />
-              Start Encounter
-            </Button>
-          </Link>
+            )}
+            {isCreating ? "Starting..." : "Start Encounter"}
+          </Button>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-y-1 text-sm text-muted-foreground mt-0.5">

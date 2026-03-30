@@ -10,12 +10,13 @@ import {
 } from "./draft-orders";
 
 const selectedOrder: SelectedOrder = {
-  templateId: "svc-g0180",
+  templateId: "svc-g0151",
   template: {
-    id: "svc-g0180",
-    code: "G0180",
-    display: "Home Health Certification",
-    description: "Physician certification for home health plan of care",
+    id: "svc-g0151",
+    code: "G0151",
+    display: "Home Health Services",
+    description:
+      "Services performed by a qualified physical therapist in the home health setting",
     category: "Services",
     resourceType: "ServiceRequest",
     codeSystem: "http://example.org/codes",
@@ -41,7 +42,7 @@ describe("draft order helpers", () => {
     expect(bundle.resourceType).toBe("Bundle");
     expect(bundle.entry).toHaveLength(1);
     expect(bundle.entry?.[0]?.resource).toMatchObject({
-      id: "draft-svc-g0180",
+      id: "draft-svc-g0151",
       status: "draft",
       subject: { reference: "Patient/patient-1" },
       encounter: { reference: "Encounter/enc-1" },
@@ -109,12 +110,12 @@ describe("draft order helpers", () => {
             },
           ],
           [
-            "ServiceRequest/draft-svc-g0180",
+            "ServiceRequest/draft-svc-g0151",
             {
               resourceType: "ServiceRequest",
-              id: "draft-svc-g0180",
+              id: "draft-svc-g0151",
               code: {
-                coding: [{ system: "http://example.org/codes", code: "G0180" }],
+                coding: [{ system: "http://example.org/codes", code: "G0151" }],
               },
               extension: correctExtension,
             },
@@ -140,8 +141,8 @@ describe("draft order helpers", () => {
           intent: "order",
           subject: { reference: "Patient/patient-1" },
           code: {
-            coding: [{ system: "http://example.org/codes", code: "G0180" }],
-            text: "Home Health Certification",
+            coding: [{ system: "http://example.org/codes", code: "G0151" }],
+            text: "Home Health Services",
           },
           extension: persistedExtension,
         },

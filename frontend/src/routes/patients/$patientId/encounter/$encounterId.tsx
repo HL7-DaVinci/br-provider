@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
@@ -21,15 +22,18 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
 import { useCdsHooks } from "@/hooks/use-cds-hooks";
 import {
+  invalidateOrderQueries,
   useDraftOrders,
   useEncounter,
   useEncounterOrders,
   useFinishEncounter,
+  useOrderPaStatusMap,
   useSaveOrders,
   useUpdateEncounter,
 } from "@/hooks/use-clinical-api";
 import { OrderFormProvider, useOrderContext } from "@/hooks/use-order-context";
 import { usePayerServer } from "@/hooks/use-payer-server";
+import { DTR_COMPLETION_CHANNEL } from "@/lib/api";
 import type {
   OrderDispatchContext,
   OrderSelectContext,
@@ -54,7 +58,11 @@ function EncounterEditorPage() {
   const practitionerId = fhirUser?.replace(/^Practitioner\//, "") ?? "";
 
   return (
-    <OrderFormProvider patientId={patientId} practitionerId={practitionerId}>
+    <OrderFormProvider
+      key={encounterId}
+      patientId={patientId}
+      practitionerId={practitionerId}
+    >
       <ActiveEncounterWorkflow
         patientId={patientId}
         encounterId={encounterId}
@@ -80,8 +88,26 @@ function ActiveEncounterWorkflow({
   const { data: existingDrafts } = useDraftOrders(encounterId, patientId);
   const { data: encounterOrders, isFetched: ordersFetched } =
     useEncounterOrders(encounterId, patientId);
+  const paStatusMap = useOrderPaStatusMap(patientId);
   const detailsFormRef = useRef<EncounterDetailsFormHandle>(null);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  // Listen for DTR completion in child windows and refetch order data
+  useEffect(() => {
+    try {
+      const channel = new BroadcastChannel(DTR_COMPLETION_CHANNEL);
+      channel.onmessage = () => {
+        invalidateOrderQueries(queryClient);
+        queryClient.invalidateQueries({
+          queryKey: ["fhir", "QuestionnaireResponse"],
+        });
+      };
+      return () => channel.close();
+    } catch {
+      // BroadcastChannel not supported in this browser
+    }
+  }, [queryClient]);
 
   const hasFiredEncounterStart = useRef(false);
   const hasRestoredDrafts = useRef(false);
@@ -496,6 +522,7 @@ function ActiveEncounterWorkflow({
           <EncounterLinkedOrders
             encounterId={encounterId}
             patientId={patientId}
+            paStatusMap={paStatusMap}
             onDispatch={handleOrderDispatch}
           />
           <EncounterDocumentation encounterId={encounterId} />

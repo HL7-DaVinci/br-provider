@@ -81,8 +81,10 @@ public class SmartLaunchController {
             questionnaire = List.of(qs);
         }
 
+        String appContext = (String) body.get("appContext");
+
         String launchToken = smartLaunchService.createLaunchContext(
-            patientId, encounterId, fhirContext, coverageAssertionId, questionnaire);
+            patientId, encounterId, fhirContext, coverageAssertionId, questionnaire, appContext);
 
         String providerFhirUrl = resolveProviderFhirUrl(requestedProviderFhirUrl);
         String launchUrl = "/dtr/launch?iss=" + providerFhirUrl + "&launch=" + launchToken;
@@ -111,6 +113,9 @@ public class SmartLaunchController {
         response.put("fhirContext", ctx.fhirContextReferences());
         response.put("coverageAssertionId", ctx.coverageAssertionId());
         response.put("questionnaire", ctx.questionnaire());
+        if (ctx.appContext() != null) {
+            response.put("appContext", ctx.appContext());
+        }
         return ResponseEntity.ok(response);
     }
 

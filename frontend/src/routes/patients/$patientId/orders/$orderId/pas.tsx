@@ -1,5 +1,13 @@
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import type { ClaimResponse, Coverage, Extension, Resource } from "fhir/r4";
+import type {
+  ClaimResponse,
+  Coverage,
+  Extension,
+  QuestionnaireResponse,
+  Resource,
+  Task,
+} from "fhir/r4";
 import {
   AlertCircle,
   ArrowLeft,
@@ -10,22 +18,41 @@ import {
   Send,
   XCircle,
 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { useCoverage, usePatient } from "@/hooks/use-clinical-api";
+import {
+  invalidateOrderQueries,
+  useCoverage,
+  useOrderQuestionnaireResponses,
+  usePatient,
+} from "@/hooks/use-clinical-api";
+import { fhirFetch } from "@/hooks/use-fhir-api";
 import { useFhirServer } from "@/hooks/use-fhir-server";
-import { usePasInquiry, usePasSubmit } from "@/hooks/use-pas";
+import {
+  extractTaskQuestionnaireUrls,
+  type PasSubmitResult,
+  usePasDocumentationTasks,
+  usePasInquiry,
+  usePasSubmit,
+  usePasUpdate,
+} from "@/hooks/use-pas";
 import { usePayerServer } from "@/hooks/use-payer-server";
+import { fhirProxyUrl, launchSmartApp } from "@/lib/api";
 import {
   formatClinicalDate,
   formatPatientName,
 } from "@/lib/clinical-formatters";
+import {
+  COVERAGE_INFO_EXT_URL,
+  parseExtensionFields,
+} from "@/lib/coverage-extensions";
 
 interface PasSearch {
   coverageId?: string;
+  claimResponseId?: string;
   qrIds?: string;
   orderType?: string;
 }
@@ -36,6 +63,7 @@ export const Route = createFileRoute(
   component: PasPage,
   validateSearch: (search: Record<string, unknown>): PasSearch => ({
     coverageId: (search.coverageId as string) ?? undefined,
+    claimResponseId: (search.claimResponseId as string) ?? undefined,
     qrIds: (search.qrIds as string) ?? undefined,
     orderType: (search.orderType as string) ?? undefined,
   }),
@@ -43,9 +71,32 @@ export const Route = createFileRoute(
 
 function PasPage() {
   const { patientId, orderId } = Route.useParams();
-  const { coverageId, qrIds, orderType } = Route.useSearch();
+  const { coverageId, claimResponseId, qrIds, orderType } = Route.useSearch();
   const { serverUrl: providerFhirUrl } = useFhirServer();
   const { fhirUrl: payerFhirUrl } = usePayerServer();
+  const queryClient = useQueryClient();
+
+  const invalidateClaimResponseList = useCallback(() => {
+    queryClient.invalidateQueries({
+      queryKey: ["fhir", "ClaimResponse", patientId],
+    });
+  }, [patientId, queryClient]);
+
+  const { data: existingClaimResponse } = useQuery({
+    queryKey: ["fhir", "ClaimResponse", claimResponseId, providerFhirUrl],
+    queryFn: async (): Promise<ClaimResponse | null> => {
+      try {
+        return await fhirFetch<ClaimResponse>(
+          `${providerFhirUrl}/ClaimResponse/${claimResponseId}`,
+        );
+      } catch {
+        return null;
+      }
+    },
+    enabled: !!claimResponseId && !!providerFhirUrl,
+    staleTime: 60 * 1000,
+    retry: false,
+  });
 
   const { data: patient } = usePatient(patientId);
   const { data: coverageBundle } = useCoverage(patientId);
@@ -57,28 +108,160 @@ function PasPage() {
 
   const resolvedCoverageId = coverageId ?? coverage?.id;
   const resolvedOrderType = orderType ?? "ServiceRequest";
+  const orderRef = `${resolvedOrderType}/${orderId}`;
   const questionnaireResponseIds = qrIds
     ? qrIds.split(",").filter(Boolean)
     : [];
 
-  const pasSubmit = usePasSubmit();
+  // Fetch each QR to display metadata (status, questionnaire title)
+  const qrQueries = useQueries({
+    queries: questionnaireResponseIds.map((id) => ({
+      queryKey: ["fhir", "QuestionnaireResponse", id, providerFhirUrl],
+      queryFn: () =>
+        fhirFetch<QuestionnaireResponse>(
+          `${providerFhirUrl}/QuestionnaireResponse/${id}`,
+        ),
+      enabled: !!providerFhirUrl,
+      staleTime: 60 * 1000,
+      retry: 1,
+    })),
+  });
 
-  // After submission, track the ClaimResponse for status polling
+  const pasSubmit = usePasSubmit();
+  const pasUpdate = usePasUpdate();
+
+  // After submission, track the ClaimResponse and any documentation request Tasks
   const [claimResponse, setClaimResponse] = useState<ClaimResponse | null>(
     null,
   );
+  const [docTasks, setDocTasks] = useState<Task[]>([]);
+  const activeClaimResponse = claimResponse ?? existingClaimResponse ?? null;
 
   const pasInquiry = usePasInquiry(
-    claimResponse?.id
-      ? { claimResponseId: claimResponse.id, payerFhirUrl }
+    activeClaimResponse?.id
+      ? {
+          claimResponseId: activeClaimResponse.id,
+          payerFhirUrl,
+          patientId,
+          orderId,
+          orderType: resolvedOrderType,
+          coverageId: resolvedCoverageId,
+          providerFhirUrl,
+        }
       : undefined,
   );
 
   const latestResponse =
-    (pasInquiry.data as ClaimResponse | undefined) ?? claimResponse;
+    (pasInquiry.data as ClaimResponse | undefined) ?? activeClaimResponse;
   const isPended =
     latestResponse?.outcome === "queued" ||
     latestResponse?.outcome === "partial";
+  const priorClaimId = latestResponse?.request?.reference?.replace(
+    /^.*Claim\//,
+    "",
+  );
+
+  const prevInquiryOutcome = useRef(activeClaimResponse?.outcome);
+  useEffect(() => {
+    if (!pasInquiry.data) return;
+    const newOutcome = (pasInquiry.data as ClaimResponse).outcome;
+    if (newOutcome !== prevInquiryOutcome.current) {
+      prevInquiryOutcome.current = newOutcome;
+      invalidateClaimResponseList();
+    }
+  }, [invalidateClaimResponseList, pasInquiry.data]);
+
+  const rehydratedDocTasks = usePasDocumentationTasks(
+    docTasks.length === 0 && latestResponse?.id && providerFhirUrl
+      ? {
+          patientId,
+          providerFhirUrl,
+          claimId: priorClaimId,
+          claimResponseId: latestResponse.id,
+          orderRef,
+        }
+      : undefined,
+  );
+  const documentationTasks =
+    docTasks.length > 0 ? docTasks : (rehydratedDocTasks.data ?? []);
+  const taskQuestionnaireUrls =
+    extractTaskQuestionnaireUrls(documentationTasks);
+
+  // Detect new QRs completed after DTR launch (for PAS update flow)
+  const { data: orderQrBundle } = useOrderQuestionnaireResponses(
+    isPended && taskQuestionnaireUrls.length > 0 ? orderRef : undefined,
+    isPended && taskQuestionnaireUrls.length > 0 ? patientId : undefined,
+  );
+  const newCompletedQrs = (orderQrBundle?.entry ?? [])
+    .filter((e) => e.resource?.status === "completed")
+    .map((e) => e.resource as QuestionnaireResponse)
+    .filter((qr) => {
+      if (!activeClaimResponse?.created) return true;
+      const qrDate = qr.authored ? new Date(qr.authored) : null;
+      const crDate = new Date(activeClaimResponse.created);
+      return qrDate ? qrDate > crDate : true;
+    });
+
+  const [isLaunchingDtr, setIsLaunchingDtr] = useState(false);
+
+  const persistPaResultToOrder = useCallback(
+    async (cr: ClaimResponse) => {
+      invalidateClaimResponseList();
+      if (!cr.preAuthRef || cr.outcome !== "complete") return;
+      if (!resolvedCoverageId) return;
+
+      const orderUrl = `${providerFhirUrl}/${resolvedOrderType}/${orderId}`;
+      const orderRes = await fetch(fhirProxyUrl(orderUrl), {
+        credentials: "same-origin",
+      });
+      if (!orderRes.ok) return;
+      const order = await orderRes.json();
+
+      for (const ext of order.extension ?? []) {
+        if (ext.url !== COVERAGE_INFO_EXT_URL) continue;
+        const parsed = parseExtensionFields(ext.extension ?? []);
+        if (parsed.coverage !== `Coverage/${resolvedCoverageId}`) continue;
+
+        const subExts: Extension[] = ext.extension ?? [];
+        const satIdx = subExts.findIndex(
+          (s: Extension) => s.url === "satisfied-pa-id",
+        );
+        if (satIdx >= 0) {
+          subExts[satIdx].valueString = cr.preAuthRef;
+        } else {
+          subExts.push({
+            url: "satisfied-pa-id",
+            valueString: cr.preAuthRef,
+          });
+        }
+
+        const paIdx = subExts.findIndex(
+          (s: Extension) => s.url === "pa-needed",
+        );
+        if (paIdx >= 0) {
+          subExts[paIdx].valueCode = "satisfied";
+        }
+        ext.extension = subExts;
+      }
+
+      await fetch(fhirProxyUrl(orderUrl), {
+        method: "PUT",
+        headers: { "Content-Type": "application/fhir+json" },
+        credentials: "same-origin",
+        body: JSON.stringify(order),
+      });
+
+      invalidateOrderQueries(queryClient);
+    },
+    [
+      invalidateClaimResponseList,
+      providerFhirUrl,
+      resolvedOrderType,
+      orderId,
+      resolvedCoverageId,
+      queryClient,
+    ],
+  );
 
   function handleSubmit() {
     if (!resolvedCoverageId) return;
@@ -94,8 +277,66 @@ function PasPage() {
         providerFhirUrl,
       },
       {
-        onSuccess: (data) => {
-          setClaimResponse(data as ClaimResponse);
+        onSuccess: (result: PasSubmitResult) => {
+          setClaimResponse(result.claimResponse);
+          setDocTasks(result.documentationTasks);
+          void persistPaResultToOrder(result.claimResponse);
+        },
+      },
+    );
+  }
+
+  const handleDtrLaunch = useCallback(async () => {
+    if (!taskQuestionnaireUrls.length) return;
+    setIsLaunchingDtr(true);
+    try {
+      const fhirContext = [
+        resolvedCoverageId ? `Coverage/${resolvedCoverageId}` : null,
+        `${resolvedOrderType}/${orderId}`,
+      ].filter(Boolean);
+
+      await launchSmartApp({
+        patientId,
+        fhirContext,
+        questionnaire: taskQuestionnaireUrls,
+        providerFhirUrl,
+      });
+    } catch (err) {
+      console.error("DTR launch from PAS failed:", err);
+    } finally {
+      setIsLaunchingDtr(false);
+    }
+  }, [
+    taskQuestionnaireUrls,
+    resolvedCoverageId,
+    resolvedOrderType,
+    orderId,
+    patientId,
+    providerFhirUrl,
+  ]);
+
+  function handlePasUpdate() {
+    if (!resolvedCoverageId || !priorClaimId) return;
+    const newQrIds = newCompletedQrs
+      .map((qr) => qr.id)
+      .filter((id): id is string => !!id);
+
+    pasUpdate.mutate(
+      {
+        patientId,
+        orderId,
+        orderType: resolvedOrderType,
+        coverageId: resolvedCoverageId,
+        questionnaireResponseIds: [...questionnaireResponseIds, ...newQrIds],
+        payerFhirUrl,
+        providerFhirUrl,
+        priorClaimId,
+      },
+      {
+        onSuccess: (result: PasSubmitResult) => {
+          setClaimResponse(result.claimResponse);
+          setDocTasks(result.documentationTasks);
+          void persistPaResultToOrder(result.claimResponse);
         },
       },
     );
@@ -197,15 +438,32 @@ function PasPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <ul className="space-y-1">
-              {questionnaireResponseIds.map((qrId) => (
-                <li key={qrId} className="flex items-center gap-2 text-sm">
-                  <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="font-mono text-xs">
-                    QuestionnaireResponse/{qrId}
-                  </span>
-                </li>
-              ))}
+            <ul className="space-y-2">
+              {qrQueries.map((query, i) => {
+                const qrId = questionnaireResponseIds[i];
+                const qr = query.data;
+                return (
+                  <li key={qrId} className="flex items-center gap-2 text-sm">
+                    <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <Badge
+                      variant={
+                        qr?.status === "completed" ? "default" : "secondary"
+                      }
+                      className="text-xs"
+                    >
+                      {query.isLoading ? "loading" : (qr?.status ?? "unknown")}
+                    </Badge>
+                    <span className="font-mono text-xs truncate">
+                      QuestionnaireResponse/{qrId}
+                    </span>
+                    {qr?.questionnaire && (
+                      <span className="text-xs text-muted-foreground truncate">
+                        {qr.questionnaire.split("/").pop()?.split("|")[0]}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           </CardContent>
         </Card>
@@ -249,18 +507,87 @@ function PasPage() {
           </Button>
         </div>
       ) : (
-        <PasResponseDisplay
-          claimResponse={latestResponse}
-          isPolling={isPended && pasInquiry.isFetching}
-        />
+        <>
+          <PasResponseDisplay
+            claimResponse={latestResponse}
+            isPolling={isPended && pasInquiry.isFetching}
+          />
+
+          {/* Additional Documentation Request (from PAS Task resources) */}
+          {isPended && taskQuestionnaireUrls.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-amber-500" />
+                  Additional Documentation Required
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  The payer has requested additional documentation before this
+                  authorization can be approved. Complete the required
+                  questionnaire(s) using DTR.
+                </p>
+                <ul className="space-y-1">
+                  {taskQuestionnaireUrls.map((url) => (
+                    <li
+                      key={url}
+                      className="text-xs font-mono text-muted-foreground"
+                    >
+                      {url}
+                    </li>
+                  ))}
+                </ul>
+                <Button onClick={handleDtrLaunch} disabled={isLaunchingDtr}>
+                  {isLaunchingDtr ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <FileText className="h-4 w-4 mr-2" />
+                  )}
+                  {isLaunchingDtr
+                    ? "Launching..."
+                    : "Complete Additional Documentation"}
+                </Button>
+
+                {/* PAS Update section -- shown when new QRs exist after DTR */}
+                {newCompletedQrs.length > 0 && priorClaimId && (
+                  <div className="space-y-2 pt-2 border-t">
+                    <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      <span>
+                        {newCompletedQrs.length} new document
+                        {newCompletedQrs.length !== 1 ? "s" : ""} completed
+                      </span>
+                    </div>
+                    <Button
+                      onClick={handlePasUpdate}
+                      disabled={pasUpdate.isPending}
+                    >
+                      {pasUpdate.isPending ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4 mr-2" />
+                      )}
+                      {pasUpdate.isPending
+                        ? "Submitting Update..."
+                        : "Submit PAS Update"}
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </>
       )}
 
       {/* Error Display */}
-      {pasSubmit.isError && (
+      {(pasSubmit.isError || pasUpdate.isError) && (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/30">
           <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
             <AlertCircle className="h-4 w-4 shrink-0" />
-            <p className="text-sm">{pasSubmit.error.message}</p>
+            <p className="text-sm">
+              {(pasSubmit.error ?? pasUpdate.error)?.message}
+            </p>
           </div>
         </div>
       )}

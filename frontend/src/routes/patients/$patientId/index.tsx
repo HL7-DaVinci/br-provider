@@ -275,6 +275,7 @@ function ClaimResponseRow({
           search={{
             orderType: pasLink.orderType,
             coverageId: pasLink.coverageId,
+            claimResponseId: claim.id,
           }}
           className="text-muted-foreground hover:text-foreground"
         >

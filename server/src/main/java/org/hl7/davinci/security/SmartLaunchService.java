@@ -24,16 +24,18 @@ public class SmartLaunchService {
      * @param encounterId           Encounter resource ID (may be null)
      * @param fhirContextReferences FHIR resource references for DTR context
      *                              (e.g. Coverage/123, ServiceRequest/456)
+     * @param appContext            Raw CDS Hooks appContext string (preserved opaquely)
      * @return opaque launch token (UUID)
      */
     public String createLaunchContext(String patientId, String encounterId,
                                       List<String> fhirContextReferences,
                                       String coverageAssertionId,
-                                      List<String> questionnaire) {
+                                      List<String> questionnaire,
+                                      String appContext) {
         String launchToken = UUID.randomUUID().toString();
         launchContexts.put(launchToken, new LaunchContext(
             patientId, encounterId, fhirContextReferences,
-            coverageAssertionId, questionnaire, Instant.now()));
+            coverageAssertionId, questionnaire, appContext, Instant.now()));
         return launchToken;
     }
 
@@ -55,6 +57,7 @@ public class SmartLaunchService {
         List<String> fhirContextReferences,
         String coverageAssertionId,
         List<String> questionnaire,
+        String appContext,
         Instant createdAt
     ) {}
 }

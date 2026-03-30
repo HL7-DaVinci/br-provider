@@ -2,11 +2,15 @@ import type { Resource } from "fhir/r4";
 import { Loader2, Send } from "lucide-react";
 import { useCallback, useState } from "react";
 import { ClinicalTable } from "@/components/clinical-table";
-import { OrderCoverageActions } from "@/components/order-coverage-actions";
+import { DtrAction, PaAction } from "@/components/order-coverage-actions";
+import { PipelineStageCell } from "@/components/order-pipeline";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useEncounterOrders } from "@/hooks/use-clinical-api";
+import {
+  type OrderPaStatus,
+  useEncounterOrders,
+} from "@/hooks/use-clinical-api";
 import {
   formatClinicalDate,
   formatCodeableConcept,
@@ -17,12 +21,14 @@ import { formatOrderType, getOrderCode, getOrderDate } from "@/lib/order-types";
 interface EncounterLinkedOrdersProps {
   encounterId: string;
   patientId: string;
+  paStatusMap: Map<string, OrderPaStatus>;
   onDispatch?: () => Promise<void>;
 }
 
 export function EncounterLinkedOrders({
   encounterId,
   patientId,
+  paStatusMap,
   onDispatch,
 }: EncounterLinkedOrdersProps) {
   const { data: orders, isLoading } = useEncounterOrders(
@@ -80,12 +86,7 @@ export function EncounterLinkedOrders({
               ),
             },
             {
-              header: "ID",
-              accessor: (o) => o.resource.id ?? "",
-              className: "text-muted-foreground",
-            },
-            {
-              header: "Description",
+              header: "Code",
               accessor: (o) => formatCodeableConcept(getOrderCode(o.resource)),
             },
             {
@@ -99,14 +100,56 @@ export function EncounterLinkedOrders({
               className: "text-muted-foreground",
             },
             {
-              header: "",
+              header: "Coverage",
+              className: "whitespace-nowrap",
               accessor: (o) => (
-                <OrderCoverageActions
+                <PipelineStageCell
+                  order={o}
+                  patientId={patientId}
+                  paStatusMap={paStatusMap}
+                  stage="coverage"
+                />
+              ),
+            },
+            {
+              header: "Documentation",
+              className: "whitespace-nowrap",
+              accessor: (o) => (
+                <PipelineStageCell
+                  order={o}
+                  patientId={patientId}
+                  paStatusMap={paStatusMap}
+                  stage="documentation"
+                />
+              ),
+            },
+            {
+              header: "Authorization",
+              className: "whitespace-nowrap",
+              accessor: (o) => (
+                <PipelineStageCell
+                  order={o}
+                  patientId={patientId}
+                  paStatusMap={paStatusMap}
+                  stage="authorization"
+                />
+              ),
+            },
+            {
+              header: "DTR",
+              className: "whitespace-nowrap",
+              accessor: (o) => (
+                <DtrAction
                   order={o}
                   patientId={patientId}
                   encounterId={encounterId}
                 />
               ),
+            },
+            {
+              header: "Prior Auth",
+              className: "whitespace-nowrap",
+              accessor: (o) => <PaAction order={o} patientId={patientId} />,
             },
           ]}
           data={orders ?? []}

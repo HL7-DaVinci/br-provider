@@ -72,6 +72,7 @@ function DtrLaunchPage() {
           fhirContext: context.fhirContext?.join(",") ?? "",
           coverageAssertionId: context.coverageAssertionId ?? undefined,
           questionnaire: serializeQuestionnaireSearch(context.questionnaire),
+          appContext: context.appContext ?? undefined,
         },
       });
     } catch (err) {

@@ -1,10 +1,9 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { Plus } from "lucide-react";
+import { createFileRoute } from "@tanstack/react-router";
 import { ClinicalTable } from "@/components/clinical-table";
-import { OrderCoverageActions } from "@/components/order-coverage-actions";
+import { DtrAction, PaAction } from "@/components/order-coverage-actions";
+import { PipelineStageCell } from "@/components/order-pipeline";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { useOrders } from "@/hooks/use-clinical-api";
+import { useOrderPaStatusMap, useOrders } from "@/hooks/use-clinical-api";
 import {
   formatClinicalDate,
   formatCodeableConcept,
@@ -19,6 +18,7 @@ export const Route = createFileRoute("/patients/$patientId/orders/")({
 function OrdersList() {
   const { patientId } = Route.useParams();
   const { data: orders, isLoading, isError, error } = useOrders(patientId);
+  const paStatusMap = useOrderPaStatusMap(patientId);
 
   if (isError) {
     return (
@@ -32,22 +32,14 @@ function OrdersList() {
 
   return (
     <div className="p-6 max-w-6xl space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold">
-          Orders
-          {!isLoading && orders && (
-            <span className="ml-2 text-sm font-normal text-muted-foreground">
-              (<span className="tabular">{orders.length}</span>)
-            </span>
-          )}
-        </h2>
-        <Link to="/patients/$patientId/orders/new" params={{ patientId }}>
-          <Button size="sm">
-            <Plus className="h-4 w-4 mr-1" />
-            New Order
-          </Button>
-        </Link>
-      </div>
+      <h2 className="text-base font-semibold">
+        Orders
+        {!isLoading && orders && (
+          <span className="ml-2 text-sm font-normal text-muted-foreground">
+            (<span className="tabular">{orders.length}</span>)
+          </span>
+        )}
+      </h2>
       <ClinicalTable<OrderEntry>
         loading={isLoading}
         skeletonRows={5}
@@ -81,10 +73,50 @@ function OrdersList() {
             accessor: (o) => formatClinicalDate(getOrderDate(o.resource)),
           },
           {
-            header: "",
+            header: "Coverage",
+            className: "whitespace-nowrap",
             accessor: (o) => (
-              <OrderCoverageActions order={o} patientId={patientId} />
+              <PipelineStageCell
+                order={o}
+                patientId={patientId}
+                paStatusMap={paStatusMap}
+                stage="coverage"
+              />
             ),
+          },
+          {
+            header: "Documentation",
+            className: "whitespace-nowrap",
+            accessor: (o) => (
+              <PipelineStageCell
+                order={o}
+                patientId={patientId}
+                paStatusMap={paStatusMap}
+                stage="documentation"
+              />
+            ),
+          },
+          {
+            header: "Authorization",
+            className: "whitespace-nowrap",
+            accessor: (o) => (
+              <PipelineStageCell
+                order={o}
+                patientId={patientId}
+                paStatusMap={paStatusMap}
+                stage="authorization"
+              />
+            ),
+          },
+          {
+            header: "DTR",
+            className: "whitespace-nowrap",
+            accessor: (o) => <DtrAction order={o} patientId={patientId} />,
+          },
+          {
+            header: "Prior Auth",
+            className: "whitespace-nowrap",
+            accessor: (o) => <PaAction order={o} patientId={patientId} />,
           },
         ]}
         data={orders ?? []}

@@ -39,7 +39,7 @@ export function ClinicalTable<T>({
             {columns.map((col) => (
               <th
                 key={col.header}
-                className="h-9 px-3 text-left text-xs font-medium text-muted-foreground"
+                className={`h-9 px-3 text-left text-xs font-medium text-muted-foreground ${col.className ?? ""}`}
               >
                 {col.header}
               </th>

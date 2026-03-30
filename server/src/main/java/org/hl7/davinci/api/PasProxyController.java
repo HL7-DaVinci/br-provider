@@ -91,43 +91,13 @@ public class PasProxyController {
             @RequestBody Map<String, Object> params,
             HttpServletRequest request) {
         try {
-            String patientId = ProxyUtil.getRequiredParam(params, "patientId");
-            String orderId = ProxyUtil.getRequiredParam(params, "orderId");
-            String orderType = ProxyUtil.getRequiredParam(params, "orderType");
-            String coverageId = ProxyUtil.getRequiredParam(params, "coverageId");
+            SubmitResources resources = readSubmitResources(params, request);
             String payerFhirUrl = ProxyUtil.getRequiredParam(params, "payerFhirUrl");
 
-            @SuppressWarnings("unchecked")
-            List<String> qrIds = (List<String>) params.getOrDefault(
-                "questionnaireResponseIds", List.of());
-
-            outboundTargetValidator.validate(UrlMatchUtil.normalizeUrl(payerFhirUrl));
-            HttpSession session = request.getSession(false);
-            validateRequestedProviderTarget(
-                ProxyUtil.getRequestedProviderFhirBase(request), session);
-
-            String providerFhirBase = ProxyUtil.getActiveProviderFhirBase(request, serverProperties);
-
-            Map<String, Object> patient = readProviderResource(
-                providerFhirBase, "Patient", patientId, session);
-            Map<String, Object> order = readProviderResource(
-                providerFhirBase, orderType, orderId, session);
-            Map<String, Object> coverage = readProviderResource(
-                providerFhirBase, "Coverage", coverageId, session);
-            Map<String, Object> practitioner = readPractitionerFromOrder(
-                providerFhirBase, order, session);
-            Map<String, Object> insurer = readInsurerFromCoverage(
-                providerFhirBase, coverage, session);
-
-            List<Map<String, Object>> questionnaireResponses = new ArrayList<>();
-            for (String qrId : qrIds) {
-                questionnaireResponses.add(readProviderResource(
-                    providerFhirBase, "QuestionnaireResponse", qrId, session));
-            }
-
             Map<String, Object> bundle = buildPasBundle(
-                patient, practitioner, insurer, coverage, order, orderType,
-                questionnaireResponses);
+                resources.patient, resources.practitioner, resources.insurer,
+                resources.coverage, resources.order, resources.orderType,
+                resources.questionnaireResponses);
 
             String bundleJson = objectMapper.writeValueAsString(bundle);
             logger.info("PAS submit: sending bundle with {} entries to {}",
@@ -147,23 +117,83 @@ public class PasProxyController {
     }
 
     /**
+     * Submits a PAS update request after additional documentation has been provided.
+     * Builds a Claim with a `related` element referencing the prior Claim so the payer
+     * detects this as an UPDATE rather than an INITIAL submission.
+     *
+     * Request body extends submit with:
+     * {
+     *   "priorClaimId": "claim-123"
+     * }
+     */
+    @PostMapping("/update")
+    public ResponseEntity<?> update(
+            @RequestBody Map<String, Object> params,
+            HttpServletRequest request) {
+        try {
+            SubmitResources resources = readSubmitResources(params, request);
+            String payerFhirUrl = ProxyUtil.getRequiredParam(params, "payerFhirUrl");
+            String priorClaimId = ProxyUtil.getRequiredParam(params, "priorClaimId");
+
+            Map<String, Object> bundle = buildPasUpdateBundle(
+                resources.patient, resources.practitioner, resources.insurer,
+                resources.coverage, resources.order, resources.orderType,
+                resources.questionnaireResponses, priorClaimId, payerFhirUrl);
+
+            String bundleJson = objectMapper.writeValueAsString(bundle);
+            logger.info("PAS update: sending bundle with {} entries to {} (priorClaim={})",
+                ((List<?>) bundle.get("entry")).size(), payerFhirUrl, priorClaimId);
+
+            String submitUrl = UrlMatchUtil.normalizeUrl(payerFhirUrl) + "/Claim/$submit";
+            return relayToPayerFhir(submitUrl, payerFhirUrl, bundleJson);
+
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest()
+                .body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            logger.error("PAS update error: {}", e.getMessage(), e);
+            return ResponseEntity.status(502)
+                .body(Map.of("error", "Failed to submit prior authorization update to payer"));
+        }
+    }
+
+    /**
      * Checks the status of a pended prior authorization.
+     *
+     * When patientId + coverageId are provided, builds a proper PAS Inquiry Request
+     * Bundle per the PAS IG and POSTs to Claim/$inquire. Otherwise falls back to a
+     * simple GET /ClaimResponse/{id} for backward compatibility.
      *
      * Request body:
      * {
      *   "claimResponseId": "cr-123",
-     *   "payerFhirUrl": "http://localhost:8081/fhir"
+     *   "payerFhirUrl": "http://localhost:8081/fhir",
+     *   "patientId": "pat015",        // optional, enables proper $inquire
+     *   "orderId": "1234",            // optional
+     *   "orderType": "ServiceRequest", // optional
+     *   "coverageId": "cov015"        // optional, enables proper $inquire
      * }
      */
     @PostMapping("/inquiry")
-    public ResponseEntity<?> inquiry(@RequestBody Map<String, Object> params) {
+    public ResponseEntity<?> inquiry(
+            @RequestBody Map<String, Object> params,
+            HttpServletRequest request) {
         try {
             String claimResponseId = ProxyUtil.getRequiredParam(params, "claimResponseId");
             String payerFhirUrl = ProxyUtil.getRequiredParam(params, "payerFhirUrl");
             outboundTargetValidator.validate(UrlMatchUtil.normalizeUrl(payerFhirUrl));
 
-            // First try reading the ClaimResponse directly
-            String readUrl = UrlMatchUtil.normalizeUrl(payerFhirUrl) + "/ClaimResponse/" + claimResponseId;
+            String patientId = (String) params.get("patientId");
+            String coverageId = (String) params.get("coverageId");
+
+            // When full context is available, use proper Claim/$inquire per PAS IG
+            if (patientId != null && coverageId != null) {
+                return performInquire(params, request, payerFhirUrl);
+            }
+
+            // Fallback: simple GET /ClaimResponse/{id}
+            String readUrl = UrlMatchUtil.normalizeUrl(payerFhirUrl)
+                + "/ClaimResponse/" + claimResponseId;
             return relayGetToPayerFhir(readUrl, payerFhirUrl);
 
         } catch (IllegalArgumentException e) {
@@ -174,6 +204,258 @@ public class PasProxyController {
             return ResponseEntity.status(502)
                 .body(Map.of("error", "Failed to check prior authorization status"));
         }
+    }
+
+    /**
+     * Builds a PAS Inquiry Request Bundle and POSTs to Claim/$inquire.
+     * The bundle contains a Claim (profile-claim-inquiry) with patient, insurer,
+     * provider, and coverage references, enabling query-by-example matching.
+     */
+    private ResponseEntity<?> performInquire(
+            Map<String, Object> params,
+            HttpServletRequest request,
+            String payerFhirUrl) throws Exception {
+        String patientId = ProxyUtil.getRequiredParam(params, "patientId");
+        String coverageId = ProxyUtil.getRequiredParam(params, "coverageId");
+        String orderType = (String) params.getOrDefault("orderType", "ServiceRequest");
+        String orderId = (String) params.get("orderId");
+
+        HttpSession session = request.getSession(false);
+        validateRequestedProviderTarget(
+            ProxyUtil.getRequestedProviderFhirBase(request), session);
+        String providerFhirBase = ProxyUtil.getActiveProviderFhirBase(request, serverProperties);
+
+        Map<String, Object> patient = readProviderResource(
+            providerFhirBase, "Patient", patientId, session);
+        Map<String, Object> coverage = readProviderResource(
+            providerFhirBase, "Coverage", coverageId, session);
+        Map<String, Object> insurer = readInsurerFromCoverage(
+            providerFhirBase, coverage, session);
+
+        Map<String, Object> practitioner = null;
+        if (orderId != null) {
+            Map<String, Object> order = readProviderResource(
+                providerFhirBase, orderType, orderId, session);
+            practitioner = readPractitionerFromOrder(providerFhirBase, order, session);
+        }
+        if (practitioner == null) {
+            practitioner = Map.of("resourceType", "Practitioner", "id", "unknown");
+        }
+
+        Map<String, Object> inquiryBundle = buildInquiryBundle(
+            patient, practitioner, insurer, coverage);
+
+        String bundleJson = objectMapper.writeValueAsString(inquiryBundle);
+        logger.info("PAS $inquire: sending inquiry bundle to {}", payerFhirUrl);
+
+        String inquireUrl = UrlMatchUtil.normalizeUrl(payerFhirUrl) + "/Claim/$inquire";
+        return relayToPayerFhir(inquireUrl, payerFhirUrl, bundleJson);
+    }
+
+    /**
+     * Builds a PAS Inquiry Request Bundle per the PAS IG profile-pas-inquiry-request-bundle.
+     * Contains a Claim (profile-claim-inquiry) with query-by-example references.
+     */
+    private Map<String, Object> buildInquiryBundle(
+            Map<String, Object> patient,
+            Map<String, Object> practitioner,
+            Map<String, Object> insurer,
+            Map<String, Object> coverage) {
+
+        String patientRef = "Patient/" + patient.get("id");
+        String practitionerRef = "Practitioner/" + practitioner.get("id");
+        String insurerRef = "Organization/" + insurer.get("id");
+        String coverageRef = "Coverage/" + coverage.get("id");
+
+        Map<String, Object> claim = new LinkedHashMap<>();
+        claim.put("resourceType", "Claim");
+        claim.put("identifier", List.of(Map.of(
+            "system", "http://example.org/SUBMITTER_CLAIM_IDENTIFIER",
+            "value", java.util.UUID.randomUUID().toString()
+        )));
+        claim.put("status", "active");
+        claim.put("type", Map.of(
+            "coding", List.of(Map.of(
+                "system", "http://terminology.hl7.org/CodeSystem/claim-type",
+                "code", "professional"
+            ))
+        ));
+        claim.put("use", "preauthorization");
+        claim.put("patient", Map.of("reference", patientRef));
+        claim.put("created", java.time.LocalDate.now().toString());
+        claim.put("provider", Map.of("reference", practitionerRef));
+        claim.put("insurer", Map.of("reference", insurerRef));
+        claim.put("priority", Map.of(
+            "coding", List.of(Map.of(
+                "system", "http://terminology.hl7.org/CodeSystem/processpriority",
+                "code", "normal"
+            ))
+        ));
+        claim.put("insurance", List.of(Map.of(
+            "sequence", 1,
+            "focal", true,
+            "coverage", Map.of("reference", coverageRef)
+        )));
+        // Wildcard item to match any service
+        claim.put("item", List.of(Map.of(
+            "sequence", 1,
+            "productOrService", Map.of(
+                "coding", List.of(Map.of(
+                    "system", "http://terminology.hl7.org/CodeSystem/data-absent-reason",
+                    "code", "not-applicable"
+                ))
+            )
+        )));
+
+        ensureMemberIdentifier(patient, coverage);
+
+        List<Map<String, Object>> entries = new ArrayList<>();
+        entries.add(bundleEntry(claim));
+        entries.add(bundleEntry(patient));
+        entries.add(bundleEntry(practitioner));
+        entries.add(bundleEntry(insurer));
+        entries.add(bundleEntry(coverage));
+
+        Map<String, Object> bundle = new LinkedHashMap<>();
+        bundle.put("resourceType", "Bundle");
+        bundle.put("identifier", Map.of(
+            "system", "urn:ietf:rfc:3986",
+            "value", "urn:uuid:" + java.util.UUID.randomUUID()
+        ));
+        bundle.put("type", "collection");
+        bundle.put("timestamp", java.time.Instant.now().toString());
+        bundle.put("entry", entries);
+
+        return bundle;
+    }
+
+    /**
+     * Ensures the Patient has a member identifier (type=MB) derived from the
+     * Coverage's subscriberId. PAS payers require this for inquiry matching.
+     */
+    @SuppressWarnings("unchecked")
+    private void ensureMemberIdentifier(Map<String, Object> patient, Map<String, Object> coverage) {
+        String subscriberId = (String) coverage.get("subscriberId");
+        if (subscriberId == null) return;
+
+        List<Map<String, Object>> identifiers = (List<Map<String, Object>>) patient.get("identifier");
+        if (identifiers == null) {
+            identifiers = new ArrayList<>();
+            patient.put("identifier", identifiers);
+        }
+
+        boolean hasMB = identifiers.stream().anyMatch(id -> {
+            Map<String, Object> type = (Map<String, Object>) id.get("type");
+            if (type == null) return false;
+            List<Map<String, Object>> codings = (List<Map<String, Object>>) type.get("coding");
+            if (codings == null) return false;
+            return codings.stream().anyMatch(c -> "MB".equals(c.get("code")));
+        });
+
+        if (!hasMB) {
+            identifiers.add(Map.of(
+                "type", Map.of(
+                    "coding", List.of(Map.of(
+                        "system", "http://terminology.hl7.org/CodeSystem/v2-0203",
+                        "code", "MB",
+                        "display", "Member Number"
+                    ))
+                ),
+                "system", "http://example.org/MIN",
+                "value", subscriberId
+            ));
+        }
+    }
+
+    // -- Shared resource reading for submit and update ----------------------------
+
+    private record SubmitResources(
+            Map<String, Object> patient,
+            Map<String, Object> practitioner,
+            Map<String, Object> insurer,
+            Map<String, Object> coverage,
+            Map<String, Object> order,
+            String orderType,
+            List<Map<String, Object>> questionnaireResponses) {}
+
+    private SubmitResources readSubmitResources(Map<String, Object> params, HttpServletRequest request)
+            throws Exception {
+        String patientId = ProxyUtil.getRequiredParam(params, "patientId");
+        String orderId = ProxyUtil.getRequiredParam(params, "orderId");
+        String orderType = ProxyUtil.getRequiredParam(params, "orderType");
+        String coverageId = ProxyUtil.getRequiredParam(params, "coverageId");
+        String payerFhirUrl = ProxyUtil.getRequiredParam(params, "payerFhirUrl");
+
+        @SuppressWarnings("unchecked")
+        List<String> qrIds = (List<String>) params.getOrDefault(
+            "questionnaireResponseIds", List.of());
+
+        outboundTargetValidator.validate(UrlMatchUtil.normalizeUrl(payerFhirUrl));
+        HttpSession session = request.getSession(false);
+        validateRequestedProviderTarget(
+            ProxyUtil.getRequestedProviderFhirBase(request), session);
+
+        String providerFhirBase = ProxyUtil.getActiveProviderFhirBase(request, serverProperties);
+
+        Map<String, Object> patient = readProviderResource(
+            providerFhirBase, "Patient", patientId, session);
+        Map<String, Object> order = readProviderResource(
+            providerFhirBase, orderType, orderId, session);
+        Map<String, Object> coverage = readProviderResource(
+            providerFhirBase, "Coverage", coverageId, session);
+        Map<String, Object> practitioner = readPractitionerFromOrder(
+            providerFhirBase, order, session);
+        Map<String, Object> insurer = readInsurerFromCoverage(
+            providerFhirBase, coverage, session);
+
+        List<Map<String, Object>> questionnaireResponses = new ArrayList<>();
+        for (String qrId : qrIds) {
+            questionnaireResponses.add(readProviderResource(
+                providerFhirBase, "QuestionnaireResponse", qrId, session));
+        }
+
+        return new SubmitResources(patient, practitioner, insurer, coverage, order, orderType, questionnaireResponses);
+    }
+
+    /**
+     * Builds a PAS Update bundle. Identical to an initial bundle except the Claim
+     * has a `related` element referencing the prior Claim, which the payer uses
+     * to detect this as an UPDATE submission.
+     */
+    private Map<String, Object> buildPasUpdateBundle(
+            Map<String, Object> patient,
+            Map<String, Object> practitioner,
+            Map<String, Object> insurer,
+            Map<String, Object> coverage,
+            Map<String, Object> order,
+            String orderType,
+            List<Map<String, Object>> questionnaireResponses,
+            String priorClaimId,
+            String payerFhirUrl) {
+
+        Map<String, Object> bundle = buildPasBundle(
+            patient, practitioner, insurer, coverage, order, orderType,
+            questionnaireResponses);
+
+        // Add Claim.related to mark this as an UPDATE
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> entries = (List<Map<String, Object>>) bundle.get("entry");
+        if (!entries.isEmpty()) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> claimResource = (Map<String, Object>) entries.get(0).get("resource");
+            String claimRef = UrlMatchUtil.normalizeUrl(payerFhirUrl) + "/Claim/" + priorClaimId;
+            claimResource.put("related", List.of(Map.of(
+                "claim", Map.of("reference", claimRef),
+                "relationship", Map.of(
+                    "coding", List.of(Map.of(
+                        "system", "http://terminology.hl7.org/CodeSystem/ex-relatedclaimrelationship",
+                        "code", "prior"
+                    ))
+                )
+            )));
+        }
+
+        return bundle;
     }
 
     /**

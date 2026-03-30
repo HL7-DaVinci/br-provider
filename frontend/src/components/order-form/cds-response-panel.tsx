@@ -1,4 +1,6 @@
 import { AlertCircle, Code } from "lucide-react";
+import { useCallback } from "react";
+import { toast } from "sonner";
 import {
   JsonViewerDialog,
   useJsonViewer,
@@ -7,14 +9,97 @@ import { CdsCard } from "@/components/order-form/cds-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useFhirServer } from "@/hooks/use-fhir-server";
 import { useOrderContext } from "@/hooks/use-order-context";
+import { launchSmartApp } from "@/lib/api";
+import type {
+  CdsCard as CdsCardType,
+  CdsLink,
+  CdsSuggestion,
+} from "@/lib/cds-types";
 
 export function CdsResponsePanel() {
-  const { state } = useOrderContext();
-  const { lastHookName, lastRawResponse, isHookLoading, hookError, cdsCards } =
-    state;
+  const { state, dispatch } = useOrderContext();
+  const {
+    lastHookName,
+    lastRawResponse,
+    isHookLoading,
+    hookError,
+    cdsCards,
+    appliedSuggestions,
+  } = state;
   const { viewerData, openViewer, closeViewer } = useJsonViewer();
+  const { serverUrl } = useFhirServer();
   const hasCards = cdsCards.length > 0;
+
+  const handleApplySuggestion = useCallback(
+    (card: CdsCardType, suggestion: CdsSuggestion) => {
+      const suggestionId = suggestion.uuid ?? suggestion.label;
+      const siblingIds =
+        card.selectionBehavior === "at-most-one"
+          ? (card.suggestions ?? [])
+              .filter((sib) => sib !== suggestion)
+              .map((sib) => sib.uuid ?? sib.label)
+          : [];
+
+      dispatch({
+        type: "APPLY_SUGGESTION",
+        payload: {
+          cardId: card.uuid ?? card.summary,
+          suggestionId,
+          actions: suggestion.actions ?? [],
+          disableIds: siblingIds,
+        },
+      });
+    },
+    [dispatch],
+  );
+
+  const handleSmartLaunch = useCallback(
+    async (link: CdsLink) => {
+      const rawAppContext =
+        typeof link.appContext === "string" ? link.appContext : undefined;
+
+      // Best-effort JSON parsing for known fields; do not require JSON.
+      let parsedContext: Record<string, unknown> | null = null;
+      if (rawAppContext?.trim().startsWith("{")) {
+        try {
+          parsedContext = JSON.parse(rawAppContext) as Record<string, unknown>;
+        } catch {
+          parsedContext = null;
+        }
+      }
+
+      const fhirContext: string[] = [];
+      if (typeof parsedContext?.coverageRef === "string") {
+        fhirContext.push(parsedContext.coverageRef);
+      }
+      if (typeof parsedContext?.orderRef === "string") {
+        fhirContext.push(parsedContext.orderRef);
+      }
+
+      try {
+        await launchSmartApp({
+          patientId: state.patientId,
+          encounterId: state.encounter?.id,
+          fhirContext,
+          coverageAssertionId:
+            typeof parsedContext?.coverageAssertionId === "string"
+              ? parsedContext.coverageAssertionId
+              : undefined,
+          questionnaire: Array.isArray(parsedContext?.questionnaire)
+            ? parsedContext.questionnaire
+            : [],
+          providerFhirUrl: serverUrl,
+          appContext: rawAppContext,
+        });
+      } catch (err) {
+        console.error("SMART launch failed:", err);
+        toast.error("Failed to launch SMART app");
+      }
+    },
+    [state.patientId, state.encounter?.id, serverUrl],
+  );
 
   return (
     <Card>
@@ -65,7 +150,15 @@ export function CdsResponsePanel() {
         {hasCards ? (
           <div className="space-y-2">
             {cdsCards.map((card) => (
-              <CdsCard key={card.uuid ?? card.summary} card={card} />
+              <CdsCard
+                key={card.uuid ?? card.summary}
+                card={card}
+                onApplySuggestion={(suggestion) =>
+                  handleApplySuggestion(card, suggestion)
+                }
+                onSmartLaunch={handleSmartLaunch}
+                appliedSuggestions={appliedSuggestions}
+              />
             ))}
           </div>
         ) : (

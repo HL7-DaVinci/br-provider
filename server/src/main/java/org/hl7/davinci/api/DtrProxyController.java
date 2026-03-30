@@ -100,7 +100,7 @@ public class DtrProxyController {
             outboundTargetValidator.validate(UrlMatchUtil.normalizeUrl(payerFhirUrl));
 
             String operationUrl = UrlMatchUtil.normalizeUrl(payerFhirUrl)
-                + "/QuestionnaireResponse/$next-question";
+                + "/Questionnaire/$next-question";
 
             Object qr = params.get("questionnaireResponse");
             if (qr == null) {

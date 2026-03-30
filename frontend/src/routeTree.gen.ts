@@ -25,7 +25,6 @@ import { Route as PatientsPatientIdCoverageRouteImport } from './routes/patients
 import { Route as PatientsPatientIdConditionsRouteImport } from './routes/patients/$patientId/conditions'
 import { Route as PatientsPatientIdOrdersIndexRouteImport } from './routes/patients/$patientId/orders/index'
 import { Route as PatientsPatientIdEncounterIndexRouteImport } from './routes/patients/$patientId/encounter/index'
-import { Route as PatientsPatientIdOrdersNewRouteImport } from './routes/patients/$patientId/orders/new'
 import { Route as PatientsPatientIdEncounterEncounterIdRouteImport } from './routes/patients/$patientId/encounter/$encounterId'
 import { Route as PatientsPatientIdOrdersOrderIdPasRouteImport } from './routes/patients/$patientId/orders/$orderId/pas'
 
@@ -115,12 +114,6 @@ const PatientsPatientIdEncounterIndexRoute =
     path: '/',
     getParentRoute: () => PatientsPatientIdEncounterRoute,
   } as any)
-const PatientsPatientIdOrdersNewRoute =
-  PatientsPatientIdOrdersNewRouteImport.update({
-    id: '/new',
-    path: '/new',
-    getParentRoute: () => PatientsPatientIdOrdersRoute,
-  } as any)
 const PatientsPatientIdEncounterEncounterIdRoute =
   PatientsPatientIdEncounterEncounterIdRouteImport.update({
     id: '/$encounterId',
@@ -150,7 +143,6 @@ export interface FileRoutesByFullPath {
   '/patients/$patientId/orders': typeof PatientsPatientIdOrdersRouteWithChildren
   '/patients/$patientId/': typeof PatientsPatientIdIndexRoute
   '/patients/$patientId/encounter/$encounterId': typeof PatientsPatientIdEncounterEncounterIdRoute
-  '/patients/$patientId/orders/new': typeof PatientsPatientIdOrdersNewRoute
   '/patients/$patientId/encounter/': typeof PatientsPatientIdEncounterIndexRoute
   '/patients/$patientId/orders/': typeof PatientsPatientIdOrdersIndexRoute
   '/patients/$patientId/orders/$orderId/pas': typeof PatientsPatientIdOrdersOrderIdPasRoute
@@ -168,7 +160,6 @@ export interface FileRoutesByTo {
   '/patients/$patientId/medications': typeof PatientsPatientIdMedicationsRoute
   '/patients/$patientId': typeof PatientsPatientIdIndexRoute
   '/patients/$patientId/encounter/$encounterId': typeof PatientsPatientIdEncounterEncounterIdRoute
-  '/patients/$patientId/orders/new': typeof PatientsPatientIdOrdersNewRoute
   '/patients/$patientId/encounter': typeof PatientsPatientIdEncounterIndexRoute
   '/patients/$patientId/orders': typeof PatientsPatientIdOrdersIndexRoute
   '/patients/$patientId/orders/$orderId/pas': typeof PatientsPatientIdOrdersOrderIdPasRoute
@@ -190,7 +181,6 @@ export interface FileRoutesById {
   '/patients/$patientId/orders': typeof PatientsPatientIdOrdersRouteWithChildren
   '/patients/$patientId/': typeof PatientsPatientIdIndexRoute
   '/patients/$patientId/encounter/$encounterId': typeof PatientsPatientIdEncounterEncounterIdRoute
-  '/patients/$patientId/orders/new': typeof PatientsPatientIdOrdersNewRoute
   '/patients/$patientId/encounter/': typeof PatientsPatientIdEncounterIndexRoute
   '/patients/$patientId/orders/': typeof PatientsPatientIdOrdersIndexRoute
   '/patients/$patientId/orders/$orderId/pas': typeof PatientsPatientIdOrdersOrderIdPasRoute
@@ -213,7 +203,6 @@ export interface FileRouteTypes {
     | '/patients/$patientId/orders'
     | '/patients/$patientId/'
     | '/patients/$patientId/encounter/$encounterId'
-    | '/patients/$patientId/orders/new'
     | '/patients/$patientId/encounter/'
     | '/patients/$patientId/orders/'
     | '/patients/$patientId/orders/$orderId/pas'
@@ -231,7 +220,6 @@ export interface FileRouteTypes {
     | '/patients/$patientId/medications'
     | '/patients/$patientId'
     | '/patients/$patientId/encounter/$encounterId'
-    | '/patients/$patientId/orders/new'
     | '/patients/$patientId/encounter'
     | '/patients/$patientId/orders'
     | '/patients/$patientId/orders/$orderId/pas'
@@ -252,7 +240,6 @@ export interface FileRouteTypes {
     | '/patients/$patientId/orders'
     | '/patients/$patientId/'
     | '/patients/$patientId/encounter/$encounterId'
-    | '/patients/$patientId/orders/new'
     | '/patients/$patientId/encounter/'
     | '/patients/$patientId/orders/'
     | '/patients/$patientId/orders/$orderId/pas'
@@ -383,13 +370,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PatientsPatientIdEncounterIndexRouteImport
       parentRoute: typeof PatientsPatientIdEncounterRoute
     }
-    '/patients/$patientId/orders/new': {
-      id: '/patients/$patientId/orders/new'
-      path: '/new'
-      fullPath: '/patients/$patientId/orders/new'
-      preLoaderRoute: typeof PatientsPatientIdOrdersNewRouteImport
-      parentRoute: typeof PatientsPatientIdOrdersRoute
-    }
     '/patients/$patientId/encounter/$encounterId': {
       id: '/patients/$patientId/encounter/$encounterId'
       path: '/$encounterId'
@@ -425,14 +405,12 @@ const PatientsPatientIdEncounterRouteWithChildren =
   )
 
 interface PatientsPatientIdOrdersRouteChildren {
-  PatientsPatientIdOrdersNewRoute: typeof PatientsPatientIdOrdersNewRoute
   PatientsPatientIdOrdersIndexRoute: typeof PatientsPatientIdOrdersIndexRoute
   PatientsPatientIdOrdersOrderIdPasRoute: typeof PatientsPatientIdOrdersOrderIdPasRoute
 }
 
 const PatientsPatientIdOrdersRouteChildren: PatientsPatientIdOrdersRouteChildren =
   {
-    PatientsPatientIdOrdersNewRoute: PatientsPatientIdOrdersNewRoute,
     PatientsPatientIdOrdersIndexRoute: PatientsPatientIdOrdersIndexRoute,
     PatientsPatientIdOrdersOrderIdPasRoute:
       PatientsPatientIdOrdersOrderIdPasRoute,
