@@ -17,7 +17,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -29,7 +31,9 @@ import {
 import { useNetworkLog } from "@/hooks/use-network-log";
 import { FHIR_SERVERS } from "@/lib/fhir-config";
 import type { NetworkLogEntry } from "@/lib/network-log-store";
+import { getPayerServers } from "@/lib/payer-config";
 
+const PAYER_SERVERS = getPayerServers();
 const DRAWER_WIDTH = "33vw";
 const PIN_STORAGE_KEY = "dev-tools-pinned";
 
@@ -56,6 +60,14 @@ export const DevToolsDrawer = memo(function DevToolsDrawer({
   const [serverFilter, setServerFilter] = useState<string | undefined>();
   const { entries, clear, entryCount } = useNetworkLog(serverFilter);
   const { viewerData, openViewer, closeViewer } = useJsonViewer();
+
+  // Tick counter to refresh relative timestamps in entry rows
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    const id = setInterval(() => setTick((t) => t + 1), 10_000);
+    return () => clearInterval(id);
+  }, [open]);
 
   const togglePin = useCallback(() => {
     setPinned((prev) => {
@@ -150,11 +162,22 @@ export const DevToolsDrawer = memo(function DevToolsDrawer({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Servers</SelectItem>
-                {FHIR_SERVERS.map((s) => (
-                  <SelectItem key={s.url} value={s.url}>
-                    {s.name}
-                  </SelectItem>
-                ))}
+                <SelectGroup>
+                  <SelectLabel>Provider</SelectLabel>
+                  {FHIR_SERVERS.map((s) => (
+                    <SelectItem key={s.url} value={s.url}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+                <SelectGroup>
+                  <SelectLabel>Payer</SelectLabel>
+                  {PAYER_SERVERS.map((s) => (
+                    <SelectItem key={s.fhirUrl} value={s.fhirUrl}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           </div>
@@ -171,6 +194,7 @@ export const DevToolsDrawer = memo(function DevToolsDrawer({
                   <NetworkEntry
                     key={entry.id}
                     entry={entry}
+                    tick={tick}
                     onViewJson={openViewer}
                   />
                 ))}
@@ -200,7 +224,12 @@ function formatRelativeTime(timestamp: number): string {
   return `${Math.floor(diff / 3_600_000)}h ago`;
 }
 
-function truncatePath(url: string, serverUrl: string): string {
+function truncatePath(
+  url: string,
+  serverUrl: string,
+  operationName?: string,
+): string {
+  if (operationName) return operationName;
   const path = serverUrl ? url.slice(serverUrl.length) : url;
   if (path.length > 60) return `${path.slice(0, 57)}...`;
   return path || "/";
@@ -211,6 +240,7 @@ const NetworkEntry = memo(function NetworkEntry({
   onViewJson,
 }: {
   entry: NetworkLogEntry;
+  tick: number;
   onViewJson: (data: unknown, title: string, description?: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -244,7 +274,7 @@ const NetworkEntry = memo(function NetworkEntry({
               {entry.method}
             </span>
             <span className="truncate font-mono">
-              {truncatePath(entry.url, entry.serverUrl)}
+              {truncatePath(entry.url, entry.serverUrl, entry.operationName)}
             </span>
           </div>
           <div className="mt-0.5 flex items-center gap-2 text-muted-foreground">
@@ -273,7 +303,7 @@ const NetworkEntry = memo(function NetworkEntry({
             onClick={() =>
               onViewJson(
                 entry.responseBody,
-                `Response - ${entry.method} ${entry.resourceType ?? ""}`,
+                `Response - ${entry.method} ${entry.operationName ?? entry.resourceType ?? ""}`,
                 `${entry.status} - ${entry.url}`,
               )
             }
@@ -288,7 +318,7 @@ const NetworkEntry = memo(function NetworkEntry({
               onClick={() =>
                 onViewJson(
                   entry.requestBody,
-                  `Request - ${entry.method} ${entry.resourceType ?? ""}`,
+                  `Request - ${entry.method} ${entry.operationName ?? entry.resourceType ?? ""}`,
                   entry.url,
                 )
               }

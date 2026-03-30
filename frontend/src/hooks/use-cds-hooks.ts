@@ -21,6 +21,7 @@ import type {
   HookContext,
 } from "@/lib/cds-types";
 import { parseCoverageInfoFromResource } from "@/lib/coverage-extensions";
+import { loggedFetch } from "@/lib/logged-fetch";
 import { useFhirServer } from "./use-fhir-server";
 import { useOrderContext } from "./use-order-context";
 
@@ -56,9 +57,10 @@ export function useCdsHooks(cdsServerUrl: string): UseCdsHooksResult {
   const { data: discovery, isLoading: isDiscovering } = useQuery({
     queryKey: ["cds", "discovery", cdsServerUrl],
     queryFn: async () => {
-      const res = await fetch(
+      const res = await loggedFetch(
         `/api/cds-services?server=${encodeURIComponent(cdsServerUrl)}`,
         { credentials: "same-origin" },
+        { payerUrl: cdsServerUrl, operationName: "CDS Discovery" },
       );
       if (!res.ok) throw new Error("CDS service discovery failed");
       return res.json() as Promise<CdsServiceDiscovery>;
@@ -121,7 +123,7 @@ export function useCdsHooks(cdsServerUrl: string): UseCdsHooksResult {
           ...(prefetchData ? { prefetch: prefetchData } : {}),
         };
 
-        const response = await fetch(
+        const response = await loggedFetch(
           `/api/cds-services/${service.id}?server=${encodeURIComponent(cdsServerUrl)}`,
           {
             method: "POST",
@@ -134,6 +136,7 @@ export function useCdsHooks(cdsServerUrl: string): UseCdsHooksResult {
             body: JSON.stringify(request),
             credentials: "same-origin",
           },
+          { payerUrl: cdsServerUrl, operationName: `CDS ${hookName}` },
         );
 
         if (!response.ok) {

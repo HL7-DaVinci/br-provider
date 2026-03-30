@@ -6,6 +6,7 @@ import type {
   QuestionnaireResponse,
 } from "fhir/r4";
 import { fhirProxyUrl } from "@/lib/api";
+import { loggedFetch } from "@/lib/logged-fetch";
 import { useFhirServer } from "./use-fhir-server";
 
 interface QuestionnairePackageParams {
@@ -37,12 +38,19 @@ export function useQuestionnairePackage(params: QuestionnairePackageParams) {
     queryFn: async () => {
       const body = await buildQuestionnairePackageParams(params);
 
-      const response = await fetch("/api/dtr/questionnaire-package", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payerFhirUrl: params.payerFhirUrl, body }),
-        credentials: "same-origin",
-      });
+      const response = await loggedFetch(
+        "/api/dtr/questionnaire-package",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ payerFhirUrl: params.payerFhirUrl, body }),
+          credentials: "same-origin",
+        },
+        {
+          payerUrl: params.payerFhirUrl,
+          operationName: "$questionnaire-package",
+        },
+      );
 
       if (!response.ok) {
         const errorBody = await response.json().catch(() => null);
@@ -151,12 +159,16 @@ export function useProviderPopulate(params: {
         ],
       };
 
-      const response = await fetch("/api/dtr/populate", {
-        method: "POST",
-        headers: { "Content-Type": "application/fhir+json" },
-        body: JSON.stringify(fhirParams),
-        credentials: "same-origin",
-      });
+      const response = await loggedFetch(
+        "/api/dtr/populate",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/fhir+json" },
+          body: JSON.stringify(fhirParams),
+          credentials: "same-origin",
+        },
+        { payerUrl: params.payerFhirUrl, operationName: "$populate" },
+      );
 
       if (!response.ok) {
         const err = await response.text().catch(() => "");
@@ -198,15 +210,19 @@ export function useNextQuestion(payerFhirUrl: string) {
         ],
       };
 
-      const response = await fetch("/api/dtr/next-question", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          payerFhirUrl,
-          questionnaireResponse: parametersRequest,
-        }),
-        credentials: "same-origin",
-      });
+      const response = await loggedFetch(
+        "/api/dtr/next-question",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            payerFhirUrl,
+            questionnaireResponse: parametersRequest,
+          }),
+          credentials: "same-origin",
+        },
+        { payerUrl: payerFhirUrl, operationName: "$next-question" },
+      );
 
       if (!response.ok) {
         const errorBody = await response.json().catch(() => null);

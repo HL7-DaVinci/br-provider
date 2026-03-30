@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { Bundle, ClaimResponse, Task } from "fhir/r4";
 import { ACTIVE_PROVIDER_FHIR_BASE_HEADER } from "@/lib/api";
+import { loggedFetch } from "@/lib/logged-fetch";
 import { fhirFetch } from "./use-fhir-api";
 
 export interface PasSubmitParams {
@@ -28,15 +29,19 @@ export interface PasSubmitResult {
 export function usePasSubmit() {
   return useMutation({
     mutationFn: async (params: PasSubmitParams): Promise<PasSubmitResult> => {
-      const response = await fetch("/api/pas/submit", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [ACTIVE_PROVIDER_FHIR_BASE_HEADER]: params.providerFhirUrl,
+      const response = await loggedFetch(
+        "/api/pas/submit",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            [ACTIVE_PROVIDER_FHIR_BASE_HEADER]: params.providerFhirUrl,
+          },
+          body: JSON.stringify(params),
+          credentials: "same-origin",
         },
-        body: JSON.stringify(params),
-        credentials: "same-origin",
-      });
+        { payerUrl: params.payerFhirUrl, operationName: "Claim/$submit" },
+      );
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         throw new Error(body?.error ?? `PAS submit failed: ${response.status}`);
@@ -58,15 +63,22 @@ export interface PasUpdateParams extends PasSubmitParams {
 export function usePasUpdate() {
   return useMutation({
     mutationFn: async (params: PasUpdateParams): Promise<PasSubmitResult> => {
-      const response = await fetch("/api/pas/update", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [ACTIVE_PROVIDER_FHIR_BASE_HEADER]: params.providerFhirUrl,
+      const response = await loggedFetch(
+        "/api/pas/update",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            [ACTIVE_PROVIDER_FHIR_BASE_HEADER]: params.providerFhirUrl,
+          },
+          body: JSON.stringify(params),
+          credentials: "same-origin",
         },
-        body: JSON.stringify(params),
-        credentials: "same-origin",
-      });
+        {
+          payerUrl: params.payerFhirUrl,
+          operationName: "Claim/$submit (update)",
+        },
+      );
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         throw new Error(body?.error ?? `PAS update failed: ${response.status}`);
@@ -137,12 +149,19 @@ export function usePasInquiry(params: PasInquiryParams | undefined) {
       if (params?.providerFhirUrl) {
         headers[ACTIVE_PROVIDER_FHIR_BASE_HEADER] = params.providerFhirUrl;
       }
-      const response = await fetch("/api/pas/inquiry", {
-        method: "POST",
-        headers,
-        body: JSON.stringify(params),
-        credentials: "same-origin",
-      });
+      const response = await loggedFetch(
+        "/api/pas/inquiry",
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(params),
+          credentials: "same-origin",
+        },
+        {
+          payerUrl: params?.payerFhirUrl ?? "",
+          operationName: "Claim/$inquire",
+        },
+      );
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         throw new Error(

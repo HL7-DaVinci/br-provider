@@ -6,6 +6,9 @@ server:
   # servlet:
   #   context-path: /example/path
   port: 8080
+  # Trust X-Forwarded-* headers from reverse proxies so Spring Authorization Server
+  # generates OIDC metadata with the correct scheme (https) and host.
+  forward-headers-strategy: framework
   tomcat:
     # allow | as a separator in URLs
     relaxed-query-chars: "|"

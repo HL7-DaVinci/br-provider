@@ -68,7 +68,6 @@ public class UdapDiscoveryInterceptor extends BaseInterceptor {
 
         JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.RS256)
             .x509CertChain(certificateHolder.getX509CertChain())
-            .keyID(certificateHolder.getSigningKey().getKeyID())
             .build();
 
         SignedJWT signedMetadata = new SignedJWT(header, metadataClaims);

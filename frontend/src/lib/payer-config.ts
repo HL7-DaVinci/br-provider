@@ -53,6 +53,15 @@ export function getStoredPayerServer(): PayerServer {
   return getPayerServers()[0];
 }
 
+export function getPayerByUrl(url: string): PayerServer | undefined {
+  const normalized = normalizeServerUrl(url);
+  return getPayerServers().find(
+    (s) =>
+      normalizeServerUrl(s.fhirUrl) === normalized ||
+      normalizeServerUrl(s.cdsUrl) === normalized,
+  );
+}
+
 export function setStoredPayerServer(server: PayerServer): void {
   if (typeof window !== "undefined") {
     localStorage.setItem(
