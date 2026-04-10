@@ -271,7 +271,10 @@ public class SpaAuthController {
 
             pendingFlows.put(state, new PendingFlow(codeVerifier, redirectUri, Instant.now()));
 
-            String authorizeUrl = udapClient.getAuthorizeEndpoint()
+            String authorizeBase = securityProperties.getAuthorizationEndpoint() != null
+                ? securityProperties.getAuthorizationEndpoint()
+                : udapClient.getAuthorizeEndpoint();
+            String authorizeUrl = authorizeBase
                 + "?response_type=code"
                 + "&client_id=" + udapClient.getClientId()
                 + "&redirect_uri=" + URI.create(redirectUri).toASCIIString()
@@ -279,7 +282,7 @@ public class SpaAuthController {
                 + "&code_challenge=" + codeChallenge
                 + "&code_challenge_method=S256"
                 + "&state=" + state
-                + "&idp=" + securityProperties.getServerBaseUrl()
+                + "&idp=" + securityProperties.getIdpBaseUrl()
                 + "&prompt=login";
 
             logger.debug("SPA login redirect to: {}", authorizeUrl);

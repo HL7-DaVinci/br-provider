@@ -75,11 +75,11 @@ RUN mkdir /app && cp /tmp/hapi-fhir-jpaserver-starter/target/ROOT.war /app/main.
 ##########################################################################
 FROM gcr.io/distroless/java17-debian12:nonroot AS default
 
-USER 65532:65532
-WORKDIR /app
-
 COPY --chown=nonroot:nonroot --from=build-distroless /app /app
 COPY --chown=nonroot:nonroot --from=build-server /tmp/hapi-fhir-jpaserver-starter/opentelemetry-javaagent.jar /app
+
+USER 65532:65532
+WORKDIR /app
 
 EXPOSE 8080
 

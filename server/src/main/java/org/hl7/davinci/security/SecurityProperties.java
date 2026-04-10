@@ -37,6 +37,8 @@ public class SecurityProperties {
     private String serverBaseUrl;
     private String scope = "openid udap fhirUser profile offline_access";
     private String clientName = "Da Vinci Provider";
+    private String authorizationEndpoint;
+    private String idpBaseUrl;
 
     @Value("${hapi.fhir.server_address:http://localhost:8080/fhir}")
     public void deriveServerBaseUrl(String serverAddress) {
@@ -98,6 +100,12 @@ public String getServerBaseUrl() { return serverBaseUrl; }
 
     public String getClientName() { return clientName; }
     public void setClientName(String clientName) { this.clientName = clientName; }
+
+    public String getAuthorizationEndpoint() { return authorizationEndpoint; }
+    public void setAuthorizationEndpoint(String authorizationEndpoint) { this.authorizationEndpoint = authorizationEndpoint; }
+
+    public String getIdpBaseUrl() { return idpBaseUrl != null ? idpBaseUrl : serverBaseUrl; }
+    public void setIdpBaseUrl(String idpBaseUrl) { this.idpBaseUrl = idpBaseUrl; }
 
     /**
      * Returns the canonical provider base URL (no trailing slashes).
