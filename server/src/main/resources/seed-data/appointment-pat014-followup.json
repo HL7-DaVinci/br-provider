@@ -1,0 +1,43 @@
+{
+  "resourceType": "Appointment",
+  "id": "appt-pat014-02",
+  "status": "fulfilled",
+  "serviceType": [
+    {
+      "coding": [
+        {
+          "system": "http://snomed.info/sct",
+          "code": "390906007",
+          "display": "Follow-up encounter"
+        }
+      ],
+      "text": "Follow-up Visit"
+    }
+  ],
+  "reasonCode": [
+    {
+      "text": "CPAP therapy follow-up"
+    }
+  ],
+  "start": "2026-03-15T14:00:00-04:00",
+  "end": "2026-03-15T14:30:00-04:00",
+  "minutesDuration": 30,
+  "participant": [
+    {
+      "actor": {
+        "reference": "Patient/pat014",
+        "display": "Theodor Roosevelt"
+      },
+      "required": "required",
+      "status": "accepted"
+    },
+    {
+      "actor": {
+        "reference": "Practitioner/pra1255",
+        "display": "Dr. Practitioner"
+      },
+      "required": "required",
+      "status": "accepted"
+    }
+  ]
+}

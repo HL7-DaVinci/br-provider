@@ -1,0 +1,43 @@
+{
+  "resourceType": "Appointment",
+  "id": "appt-pat016-01",
+  "status": "proposed",
+  "serviceType": [
+    {
+      "coding": [
+        {
+          "system": "http://snomed.info/sct",
+          "code": "183524004",
+          "display": "Recommendation regarding equipment"
+        }
+      ],
+      "text": "DME Evaluation"
+    }
+  ],
+  "reasonCode": [
+    {
+      "text": "Continuous glucose monitor evaluation"
+    }
+  ],
+  "start": "2026-05-01T11:00:00-04:00",
+  "end": "2026-05-01T11:30:00-04:00",
+  "minutesDuration": 30,
+  "participant": [
+    {
+      "actor": {
+        "reference": "Patient/pat016",
+        "display": "Jane"
+      },
+      "required": "required",
+      "status": "needs-action"
+    },
+    {
+      "actor": {
+        "reference": "Practitioner/pra1255",
+        "display": "Dr. Practitioner"
+      },
+      "required": "required",
+      "status": "needs-action"
+    }
+  ]
+}

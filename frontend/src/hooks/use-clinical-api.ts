@@ -674,6 +674,38 @@ export function useEncounterQuestionnaireResponses(encounterId: string) {
   });
 }
 
+export function usePatientQuestionnaireResponses(
+  patientId: string,
+  status?: "completed" | "in-progress",
+) {
+  const { serverUrl } = useFhirServer();
+
+  return useQuery({
+    queryKey: [
+      "fhir",
+      "QuestionnaireResponse",
+      "patient",
+      patientId,
+      status ?? "any",
+      serverUrl,
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams({
+        patient: patientId,
+        _sort: "-_lastUpdated",
+        _count: "50",
+      });
+      if (status) params.set("status", status);
+      return fhirFetch<Bundle<QuestionnaireResponse>>(
+        `${serverUrl}/QuestionnaireResponse?${params.toString()}`,
+      );
+    },
+    staleTime: 30 * 1000,
+    retry: 1,
+    enabled: !!serverUrl && !!patientId,
+  });
+}
+
 export function useEncounters(patientId: string) {
   const { serverUrl } = useFhirServer();
 

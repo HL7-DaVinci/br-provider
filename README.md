@@ -7,6 +7,10 @@ It implements the following Da Vinci implementation guides:
 - [Documentation Templates and Rules (DTR)](https://build.fhir.org/ig/HL7/davinci-dtr/)
 - [Prior Authorization Support (PAS)](https://build.fhir.org/ig/HL7/davinci-pas/)
 
+This server is intended to support the burden reduction uses cases from the provider side.
+
+The corresponding payer reference implementation is available at <https://github.com/HL7-DaVinci/br-payer>
+
 ## Prerequisites
 
 - Required to run the server
@@ -56,3 +60,12 @@ docker run -p 8080:8080 br-provider
 ```
 
 The frontend will be available at `http://localhost:8080` with the FHIR endpoint at `http://localhost:8080/fhir`
+
+
+### Option 4: Run with Docker Compose
+
+A Docker Compose file is provided to run the provider server alongside the payer reference implementation and the FAST Security server.
+
+```bash
+docker compose up
+```

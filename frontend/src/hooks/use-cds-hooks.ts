@@ -12,6 +12,7 @@ import type {
 import { useCallback, useRef } from "react";
 import { ACTIVE_PROVIDER_FHIR_BASE_HEADER, fhirProxyUrl } from "@/lib/api";
 import type {
+  CdsCard,
   CdsHookName,
   CdsHookRequest,
   CdsHookResponse,
@@ -29,30 +30,54 @@ export interface FireHookResult {
   systemActionResources: Map<string, Resource>;
 }
 
-interface UseCdsHooksResult {
+/**
+ * Parsed CDS response data extracted from the raw hook response.
+ * Used by both the order context wrapper and the appointment context wrapper.
+ */
+export interface ParsedCdsResponse {
+  coverageInfo: CoverageInformation[];
+  cards: CdsCard[];
+  hookName: string;
+  rawResponse: CdsHookResponse;
+  systemActionResources: Map<string, Resource>;
+}
+
+/**
+ * Callbacks for integrating CDS hook lifecycle events with any state manager.
+ * The core hook logic calls these instead of dispatching to a specific context.
+ */
+export interface CdsHooksCallbacks {
+  onLoading: (loading: boolean) => void;
+  onError: (error: Error) => void;
+  onResponse: (response: ParsedCdsResponse) => void;
+  getCoverageRef: () => string | undefined;
+  getPreviousCoverageInfo: () => CoverageInformation[];
+  getPreviousSystemActions: () => Map<string, Resource>;
+}
+
+interface UseCdsHooksCoreResult {
   fireHook: (
     hookName: CdsHookName,
     context: HookContext,
   ) => Promise<FireHookResult | undefined>;
   discovery: CdsServiceDiscovery | undefined;
   isDiscovering: boolean;
-  isLoading: boolean;
-  clearResponses: () => void;
 }
 
 /**
- * Manages the CDS Hooks lifecycle: discovers available services, resolves
- * prefetch data from discovery templates, fires hooks via the backend relay,
- * parses responses, and syncs coverage info + cards into the order context.
+ * Context-agnostic CDS Hooks engine. Handles service discovery, prefetch
+ * resolution, hook invocation, and response parsing. Delegates state
+ * management to the caller via callbacks.
  */
-export function useCdsHooks(cdsServerUrl: string): UseCdsHooksResult {
-  const { dispatch, state } = useOrderContext();
-  const { serverUrl } = useFhirServer();
+export function useCdsHooksCore(
+  cdsServerUrl: string,
+  serverUrl: string,
+  callbacks: CdsHooksCallbacks,
+): UseCdsHooksCoreResult {
   const queryClient = useQueryClient();
 
-  // Refs for values read inside fireHook to keep the callback identity stable
-  const stateRef = useRef(state);
-  stateRef.current = state;
+  const callbacksRef = useRef(callbacks);
+  callbacksRef.current = callbacks;
 
   const { data: discovery, isLoading: isDiscovering } = useQuery({
     queryKey: ["cds", "discovery", cdsServerUrl],
@@ -75,11 +100,10 @@ export function useCdsHooks(cdsServerUrl: string): UseCdsHooksResult {
       hookName: CdsHookName,
       context: HookContext,
     ): Promise<FireHookResult | undefined> => {
+      const cb = callbacksRef.current;
+
       if (!discovery?.services) {
-        dispatch({
-          type: "SET_HOOK_ERROR",
-          payload: new Error("CDS services not yet discovered"),
-        });
+        cb.onError(new Error("CDS services not yet discovered"));
         return undefined;
       }
 
@@ -87,19 +111,14 @@ export function useCdsHooks(cdsServerUrl: string): UseCdsHooksResult {
         (s: CdsServiceDefinition) => s.hook === hookName,
       );
       if (!service) {
-        dispatch({
-          type: "SET_HOOK_ERROR",
-          payload: new Error(`No CDS service found for hook: ${hookName}`),
-        });
+        cb.onError(new Error(`No CDS service found for hook: ${hookName}`));
         return;
       }
 
-      dispatch({ type: "SET_HOOK_LOADING", payload: true });
+      cb.onLoading(true);
 
       try {
-        // Resolve prefetch data from the service's discovery templates
-        const selectedCoverageRef =
-          (stateRef.current.sharedFields?.insuranceRef as string) || undefined;
+        const selectedCoverageRef = cb.getCoverageRef();
         let prefetchData: Record<string, unknown> | undefined;
         if (
           service.prefetch &&
@@ -164,30 +183,73 @@ export function useCdsHooks(cdsServerUrl: string): UseCdsHooksResult {
           );
         }
 
-        dispatch({
-          type: "SET_CDS_RESPONSE",
-          payload: {
-            coverageInfo:
-              newCoverageInfo.length > 0
-                ? newCoverageInfo
-                : stateRef.current.coverageInfo,
-            cards: data.cards ?? [],
-            hookName,
-            rawResponse: data,
-            systemActionResources:
-              updateResources.size > 0
-                ? updateResources
-                : stateRef.current.systemActionResources,
-          },
+        cb.onResponse({
+          coverageInfo:
+            newCoverageInfo.length > 0
+              ? newCoverageInfo
+              : cb.getPreviousCoverageInfo(),
+          cards: data.cards ?? [],
+          hookName,
+          rawResponse: data,
+          systemActionResources:
+            updateResources.size > 0
+              ? updateResources
+              : cb.getPreviousSystemActions(),
         });
 
         return { systemActionResources: updateResources };
       } catch (e) {
         const hookError = e instanceof Error ? e : new Error("CDS hook failed");
-        dispatch({ type: "SET_HOOK_ERROR", payload: hookError });
+        cb.onError(hookError);
       }
     },
-    [cdsServerUrl, discovery, dispatch, serverUrl, queryClient],
+    [cdsServerUrl, discovery, serverUrl, queryClient],
+  );
+
+  return { fireHook, discovery, isDiscovering };
+}
+
+// -- Order-context wrapper (existing API, unchanged behavior) --
+
+interface UseCdsHooksResult {
+  fireHook: (
+    hookName: CdsHookName,
+    context: HookContext,
+  ) => Promise<FireHookResult | undefined>;
+  discovery: CdsServiceDiscovery | undefined;
+  isDiscovering: boolean;
+  isLoading: boolean;
+  clearResponses: () => void;
+}
+
+/**
+ * Manages the CDS Hooks lifecycle: discovers available services, resolves
+ * prefetch data from discovery templates, fires hooks via the backend relay,
+ * parses responses, and syncs coverage info + cards into the order context.
+ */
+export function useCdsHooks(cdsServerUrl: string): UseCdsHooksResult {
+  const { dispatch, state } = useOrderContext();
+  const { serverUrl } = useFhirServer();
+
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  const callbacks: CdsHooksCallbacks = {
+    onLoading: (loading) =>
+      dispatch({ type: "SET_HOOK_LOADING", payload: loading }),
+    onError: (error) => dispatch({ type: "SET_HOOK_ERROR", payload: error }),
+    onResponse: (response) =>
+      dispatch({ type: "SET_CDS_RESPONSE", payload: response }),
+    getCoverageRef: () =>
+      (stateRef.current.sharedFields?.insuranceRef as string) || undefined,
+    getPreviousCoverageInfo: () => stateRef.current.coverageInfo,
+    getPreviousSystemActions: () => stateRef.current.systemActionResources,
+  };
+
+  const { fireHook, discovery, isDiscovering } = useCdsHooksCore(
+    cdsServerUrl,
+    serverUrl,
+    callbacks,
   );
 
   const clearResponses = useCallback(() => {

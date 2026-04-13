@@ -7,7 +7,8 @@ export type CdsHookName =
   | "order-select"
   | "order-sign"
   | "order-dispatch"
-  | "encounter-discharge";
+  | "encounter-discharge"
+  | "appointment-book";
 
 // CDS Service Discovery
 export interface CdsServiceDiscovery {
@@ -57,12 +58,19 @@ export interface EncounterDischargeContext {
   encounterId: string;
 }
 
+export interface AppointmentBookContext {
+  userId: string; // Patient/{id} for patient-initiated booking
+  patientId: string; // Patient/{id}
+  appointments: Bundle; // Bundle containing draft Appointment resource(s)
+}
+
 export type HookContext =
   | EncounterStartContext
   | OrderSelectContext
   | OrderSignContext
   | OrderDispatchContext
-  | EncounterDischargeContext;
+  | EncounterDischargeContext
+  | AppointmentBookContext;
 
 // CDS Hook Request
 export interface CdsHookRequest {

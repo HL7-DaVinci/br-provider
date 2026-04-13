@@ -1,0 +1,43 @@
+{
+  "resourceType": "Appointment",
+  "id": "appt-pat015-01",
+  "status": "booked",
+  "serviceType": [
+    {
+      "coding": [
+        {
+          "system": "http://snomed.info/sct",
+          "code": "11429006",
+          "display": "Consultation"
+        }
+      ],
+      "text": "Specialist Consultation"
+    }
+  ],
+  "reasonCode": [
+    {
+      "text": "Home oxygen therapy evaluation"
+    }
+  ],
+  "start": "2026-04-25T09:00:00-04:00",
+  "end": "2026-04-25T09:45:00-04:00",
+  "minutesDuration": 45,
+  "participant": [
+    {
+      "actor": {
+        "reference": "Patient/pat015",
+        "display": "Billy"
+      },
+      "required": "required",
+      "status": "accepted"
+    },
+    {
+      "actor": {
+        "reference": "Practitioner/pra1234",
+        "display": "Dr. Jane Doe"
+      },
+      "required": "required",
+      "status": "accepted"
+    }
+  ]
+}

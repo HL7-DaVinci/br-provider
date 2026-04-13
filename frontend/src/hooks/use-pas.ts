@@ -187,6 +187,54 @@ export function usePasInquiry(params: PasInquiryParams | undefined) {
 }
 
 /**
+ * Lists all DTR documentation-request tasks for a patient across every order.
+ * Used by the patient-facing Documentation page; returns all Tasks whose code
+ * is `attachment-request-questionnaire` without requiring a specific claim/
+ * order filter.
+ */
+export function usePatientDocumentationTasks(
+  patientId: string,
+  providerFhirUrl: string,
+) {
+  return useQuery({
+    queryKey: [
+      "pas",
+      "patient-documentation-tasks",
+      providerFhirUrl,
+      patientId,
+    ],
+    queryFn: async () => {
+      const searchParams = new URLSearchParams({
+        patient: patientId,
+        _sort: "-_lastUpdated",
+        _count: "50",
+      });
+
+      try {
+        const bundle = await fhirFetch<Bundle<Task>>(
+          `${providerFhirUrl}/Task?${searchParams.toString()}`,
+        );
+        return (bundle.entry ?? [])
+          .map((entry) => entry.resource)
+          .filter(
+            (resource): resource is Task => resource?.resourceType === "Task",
+          )
+          .filter((task) =>
+            task.code?.coding?.some(
+              (c) => c.code === TASK_CODE_QUESTIONNAIRE_REQUEST,
+            ),
+          );
+      } catch {
+        return [];
+      }
+    },
+    enabled: !!patientId && !!providerFhirUrl,
+    staleTime: 30 * 1000,
+    retry: 1,
+  });
+}
+
+/**
  * Rehydrates PAS documentation-request tasks from the provider FHIR server when
  * the page is reopened from an existing ClaimResponse link.
  */
