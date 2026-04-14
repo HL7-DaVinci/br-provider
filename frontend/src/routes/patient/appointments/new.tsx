@@ -95,8 +95,10 @@ function NewAppointmentPage({
     dispatch({ type: "SET_PHASE", payload: "form" });
   }, [dispatch]);
 
+  const isReview = state.bookingPhase === "review";
+
   return (
-    <div className="p-6 md:p-10 max-w-2xl space-y-6">
+    <div className="p-6 md:p-10 max-w-6xl space-y-6">
       <h1 className="text-lg font-semibold">Book an Appointment</h1>
 
       {state.bookingPhase === "form" && (
@@ -115,7 +117,7 @@ function NewAppointmentPage({
         </Card>
       )}
 
-      {state.bookingPhase === "review" && state.draftAppointment && (
+      {isReview && state.draftAppointment && (
         <AppointmentReview
           appointment={state.draftAppointment}
           coverageInfo={state.coverageInfo}

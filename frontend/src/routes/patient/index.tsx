@@ -51,7 +51,7 @@ function PatientDashboard() {
       .slice(0, 3) ?? [];
 
   return (
-    <div className="p-6 md:p-10 max-w-4xl space-y-6">
+    <div className="p-6 md:p-10 max-w-6xl space-y-6">
       {/* Quick Actions */}
       <div className="grid gap-4 md:grid-cols-3">
         <Link to="/patient/appointments" className="block">

@@ -80,7 +80,7 @@ function DocumentationPage() {
     tasks.length > 0 || inProgress.length > 0 || completed.length > 0;
 
   return (
-    <div className="p-6 md:p-10 max-w-4xl space-y-6">
+    <div className="p-6 md:p-10 max-w-6xl space-y-6">
       <div className="flex items-center gap-2">
         <Link
           to="/patient"

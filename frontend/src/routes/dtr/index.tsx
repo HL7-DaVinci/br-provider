@@ -7,6 +7,7 @@ import { AdaptiveDtrForm } from "@/components/questionnaire/adaptive-dtr-form";
 import { LhcFormRenderer } from "@/components/questionnaire/lhc-form-renderer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useAuth } from "@/hooks/use-auth";
 import { invalidateOrderQueries } from "@/hooks/use-clinical-api";
 import { saveDtrQuestionnaireResponseId } from "@/hooks/use-dtr-qr-store";
 import { fhirFetch } from "@/hooks/use-fhir-api";
@@ -88,6 +89,8 @@ function DtrFormPage() {
   const search = Route.useSearch();
   const { serverUrl: selectedProviderFhirUrl } = useFhirServer();
   const { fhirUrl: payerFhirUrl } = usePayerServer();
+  const { fhirUserType } = useAuth();
+  const isPatientUser = fhirUserType === "Patient";
   const queryClient = useQueryClient();
   const [savedStatus, setSavedStatus] = useState<
     "in-progress" | "completed" | null
@@ -345,20 +348,29 @@ function DtrFormPage() {
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
               The questionnaire response has been saved to the FHIR server.
-              {search.patientId && (
+              {(isPatientUser || search.patientId) && (
                 <> You may close this window or return to the patient record.</>
               )}
             </p>
-            {search.patientId && (
-              <Link
-                to="/patients/$patientId"
-                params={{ patientId: search.patientId }}
-              >
+            {isPatientUser ? (
+              <Link to="/patient">
                 <Button variant="outline" className="w-full">
                   <ArrowLeft className="h-4 w-4 mr-1.5" />
                   Back to Patient
                 </Button>
               </Link>
+            ) : (
+              search.patientId && (
+                <Link
+                  to="/patients/$patientId"
+                  params={{ patientId: search.patientId }}
+                >
+                  <Button variant="outline" className="w-full">
+                    <ArrowLeft className="h-4 w-4 mr-1.5" />
+                    Back to Patient
+                  </Button>
+                </Link>
+              )
             )}
           </CardContent>
         </Card>
@@ -370,15 +382,25 @@ function DtrFormPage() {
     <div className="flex h-full min-h-full flex-col p-4">
       {/* Context bar */}
       <div className="mb-4 shrink-0 flex items-center gap-4 text-sm text-muted-foreground">
-        {search.patientId && (
+        {isPatientUser ? (
           <Link
-            to="/patients/$patientId"
-            params={{ patientId: search.patientId }}
+            to="/patient"
             className="flex items-center gap-1 hover:text-foreground"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             Patient
           </Link>
+        ) : (
+          search.patientId && (
+            <Link
+              to="/patients/$patientId"
+              params={{ patientId: search.patientId }}
+              className="flex items-center gap-1 hover:text-foreground"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              Patient
+            </Link>
+          )
         )}
         {coverageRef && <span>Coverage: {coverageRef}</span>}
         {orderRef && <span>Order: {orderRef}</span>}

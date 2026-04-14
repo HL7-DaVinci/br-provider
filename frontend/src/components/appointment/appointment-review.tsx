@@ -124,7 +124,7 @@ export function AppointmentReview({
           <CardTitle className="text-sm">Appointment Summary</CardTitle>
         </CardHeader>
         <CardContent>
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+          <dl className="grid grid-cols-4 gap-x-6 gap-y-2 text-sm">
             <dt className="text-muted-foreground">Practitioner</dt>
             <dd className="font-medium">
               {getPractitionerDisplay(appointment)}
@@ -155,56 +155,66 @@ export function AppointmentReview({
         </CardContent>
       </Card>
 
-      {/* CDS Response */}
-      <AppointmentCdsPanel
-        cards={cdsCards}
-        isLoading={isHookLoading}
-        hookError={hookError}
-        patientId={patientId}
-        rawResponse={rawResponse}
-      />
+      <div
+        className={
+          coverageInfo.length > 0
+            ? "grid gap-6 md:grid-cols-2 md:items-start"
+            : ""
+        }
+      >
+        {/* CDS Response */}
+        <AppointmentCdsPanel
+          cards={cdsCards}
+          isLoading={isHookLoading}
+          hookError={hookError}
+          patientId={patientId}
+          rawResponse={rawResponse}
+        />
 
-      {/* Coverage Determination */}
-      {coverageInfo.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm">Coverage Determination</CardTitle>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 text-xs"
-                onClick={() => {
-                  const coverageExtensions = [
-                    ...systemActionResources.values(),
-                  ].flatMap((r) =>
-                    ("extension" in r && Array.isArray(r.extension)
-                      ? r.extension
-                      : []
-                    ).filter(
-                      (ext: { url?: string }) =>
-                        ext.url === COVERAGE_INFO_EXT_URL,
-                    ),
-                  );
-                  openViewer(
-                    coverageExtensions.length === 1
-                      ? coverageExtensions[0]
-                      : coverageExtensions,
-                    "Coverage Information Extension",
-                    "CRD ext-coverage-information extension from the system action response",
-                  );
-                }}
-              >
-                <Code className="h-3.5 w-3.5 mr-1" />
-                View Extension
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <CoverageDetermination coverageInfo={coverageInfo} />
-          </CardContent>
-        </Card>
-      )}
+        {/* Coverage Determination */}
+        {coverageInfo.length > 0 && (
+          <Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">
+                  Coverage Determination
+                </CardTitle>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    const coverageExtensions = [
+                      ...systemActionResources.values(),
+                    ].flatMap((r) =>
+                      ("extension" in r && Array.isArray(r.extension)
+                        ? r.extension
+                        : []
+                      ).filter(
+                        (ext: { url?: string }) =>
+                          ext.url === COVERAGE_INFO_EXT_URL,
+                      ),
+                    );
+                    openViewer(
+                      coverageExtensions.length === 1
+                        ? coverageExtensions[0]
+                        : coverageExtensions,
+                      "Coverage Information Extension",
+                      "CRD ext-coverage-information extension from the system action response",
+                    );
+                  }}
+                >
+                  <Code className="h-3.5 w-3.5 mr-1" />
+                  View Extension
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <CoverageDetermination coverageInfo={coverageInfo} />
+            </CardContent>
+          </Card>
+        )}
+      </div>
 
       {/* DTR Launch */}
       {dtrNeeded && (

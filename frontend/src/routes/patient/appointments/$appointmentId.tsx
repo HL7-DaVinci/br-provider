@@ -86,7 +86,7 @@ function AppointmentDetailPage({
   }
 
   return (
-    <div className="p-6 md:p-10 max-w-2xl space-y-6">
+    <div className="p-6 md:p-10 space-y-6">
       <h1 className="text-lg font-semibold">Appointment Details</h1>
 
       <AppointmentReview
