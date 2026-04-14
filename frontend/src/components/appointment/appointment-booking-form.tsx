@@ -18,11 +18,18 @@ import { formatPatientName } from "@/lib/clinical-formatters";
 
 const SERVICE_TYPES = [
   {
-    value: "general-checkup",
-    label: "General Checkup",
+    value: "cardiology",
+    label: "Cardiology Consultation",
     system: "http://snomed.info/sct",
-    code: "185349003",
-    snomedDisplay: "Encounter for check up",
+    code: "394579002",
+    snomedDisplay: "Cardiology",
+  },
+  {
+    value: "dme-evaluation",
+    label: "DME Evaluation",
+    system: "http://snomed.info/sct",
+    code: "183524004",
+    snomedDisplay: "Recommendation regarding equipment",
   },
   {
     value: "follow-up",
@@ -32,18 +39,18 @@ const SERVICE_TYPES = [
     snomedDisplay: "Follow-up encounter",
   },
   {
+    value: "general-checkup",
+    label: "General Checkup",
+    system: "http://snomed.info/sct",
+    code: "185349003",
+    snomedDisplay: "Encounter for check up",
+  },
+  {
     value: "specialist",
     label: "Specialist Consultation",
     system: "http://snomed.info/sct",
     code: "11429006",
     snomedDisplay: "Consultation",
-  },
-  {
-    value: "dme-evaluation",
-    label: "DME Evaluation",
-    system: "http://snomed.info/sct",
-    code: "183524004",
-    snomedDisplay: "Recommendation regarding equipment",
   },
 ] as const;
 
