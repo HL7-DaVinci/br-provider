@@ -13,7 +13,6 @@ class SecurityPropertiesTest {
         assertTrue(props.isFetchCert());
         assertEquals("udap-test", props.getDefaultCertPassword());
         assertEquals("test", props.getDefaultUserPassword());
-        assertEquals("X-Bypass-Auth", props.getBypassHeader());
         assertEquals("provider-client", props.getOauthClientId());
         assertFalse(props.isSslVerify());
         assertNotNull(props.getAllowedLocalHosts());

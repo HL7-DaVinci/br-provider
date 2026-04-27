@@ -119,6 +119,85 @@ class TokenValidatorTest {
     }
 
     @Test
+    void trustedIssuerToken_bypassesAudCheck() throws Exception {
+        // Tokens issued by the trust-community auth server (FAST RI) carry an
+        // aud that points at the IdP's own resource id, not this FHIR base.
+        // The aud check must be skipped for them.
+        String token = signToken(new JWTClaimsSet.Builder()
+            .issuer(FAST_RI_ISSUER)
+            .audience("https://localhost:5001/resources")
+            .expirationTime(new Date(System.currentTimeMillis() + 60000))
+            .build());
+
+        assertDoesNotThrow(() -> validator.validate(token));
+    }
+
+    @Test
+    void isAudienceAllowed_exactSmartFhirBaseMatch() {
+        SecurityProperties props = new SecurityProperties();
+        props.setSmartFhirBaseUrl("http://localhost:8080/fhir");
+        TokenValidator v = new TokenValidator(props,
+            new ImmutableJWKSet<>(new JWKSet(rsaKey.toPublicJWK())));
+
+        assertTrue(v.isAudienceAllowed("http://localhost:8080/fhir"));
+        assertTrue(v.isAudienceAllowed("http://localhost:8080/fhir/"));
+    }
+
+    @Test
+    void isAudienceAllowed_alternateLocalHost() {
+        SecurityProperties props = new SecurityProperties();
+        props.setSmartFhirBaseUrl("http://localhost:8080/fhir");
+        TokenValidator v = new TokenValidator(props,
+            new ImmutableJWKSet<>(new JWKSet(rsaKey.toPublicJWK())));
+
+        assertTrue(v.isAudienceAllowed("http://host.docker.internal:8080/fhir"));
+        assertTrue(v.isAudienceAllowed("http://127.0.0.1:8080/fhir"));
+    }
+
+    @Test
+    void isAudienceAllowed_rejectsForeignHost() {
+        SecurityProperties props = new SecurityProperties();
+        props.setSmartFhirBaseUrl("http://localhost:8080/fhir");
+        TokenValidator v = new TokenValidator(props,
+            new ImmutableJWKSet<>(new JWKSet(rsaKey.toPublicJWK())));
+
+        assertFalse(v.isAudienceAllowed("https://attacker.example.com/fhir"));
+    }
+
+    @Test
+    void isAudienceAllowed_rejectsMismatchedPort() {
+        SecurityProperties props = new SecurityProperties();
+        props.setSmartFhirBaseUrl("http://localhost:8080/fhir");
+        TokenValidator v = new TokenValidator(props,
+            new ImmutableJWKSet<>(new JWKSet(rsaKey.toPublicJWK())));
+
+        assertFalse(v.isAudienceAllowed("http://localhost:9999/fhir"));
+    }
+
+    @Test
+    void isAudienceAllowed_rejectsMismatchedPath() {
+        SecurityProperties props = new SecurityProperties();
+        props.setSmartFhirBaseUrl("http://localhost:8080/fhir");
+        TokenValidator v = new TokenValidator(props,
+            new ImmutableJWKSet<>(new JWKSet(rsaKey.toPublicJWK())));
+
+        assertFalse(v.isAudienceAllowed("http://localhost:8080/something-else"));
+    }
+
+    @Test
+    void validateAudience_throwsOnNoMatch() {
+        SecurityProperties props = new SecurityProperties();
+        props.setSmartFhirBaseUrl("http://localhost:8080/fhir");
+        TokenValidator v = new TokenValidator(props,
+            new ImmutableJWKSet<>(new JWKSet(rsaKey.toPublicJWK())));
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+            .audience("https://attacker.example.com/fhir")
+            .build();
+
+        assertThrows(Exception.class, () -> v.validateAudience(claims));
+    }
+
+    @Test
     void authDisabled_throws() {
         SecurityProperties props = new SecurityProperties();
         props.setEnableAuthentication(false);

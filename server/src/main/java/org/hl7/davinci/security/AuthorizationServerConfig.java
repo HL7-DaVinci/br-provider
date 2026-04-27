@@ -1,5 +1,11 @@
 package org.hl7.davinci.security;
 
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
@@ -16,18 +22,24 @@ import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.security.crypto.factory.PasswordEncoderFactories;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest;
 import org.springframework.security.oauth2.core.oidc.OidcScopes;
 import org.springframework.security.oauth2.core.oidc.endpoint.OidcParameterNames;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.server.authorization.OAuth2Authorization;
 import org.springframework.security.oauth2.server.authorization.OAuth2TokenType;
+import org.springframework.security.oauth2.server.authorization.authentication.OAuth2AuthorizationCodeRequestAuthenticationProvider;
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.OAuth2AuthorizationServerConfigurer;
+import org.springframework.security.oauth2.server.authorization.authentication.OAuth2AuthorizationCodeRequestAuthenticationValidator;
 import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
 import org.springframework.security.oauth2.server.authorization.token.JwtEncodingContext;
 import org.springframework.security.oauth2.server.authorization.token.OAuth2TokenCustomizer;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
+import org.springframework.security.oauth2.server.authorization.web.authentication.OAuth2AccessTokenResponseAuthenticationSuccessHandler;
 import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
+import org.springframework.security.web.context.SecurityContextHolderFilter;
 
 @Configuration
 @EnableWebSecurity
@@ -35,10 +47,21 @@ public class AuthorizationServerConfig {
 
     private final SecurityProperties securityProperties;
     private final FhirUserDetailsService userDetailsService;
+    private final SmartAuthorizationRequestValidator smartAuthorizationRequestValidator;
+    private final SmartPatientLaunchContextFilter smartPatientLaunchContextFilter;
+    private final SmartTokenResponseCustomizer smartTokenResponseCustomizer;
 
-    public AuthorizationServerConfig(SecurityProperties securityProperties, FhirUserDetailsService userDetailsService) {
+    public AuthorizationServerConfig(
+            SecurityProperties securityProperties,
+            FhirUserDetailsService userDetailsService,
+            SmartAuthorizationRequestValidator smartAuthorizationRequestValidator,
+            SmartPatientLaunchContextFilter smartPatientLaunchContextFilter,
+            SmartTokenResponseCustomizer smartTokenResponseCustomizer) {
         this.securityProperties = securityProperties;
         this.userDetailsService = userDetailsService;
+        this.smartAuthorizationRequestValidator = smartAuthorizationRequestValidator;
+        this.smartPatientLaunchContextFilter = smartPatientLaunchContextFilter;
+        this.smartTokenResponseCustomizer = smartTokenResponseCustomizer;
     }
 
     /**
@@ -48,7 +71,7 @@ public class AuthorizationServerConfig {
      */
     private String loginUrl() {
         String ext = securityProperties.getExternalBaseUrl();
-        return (ext != null) ? ext.replaceAll("/+$", "") + "/login" : "/login";
+        return (ext != null && !ext.isBlank()) ? ext.replaceAll("/+$", "") + "/login" : "/login";
     }
 
     @Bean
@@ -56,6 +79,21 @@ public class AuthorizationServerConfig {
     public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http) throws Exception {
         OAuth2AuthorizationServerConfiguration.applyDefaultSecurity(http);
         http.getConfigurer(OAuth2AuthorizationServerConfigurer.class)
+            .authorizationEndpoint(authorization -> authorization.authenticationProviders(providers -> {
+                for (var provider : providers) {
+                    if (provider instanceof OAuth2AuthorizationCodeRequestAuthenticationProvider codeProvider) {
+                        codeProvider.setAuthenticationValidator(
+                            new OAuth2AuthorizationCodeRequestAuthenticationValidator()
+                                .andThen(smartAuthorizationRequestValidator));
+                    }
+                }
+            }))
+            .tokenEndpoint(token -> {
+                OAuth2AccessTokenResponseAuthenticationSuccessHandler successHandler =
+                    new OAuth2AccessTokenResponseAuthenticationSuccessHandler();
+                successHandler.setAccessTokenResponseCustomizer(smartTokenResponseCustomizer);
+                token.accessTokenResponseHandler(successHandler);
+            })
             .oidc(Customizer.withDefaults());
 
         http.exceptionHandling(exceptions -> exceptions
@@ -64,6 +102,7 @@ public class AuthorizationServerConfig {
                 new MediaTypeRequestMatcher(MediaType.TEXT_HTML)
             )
         );
+        http.addFilterAfter(smartPatientLaunchContextFilter, SecurityContextHolderFilter.class);
         return http.build();
     }
 
@@ -130,7 +169,9 @@ public class AuthorizationServerConfig {
     public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
         http
             .authorizeHttpRequests(authorize -> authorize.anyRequest().permitAll())
-            .formLogin(form -> form.loginPage("/login"))
+            .formLogin(form -> form
+                .loginPage("/login")
+                .defaultSuccessUrl("/auth/login", false))
             .userDetailsService(userDetailsService)
             .csrf(csrf -> csrf
                 .ignoringRequestMatchers("/login", "/oauth2/register", "/fhir/**", "/auth/**", "/api/**")
@@ -158,11 +199,15 @@ public class AuthorizationServerConfig {
 
     @Bean
     public AuthorizationServerSettings authorizationServerSettings() {
-        return AuthorizationServerSettings.builder().build();
+        return AuthorizationServerSettings.builder()
+            .issuer(securityProperties.getServerBaseUrl())
+            .build();
     }
 
     @Bean
-    public OAuth2TokenCustomizer<JwtEncodingContext> tokenCustomizer(FhirUserDetailsService userDetailsService) {
+    public OAuth2TokenCustomizer<JwtEncodingContext> tokenCustomizer(
+            FhirUserDetailsService userDetailsService,
+            SmartLaunchService smartLaunchService) {
         return context -> {
             // B2B client_credentials tokens have no user context -- skip user claims
             if (AuthorizationGrantType.CLIENT_CREDENTIALS.equals(context.getAuthorizationGrantType())) {
@@ -176,6 +221,9 @@ public class AuthorizationServerConfig {
             Set<String> scopes = context.getAuthorizedScopes();
 
             if (OidcParameterNames.ID_TOKEN.equals(context.getTokenType().getValue())) {
+                if (isSmartTokenRequest(context)) {
+                    context.getClaims().issuer(smartIssuer(context));
+                }
                 if (scopes.contains("fhirUser") || scopes.contains(OidcScopes.OPENID)) {
                     context.getClaims().claim("fhirUser", user.getFhirResourceReference());
                 }
@@ -183,9 +231,141 @@ public class AuthorizationServerConfig {
             }
 
             if (OAuth2TokenType.ACCESS_TOKEN.equals(context.getTokenType())) {
+                if (isSmartTokenRequest(context)) {
+                    context.getClaims().issuer(smartIssuer(context));
+                }
                 context.getClaims().claim("fhirUser", user.getFhirResourceReference());
                 context.getClaims().claim("name", user.getDisplayName());
+
+                if (isSmartTokenRequest(context)) {
+                    context.getClaims().audience(List.of(smartAudience(context)));
+                }
+                SmartLaunchService.ResolvedLaunchContext launchContext =
+                    resolveSmartLaunchContext(context, smartLaunchService, user);
+                if (launchContext != null) {
+                    context.getClaims().claim("patient", launchContext.patientId());
+                    if (launchContext.encounterId() != null && !launchContext.encounterId().isBlank()) {
+                        context.getClaims().claim("encounter", launchContext.encounterId());
+                    }
+                    if (!launchContext.fhirContextReferences().isEmpty()) {
+                        context.getClaims().claim("fhirContext",
+                            fhirContextClaim(launchContext.fhirContextReferences()));
+                    }
+                    context.getClaims().claim("need_patient_banner", launchContext.needPatientBanner());
+                }
             }
         };
+    }
+
+    private SmartLaunchService.ResolvedLaunchContext resolveSmartLaunchContext(
+            JwtEncodingContext context,
+            SmartLaunchService smartLaunchService,
+            FhirUserDetails user) {
+        if (!AuthorizationGrantType.AUTHORIZATION_CODE.equals(context.getAuthorizationGrantType())) {
+            return null;
+        }
+        OAuth2Authorization authorization = context.getAuthorization();
+        if (authorization == null) {
+            return null;
+        }
+        OAuth2AuthorizationRequest request =
+            authorization.getAttribute(OAuth2AuthorizationRequest.class.getName());
+        if (request == null || !isSmartAuthorizationRequest(request)) {
+            return null;
+        }
+
+        String launch = stringParameter(request.getAdditionalParameters().get("launch"));
+        String selectedPatientContextToken = stringParameter(
+            request.getAdditionalParameters().get(SmartLaunchService.SELECTED_PATIENT_CONTEXT_PARAMETER));
+        return smartLaunchService.resolveForToken(
+            launch,
+            context.getAuthorizedScopes(),
+            user,
+            selectedPatientContextToken
+        );
+    }
+
+    private String smartIssuer(JwtEncodingContext context) {
+        OAuth2AuthorizationRequest request = authorizationRequest(context);
+        if (request != null) {
+            String issuer = origin(request.getAuthorizationUri());
+            if (issuer != null) {
+                return issuer;
+            }
+        }
+        return securityProperties.getServerBaseUrl();
+    }
+
+    private String smartAudience(JwtEncodingContext context) {
+        OAuth2AuthorizationRequest request = authorizationRequest(context);
+        if (request != null) {
+            String aud = stringParameter(request.getAdditionalParameters().get("aud"));
+            if (aud != null && !aud.isBlank()) {
+                return aud;
+            }
+        }
+        return securityProperties.getSmartFhirBaseUrl();
+    }
+
+    private static OAuth2AuthorizationRequest authorizationRequest(JwtEncodingContext context) {
+        OAuth2Authorization authorization = context.getAuthorization();
+        if (authorization == null) {
+            return null;
+        }
+        return authorization.getAttribute(OAuth2AuthorizationRequest.class.getName());
+    }
+
+    private static String origin(String uriValue) {
+        if (uriValue == null || uriValue.isBlank()) {
+            return null;
+        }
+        try {
+            URI uri = new URI(uriValue);
+            if (uri.getScheme() == null || uri.getRawAuthority() == null) {
+                return null;
+            }
+            return uri.getScheme() + "://" + uri.getRawAuthority();
+        } catch (URISyntaxException e) {
+            return null;
+        }
+    }
+
+    private static boolean isSmartTokenRequest(JwtEncodingContext context) {
+        if (!AuthorizationGrantType.AUTHORIZATION_CODE.equals(context.getAuthorizationGrantType())) {
+            return false;
+        }
+        OAuth2Authorization authorization = context.getAuthorization();
+        if (authorization == null) {
+            return false;
+        }
+        OAuth2AuthorizationRequest request =
+            authorization.getAttribute(OAuth2AuthorizationRequest.class.getName());
+        return request != null && isSmartAuthorizationRequest(request);
+    }
+
+    private static List<Map<String, String>> fhirContextClaim(List<String> references) {
+        List<Map<String, String>> values = new ArrayList<>();
+        for (String reference : references) {
+            Map<String, String> value = new LinkedHashMap<>();
+            value.put("reference", reference);
+            values.add(value);
+        }
+        return values;
+    }
+
+    private static String stringParameter(Object value) {
+        return value instanceof String stringValue ? stringValue : null;
+    }
+
+    private static boolean isSmartAuthorizationRequest(OAuth2AuthorizationRequest request) {
+        if (request.getAdditionalParameters().containsKey("aud")
+                || request.getAdditionalParameters().containsKey("launch")) {
+            return true;
+        }
+        return request.getScopes().stream().anyMatch(scope ->
+            scope.equals("launch")
+                || scope.startsWith("launch/")
+                || scope.startsWith("patient/")
+                || scope.startsWith("user/"));
     }
 }

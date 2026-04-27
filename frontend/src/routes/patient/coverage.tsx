@@ -1,6 +1,8 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import type { Coverage } from "fhir/r4";
-import { ChevronLeft, Loader2, Shield } from "lucide-react";
+import { Loader2, Shield, ShieldOff } from "lucide-react";
+import { EmptyState } from "@/components/empty-state";
+import { PageBackLink } from "@/components/page-back-link";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
@@ -30,15 +32,9 @@ function CoveragePage() {
       .filter((r): r is Coverage => r?.resourceType === "Coverage") ?? [];
 
   return (
-    <div className="p-6 md:p-10 max-w-6xl space-y-6">
-      <div className="flex items-center gap-2">
-        <Link
-          to="/patient"
-          className="text-muted-foreground hover:text-foreground"
-          aria-label="Back to dashboard"
-        >
-          <ChevronLeft className="h-5 w-5" />
-        </Link>
+    <div className="p-6 md:p-10 max-w-7xl space-y-6">
+      <div className="space-y-1">
+        <PageBackLink to="/patient" label="Home" />
         <h1 className="text-lg font-semibold">My Coverage</h1>
       </div>
 
@@ -55,9 +51,11 @@ function CoveragePage() {
       )}
 
       {!isLoading && coverages.length === 0 && !isError && (
-        <p className="text-sm text-muted-foreground">
-          No coverage records on file.
-        </p>
+        <EmptyState
+          icon={ShieldOff}
+          title="No coverage on file"
+          description="Your insurance coverage will appear here once your payer records sync with this portal."
+        />
       )}
 
       <div className="space-y-4">

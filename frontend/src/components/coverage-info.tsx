@@ -56,36 +56,51 @@ const CoverageInfo = ({
     </span>
   );
 
+  const Value = ({ children }: { children: React.ReactNode }) => {
+    const isPlaceholder = children === "N/A";
+    return (
+      <span
+        className={isPlaceholder ? "text-muted-foreground" : "text-foreground"}
+      >
+        {children}
+      </span>
+    );
+  };
+
+  const typeValue =
+    coverage.type?.text || coverage.type?.coding?.[0]?.code || "N/A";
+  const payorValue = orgLoading
+    ? "Loading..."
+    : orgData?.name || orgId || "N/A";
+
   return (
     <span className="flex flex-wrap gap-x-1 items-center text-sm">
       <Label>Coverage:</Label>
       <span className="mx-1 text-border">|</span>
       <Label>Id:</Label>
-      <span>{coverageId}</span>
+      <Value>{coverageId}</Value>
       <span className="mx-1 text-border">|</span>
       <Label>Type:</Label>
-      <span>
-        {coverage.type?.text || coverage.type?.coding?.[0]?.code || "N/A"}
-      </span>
+      <Value>{typeValue}</Value>
       {groupName && (
         <>
           <span className="mx-1 text-border">|</span>
           <Label>Group:</Label>
-          <span>{groupName}</span>
+          <Value>{groupName}</Value>
         </>
       )}
       <span className="mx-1 text-border">|</span>
       <Label>Plan:</Label>
-      <span>{planName}</span>
+      <Value>{planName}</Value>
       <span className="mx-1 text-border">|</span>
       <Label>Payor:</Label>
-      <span>{orgLoading ? "Loading..." : orgData?.name || orgId || "N/A"}</span>
+      <Value>{payorValue}</Value>
       <span className="mx-1 text-border">|</span>
       <Label>Member ID:</Label>
-      <span>{memberId}</span>
+      <Value>{memberId}</Value>
       <span className="mx-1 text-border">|</span>
       <Label>Period:</Label>
-      <span>{coveragePeriod}</span>
+      <Value>{coveragePeriod}</Value>
       <span className="mx-1 text-border">|</span>
       <Label>Status:</Label>
       <span

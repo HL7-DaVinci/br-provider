@@ -37,7 +37,7 @@ function MedicationsList() {
   }
 
   return (
-    <div className="p-6 max-w-6xl">
+    <div className="p-6 max-w-7xl">
       <h2 className="text-base font-semibold mb-3">
         Medications
         {!isLoading && data?.total !== undefined && (

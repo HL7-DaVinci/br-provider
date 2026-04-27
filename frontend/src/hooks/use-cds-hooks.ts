@@ -30,6 +30,10 @@ export interface FireHookResult {
   systemActionResources: Map<string, Resource>;
 }
 
+export interface FireHookOptions {
+  preservePreviousCoverageInfo?: boolean;
+}
+
 /**
  * Parsed CDS response data extracted from the raw hook response.
  * Used by both the order context wrapper and the appointment context wrapper.
@@ -59,6 +63,7 @@ interface UseCdsHooksCoreResult {
   fireHook: (
     hookName: CdsHookName,
     context: HookContext,
+    options?: FireHookOptions,
   ) => Promise<FireHookResult | undefined>;
   discovery: CdsServiceDiscovery | undefined;
   isDiscovering: boolean;
@@ -99,6 +104,7 @@ export function useCdsHooksCore(
     async (
       hookName: CdsHookName,
       context: HookContext,
+      options: FireHookOptions = {},
     ): Promise<FireHookResult | undefined> => {
       const cb = callbacksRef.current;
 
@@ -183,18 +189,25 @@ export function useCdsHooksCore(
           );
         }
 
+        const preservePreviousCoverageInfo =
+          options.preservePreviousCoverageInfo ?? true;
+
         cb.onResponse({
           coverageInfo:
             newCoverageInfo.length > 0
               ? newCoverageInfo
-              : cb.getPreviousCoverageInfo(),
+              : preservePreviousCoverageInfo
+                ? cb.getPreviousCoverageInfo()
+                : [],
           cards: data.cards ?? [],
           hookName,
           rawResponse: data,
           systemActionResources:
             updateResources.size > 0
               ? updateResources
-              : cb.getPreviousSystemActions(),
+              : preservePreviousCoverageInfo
+                ? cb.getPreviousSystemActions()
+                : new Map(),
         });
 
         return { systemActionResources: updateResources };
@@ -215,6 +228,7 @@ interface UseCdsHooksResult {
   fireHook: (
     hookName: CdsHookName,
     context: HookContext,
+    options?: FireHookOptions,
   ) => Promise<FireHookResult | undefined>;
   discovery: CdsServiceDiscovery | undefined;
   isDiscovering: boolean;
@@ -324,7 +338,7 @@ async function resolvePrefetch(
             if (!res.ok) return undefined;
             return res.json();
           },
-          staleTime: 60 * 1000,
+          staleTime: 0,
         });
         return { key, data };
       } catch {

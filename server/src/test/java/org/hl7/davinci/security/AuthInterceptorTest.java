@@ -39,16 +39,7 @@ class AuthInterceptorTest {
     }
 
     @Test
-    void bypassHeader_passes() throws Exception {
-        when(request.getHeader("X-Bypass-Auth")).thenReturn("1");
-        when(request.getRequestURI()).thenReturn("/fhir/Patient");
-
-        assertTrue(interceptor.authenticate(request, response));
-    }
-
-    @Test
     void publicEndpoint_passes() throws Exception {
-        when(request.getHeader("X-Bypass-Auth")).thenReturn(null);
         when(request.getRequestURI()).thenReturn("/fhir/metadata");
 
         assertTrue(interceptor.authenticate(request, response));
@@ -56,7 +47,6 @@ class AuthInterceptorTest {
 
     @Test
     void missingAuthHeader_returns401() throws Exception {
-        when(request.getHeader("X-Bypass-Auth")).thenReturn(null);
         when(request.getHeader("Authorization")).thenReturn(null);
         when(request.getRequestURI()).thenReturn("/fhir/Patient");
 
@@ -66,7 +56,6 @@ class AuthInterceptorTest {
 
     @Test
     void invalidToken_returns401() throws Exception {
-        when(request.getHeader("X-Bypass-Auth")).thenReturn(null);
         when(request.getHeader("Authorization")).thenReturn("Bearer bad-token");
         when(request.getRequestURI()).thenReturn("/fhir/Patient");
         when(tokenValidator.validate("bad-token")).thenThrow(new RuntimeException("Invalid"));
@@ -77,7 +66,6 @@ class AuthInterceptorTest {
 
     @Test
     void validToken_passes() throws Exception {
-        when(request.getHeader("X-Bypass-Auth")).thenReturn(null);
         when(request.getHeader("Authorization")).thenReturn("Bearer good-token");
         when(request.getRequestURI()).thenReturn("/fhir/Patient");
         when(tokenValidator.validate("good-token")).thenReturn(

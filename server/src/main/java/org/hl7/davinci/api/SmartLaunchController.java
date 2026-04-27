@@ -1,5 +1,7 @@
 package org.hl7.davinci.api;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -87,7 +89,8 @@ public class SmartLaunchController {
             patientId, encounterId, fhirContext, coverageAssertionId, questionnaire, appContext);
 
         String providerFhirUrl = resolveProviderFhirUrl(requestedProviderFhirUrl);
-        String launchUrl = "/dtr/launch?iss=" + providerFhirUrl + "&launch=" + launchToken;
+        String appLaunchUrl = (String) body.get("appLaunchUrl");
+        String launchUrl = buildLaunchUrl(appLaunchUrl, providerFhirUrl, launchToken);
 
         logger.debug("SMART launch context created: token={}, patient={}", launchToken, patientId);
 
@@ -123,6 +126,17 @@ public class SmartLaunchController {
         if (requestedProviderFhirUrl != null && !requestedProviderFhirUrl.isBlank()) {
             return UrlMatchUtil.normalizeUrl(requestedProviderFhirUrl);
         }
-        return securityProperties.getProviderBaseUrl() + "/fhir";
+        return securityProperties.getSmartFhirBaseUrl();
+    }
+
+    private static String buildLaunchUrl(String appLaunchUrl, String providerFhirUrl, String launchToken) {
+        String encodedIss = URLEncoder.encode(providerFhirUrl, StandardCharsets.UTF_8);
+        String encodedLaunch = URLEncoder.encode(launchToken, StandardCharsets.UTF_8);
+        if (appLaunchUrl == null || appLaunchUrl.isBlank()) {
+            return "/dtr/launch?iss=" + encodedIss + "&launch=" + encodedLaunch;
+        }
+
+        String separator = appLaunchUrl.contains("?") ? "&" : "?";
+        return appLaunchUrl + separator + "iss=" + encodedIss + "&launch=" + encodedLaunch;
     }
 }

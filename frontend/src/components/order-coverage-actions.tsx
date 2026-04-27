@@ -2,17 +2,19 @@ import { Link } from "@tanstack/react-router";
 import type { DomainResource, Resource } from "fhir/r4";
 import { CheckCircle, FileText, ShieldCheck } from "lucide-react";
 import { useCallback, useState } from "react";
+import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
 import { Button } from "@/components/ui/button";
 import { useOrderQuestionnaireResponses } from "@/hooks/use-clinical-api";
 import { useDtrQuestionnaireResponseIds } from "@/hooks/use-dtr-qr-store";
 import { useFhirServer } from "@/hooks/use-fhir-server";
 import { deriveDtrStatus } from "@/hooks/use-pipeline-status";
-import { launchSmartApp } from "@/lib/api";
 import {
   hasDtrDoc,
   parseCoverageInfoFromResource,
 } from "@/lib/coverage-extensions";
+import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
 import type { OrderEntry } from "@/lib/order-types";
+import { isTerminalQrStatus } from "@/lib/qr-status";
 
 interface OrderActionProps {
   order: OrderEntry;
@@ -24,6 +26,7 @@ interface OrderActionProps {
 export function DtrAction({ order, patientId, encounterId }: OrderActionProps) {
   const { serverUrl: providerFhirUrl } = useFhirServer();
   const [isLaunching, setIsLaunching] = useState(false);
+  const openDtrTask = useDtrTaskSheet();
 
   const resource = order.resource as DomainResource;
   const coverageInfo = parseCoverageInfoFromResource(resource);
@@ -38,8 +41,8 @@ export function DtrAction({ order, patientId, encounterId }: OrderActionProps) {
   );
 
   const qrEntries = existingQrBundle?.entry ?? [];
-  const completedQrs = qrEntries.filter(
-    (e) => e.resource?.status === "completed",
+  const completedQrs = qrEntries.filter((e) =>
+    isTerminalQrStatus(e.resource?.status),
   );
   const inProgressQrs = qrEntries.filter(
     (e) => e.resource?.status === "in-progress",
@@ -53,7 +56,7 @@ export function DtrAction({ order, patientId, encounterId }: OrderActionProps) {
         ? "Resume DTR"
         : "Launch DTR";
 
-  const handleDtrLaunch = useCallback(async () => {
+  const handleDtrLaunch = useCallback(() => {
     const ci = coverageInfo.find(hasDtrDoc);
     if (!ci || !orderId) return;
 
@@ -68,13 +71,13 @@ export function DtrAction({ order, patientId, encounterId }: OrderActionProps) {
         ...(resumeQrId ? [`QuestionnaireResponse/${resumeQrId}`] : []),
       ].filter(Boolean);
 
-      await launchSmartApp({
+      openDtrTask({
+        iss: providerFhirUrl,
         patientId,
-        encounterId: encounterId ?? null,
-        fhirContext,
-        coverageAssertionId: ci.coverageAssertionId ?? null,
-        questionnaire: ci.questionnaire ?? [],
-        providerFhirUrl,
+        encounterId,
+        fhirContext: fhirContext.join(","),
+        coverageAssertionId: ci.coverageAssertionId,
+        questionnaire: serializeQuestionnaireSearch(ci.questionnaire ?? []),
       });
     } catch (err) {
       console.error("DTR launch failed:", err);
@@ -90,6 +93,7 @@ export function DtrAction({ order, patientId, encounterId }: OrderActionProps) {
     providerFhirUrl,
     inProgressQrs,
     completedQrs,
+    openDtrTask,
   ]);
 
   if (!needsDoc) return null;
@@ -132,7 +136,7 @@ export function PaAction({
   const localQrIds = useDtrQuestionnaireResponseIds(orderRef);
 
   const completedQrIds = (existingQrBundle?.entry ?? [])
-    .filter((e) => e.resource?.status === "completed")
+    .filter((e) => isTerminalQrStatus(e.resource?.status))
     .map((e) => e.resource?.id)
     .filter((id): id is string => !!id);
   const qrIdsForPas = completedQrIds.length > 0 ? completedQrIds : localQrIds;

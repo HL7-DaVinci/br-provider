@@ -91,7 +91,7 @@ function PractitionerDashboard() {
   };
 
   return (
-    <div className="p-6 space-y-6 max-w-6xl">
+    <div className="p-6 space-y-6 max-w-7xl">
       <section>
         <h2 className="text-base font-semibold">Patient Search</h2>
         <p className="text-sm text-muted-foreground mt-0.5 mb-3">

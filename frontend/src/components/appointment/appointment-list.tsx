@@ -1,5 +1,6 @@
 import type { Appointment } from "fhir/r4";
 import { ClinicalTable } from "@/components/clinical-table";
+import { DeleteConfirmButton } from "@/components/delete-confirm-button";
 import { Badge } from "@/components/ui/badge";
 import { formatClinicalDate } from "@/lib/clinical-formatters";
 import { cn } from "@/lib/utils";
@@ -37,7 +38,7 @@ function formatAppointmentTime(dateStr?: string): string {
   });
 }
 
-const appointmentColumns = [
+const baseColumns = [
   {
     header: "Status",
     accessor: (a: Appointment) => (
@@ -72,16 +73,39 @@ interface AppointmentListProps {
   appointments: Appointment[];
   loading?: boolean;
   onRowClick?: (appointment: Appointment) => void;
+  onDelete?: (appointment: Appointment) => void;
+  deletingId?: string;
 }
 
 export function AppointmentList({
   appointments,
   loading,
   onRowClick,
+  onDelete,
+  deletingId,
 }: AppointmentListProps) {
+  const columns = onDelete
+    ? [
+        ...baseColumns,
+        {
+          header: "",
+          className: "w-10 text-right",
+          accessor: (a: Appointment) => (
+            <div className="flex justify-end">
+              <DeleteConfirmButton
+                onConfirm={() => onDelete(a)}
+                isPending={deletingId === a.id}
+                resourceLabel="appointment"
+              />
+            </div>
+          ),
+        },
+      ]
+    : baseColumns;
+
   return (
     <ClinicalTable
-      columns={appointmentColumns}
+      columns={columns}
       data={appointments}
       keyExtractor={(a) => a.id ?? ""}
       loading={loading}

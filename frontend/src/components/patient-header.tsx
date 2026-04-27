@@ -1,6 +1,6 @@
-import { Link } from "@tanstack/react-router";
 import type { Coverage, Patient } from "fhir/r4";
-import { ArrowLeft, Loader2, Play } from "lucide-react";
+import { Loader2, Play } from "lucide-react";
+import { PageBackLink } from "@/components/page-back-link";
 import { Button } from "@/components/ui/button";
 import { useCoverage, useOrganization } from "@/hooks/use-clinical-api";
 import { useCreateEncounter } from "@/hooks/use-create-encounter";
@@ -66,31 +66,25 @@ export function PatientHeader({ patient, stats }: PatientHeaderProps) {
 
   return (
     <div className="p-4 bg-card border-b">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Link
-            to="/practitioner"
-            className="text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1 min-w-0">
+          <PageBackLink to="/practitioner" label="Patients" />
           <h1 className="text-lg font-semibold truncate">{name}</h1>
         </div>
-        <div className="flex items-center gap-3">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={createEncounter}
-            disabled={isCreating}
-          >
-            {isCreating ? (
-              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-            ) : (
-              <Play className="h-3.5 w-3.5 mr-1" />
-            )}
-            {isCreating ? "Starting..." : "Start Encounter"}
-          </Button>
-        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={createEncounter}
+          disabled={isCreating}
+          className="shrink-0"
+        >
+          {isCreating ? (
+            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+          ) : (
+            <Play className="h-3.5 w-3.5 mr-1" />
+          )}
+          {isCreating ? "Starting..." : "Start Encounter"}
+        </Button>
       </div>
       <div className="flex flex-wrap items-center gap-y-1 text-sm text-muted-foreground mt-0.5">
         {meta.map((item, i) => (
@@ -104,7 +98,7 @@ export function PatientHeader({ patient, stats }: PatientHeaderProps) {
         ))}
       </div>
       {/* Coverage details */}
-      <div className="mt-2 ml-0 text-sm text-primary font-normal flex items-center">
+      <div className="mt-2 ml-0 text-sm text-muted-foreground font-normal flex items-center">
         <CoverageInfo
           coverage={coverage}
           coverageLoading={coverageLoading}

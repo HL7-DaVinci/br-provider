@@ -7,6 +7,7 @@ import {
 import { useOrderContext } from "@/hooks/use-order-context";
 import { formatDuration } from "@/lib/clinical-formatters";
 import { bundleResources } from "@/lib/fhir-types";
+import { isTerminalQrStatus } from "@/lib/qr-status";
 
 interface EncounterSummaryPanelProps {
   encounterId: string;
@@ -23,8 +24,8 @@ export function EncounterSummaryPanel({
 
   const orderCount = orders?.length ?? 0;
   const responses = bundleResources(qrBundle);
-  const completedDocs = responses.filter(
-    (qr) => qr.status === "completed",
+  const completedDocs = responses.filter((qr) =>
+    isTerminalQrStatus(qr.status),
   ).length;
   const duration = formatDuration(
     state.encounter?.period?.start,

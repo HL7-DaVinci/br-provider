@@ -54,7 +54,6 @@ public class GlobalCorsConfiguration implements WebMvcConfigurer {
       HttpHeaders.CACHE_CONTROL,
       "x-fhir-starter",
       "X-Requested-With",
-      "X-Bypass-Auth",
       "Prefer");
 
     // Configure exposed headers - matching what StarterJpaConfig uses

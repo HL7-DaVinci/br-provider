@@ -36,7 +36,9 @@ class SpaAuthControllerTest {
         serverProperties = new ServerProperties(LOCAL_SERVER, null);
         udapClient = new StubUdapClientRegistration(
             securityProperties, certificateHolder, new OutboundTargetValidator(securityProperties));
-        controller = new SpaAuthController(udapClient, certificateHolder, securityProperties, serverProperties);
+        controller = new SpaAuthController(
+            udapClient, certificateHolder, securityProperties, serverProperties,
+            new StubUserDetailsService());
     }
 
     @Test
@@ -388,6 +390,17 @@ class SpaAuthControllerTest {
         props.setCertFile(TEST_CERT_PATH);
         props.setCertPassword(TEST_CERT_PASSWORD);
         return new CertificateHolder(props);
+    }
+
+    private static class StubUserDetailsService extends FhirUserDetailsService {
+        StubUserDetailsService() {
+            super(null, null);
+        }
+
+        @Override
+        public FhirUserDetails getFhirUser(String username) {
+            return null;
+        }
     }
 
     private static class StubUdapClientRegistration extends UdapClientRegistration {

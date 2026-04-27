@@ -12,6 +12,7 @@ import { getAppConfig } from "@/lib/fhir-config";
 
 export function useAuth() {
   const config = getAppConfig();
+  const authEnabled = config.authEnabled !== false;
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [, forceUpdate] = useState(0);
@@ -33,7 +34,7 @@ export function useAuth() {
       return 60_000;
     },
     retry: false,
-    enabled: !!config.authEnabled,
+    enabled: authEnabled,
   });
 
   // Sync local state with server session
@@ -59,8 +60,7 @@ export function useAuth() {
 
   const effectiveUserInfo =
     userInfo ?? (sessionData?.authenticated ? sessionData.userinfo : undefined);
-  const isRestoringSession =
-    !!config.authEnabled && !userInfo && isSessionPending;
+  const isRestoringSession = authEnabled && !userInfo && isSessionPending;
 
   const login = useCallback(
     (serverUrl?: string, idp?: string) => startLogin(serverUrl, idp),
@@ -76,7 +76,7 @@ export function useAuth() {
   return {
     isAuthenticated: !!effectiveUserInfo || sessionData?.authenticated === true,
     isRestoringSession,
-    authEnabled: !!config.authEnabled,
+    authEnabled,
     user: effectiveUserInfo,
     fhirUser: effectiveUserInfo?.fhirUser,
     fhirUserType: effectiveUserInfo?.fhirUserType,

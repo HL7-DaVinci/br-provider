@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.hl7.davinci.security.B2BTokenService;
+import org.hl7.davinci.security.LocalSystemTokenService;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.hl7.fhir.r4.model.Coding;
@@ -40,14 +41,17 @@ public class DtrPopulateController {
 
     private final FhirContext fhirContext;
     private final B2BTokenService b2bTokenService;
+    private final LocalSystemTokenService localSystemTokenService;
     private final SecurityProperties securityProperties;
 
     public DtrPopulateController(
             FhirContext fhirContext,
             B2BTokenService b2bTokenService,
+            LocalSystemTokenService localSystemTokenService,
             SecurityProperties securityProperties) {
         this.fhirContext = fhirContext;
         this.b2bTokenService = b2bTokenService;
+        this.localSystemTokenService = localSystemTokenService;
         this.securityProperties = securityProperties;
     }
 
@@ -108,10 +112,15 @@ public class DtrPopulateController {
             populateInput.addParameter().setName("terminologyEndpoint")
                 .setResource(buildEndpoint(terminologyServerUrl));
 
-            var client = fhirContext.newRestfulGenericClient(
-                securityProperties.getProviderBaseUrl() + "/fhir");
+            String localFhirBase = securityProperties.getServerBaseUrl() + "/fhir";
+            var client = fhirContext.newRestfulGenericClient(localFhirBase);
+            String systemToken = localSystemTokenService.mintSystemToken(DTR_SCOPES);
+            if (systemToken == null) {
+                return ResponseEntity.internalServerError()
+                    .body(Map.of("error", "Internal authorization unavailable for $populate"));
+            }
             client.registerInterceptor(
-                new SimpleRequestHeaderInterceptor("X-Bypass-Auth", "internal"));
+                new SimpleRequestHeaderInterceptor("Authorization", "Bearer " + systemToken));
 
             Parameters result = client.operation()
                 .onType("Questionnaire")

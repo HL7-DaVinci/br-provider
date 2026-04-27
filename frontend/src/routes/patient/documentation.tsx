@@ -1,8 +1,7 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import type { Coverage, QuestionnaireResponse, Task } from "fhir/r4";
 import {
   CheckCircle,
-  ChevronLeft,
   ClipboardList,
   FileText,
   Loader2,
@@ -10,11 +9,17 @@ import {
 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
+import { DeleteConfirmButton } from "@/components/delete-confirm-button";
+import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
+import { PageBackLink } from "@/components/page-back-link";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
 import {
   useCoverage,
+  useDeleteQuestionnaireResponse,
+  useDeleteTask,
   usePatientQuestionnaireResponses,
 } from "@/hooks/use-clinical-api";
 import { useFhirServer } from "@/hooks/use-fhir-server";
@@ -22,12 +27,12 @@ import {
   extractTaskQuestionnaireUrls,
   usePatientDocumentationTasks,
 } from "@/hooks/use-pas";
-import { launchSmartApp } from "@/lib/api";
 import {
   formatClinicalDate,
   formatQuestionnaireName,
 } from "@/lib/clinical-formatters";
 import { parseCoverageInfoFromResource } from "@/lib/coverage-extensions";
+import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
 
 export const Route = createFileRoute("/patient/documentation")({
   component: DocumentationPage,
@@ -43,10 +48,10 @@ function DocumentationPage() {
     patientId,
     "in-progress",
   );
-  const completedQuery = usePatientQuestionnaireResponses(
-    patientId,
+  const finalizedQuery = usePatientQuestionnaireResponses(patientId, [
     "completed",
-  );
+    "amended",
+  ]);
   const { data: coverageBundle } = useCoverage(patientId);
 
   const primaryCoverage = (coverageBundle?.entry ?? [])
@@ -64,8 +69,8 @@ function DocumentationPage() {
         (r): r is QuestionnaireResponse =>
           r?.resourceType === "QuestionnaireResponse",
       ) ?? [];
-  const completed =
-    completedQuery.data?.entry
+  const finalized =
+    finalizedQuery.data?.entry
       ?.map((e) => e.resource)
       .filter(
         (r): r is QuestionnaireResponse =>
@@ -75,20 +80,14 @@ function DocumentationPage() {
   const isLoading =
     tasksQuery.isLoading ||
     inProgressQuery.isLoading ||
-    completedQuery.isLoading;
+    finalizedQuery.isLoading;
   const hasAny =
-    tasks.length > 0 || inProgress.length > 0 || completed.length > 0;
+    tasks.length > 0 || inProgress.length > 0 || finalized.length > 0;
 
   return (
-    <div className="p-6 md:p-10 max-w-6xl space-y-6">
-      <div className="flex items-center gap-2">
-        <Link
-          to="/patient"
-          className="text-muted-foreground hover:text-foreground"
-          aria-label="Back to dashboard"
-        >
-          <ChevronLeft className="h-5 w-5" />
-        </Link>
+    <div className="p-6 md:p-10 max-w-7xl space-y-6">
+      <div className="space-y-1">
+        <PageBackLink to="/patient" label="Home" />
         <h1 className="text-lg font-semibold">Documentation</h1>
       </div>
 
@@ -123,9 +122,9 @@ function DocumentationPage() {
         />
       )}
 
-      {completed.length > 0 && (
+      {finalized.length > 0 && (
         <CompletedSection
-          responses={completed}
+          responses={finalized}
           patientId={patientId}
           providerFhirUrl={providerFhirUrl}
           primaryCoverageRef={primaryCoverageRef}
@@ -183,6 +182,7 @@ function TaskRow({
   primaryCoverageRef?: string;
 }) {
   const [isLaunching, setIsLaunching] = useState(false);
+  const openDtrTask = useDtrTaskSheet();
   const urls = extractTaskQuestionnaireUrls([task]);
   const label =
     task.description ||
@@ -190,18 +190,18 @@ function TaskRow({
     "Documentation Request";
   const authored = formatClinicalDate(task.authoredOn);
 
-  const handleStart = useCallback(async () => {
+  const handleStart = useCallback(() => {
     if (urls.length === 0 || !task.id) return;
     setIsLaunching(true);
     try {
       const fhirContext = [primaryCoverageRef, `Task/${task.id}`].filter(
         (x): x is string => !!x,
       );
-      await launchSmartApp({
+      openDtrTask({
+        iss: providerFhirUrl,
         patientId,
-        questionnaire: urls,
-        providerFhirUrl,
-        fhirContext,
+        questionnaire: serializeQuestionnaireSearch(urls),
+        fhirContext: fhirContext.join(","),
       });
     } catch (err) {
       console.error("DTR launch failed:", err);
@@ -209,7 +209,24 @@ function TaskRow({
     } finally {
       setIsLaunching(false);
     }
-  }, [urls, task.id, patientId, providerFhirUrl, primaryCoverageRef]);
+  }, [
+    urls,
+    task.id,
+    patientId,
+    providerFhirUrl,
+    primaryCoverageRef,
+    openDtrTask,
+  ]);
+
+  const deleteTask = useDeleteTask();
+  const handleDelete = useCallback(() => {
+    if (!task.id) return;
+    deleteTask.mutate(task.id, {
+      onSuccess: () => toast.success("Request deleted"),
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : "Delete failed"),
+    });
+  }, [deleteTask, task.id]);
 
   return (
     <div className="flex items-center justify-between py-3 first:pt-0 last:pb-0">
@@ -219,18 +236,25 @@ function TaskRow({
           <p className="text-xs text-muted-foreground">Requested {authored}</p>
         )}
       </div>
-      <Button
-        size="sm"
-        onClick={handleStart}
-        disabled={isLaunching || urls.length === 0}
-      >
-        {isLaunching ? (
-          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-        ) : (
-          <Play className="mr-1 h-3 w-3" />
-        )}
-        Start
-      </Button>
+      <div className="flex items-center gap-1">
+        <Button
+          size="sm"
+          onClick={handleStart}
+          disabled={isLaunching || urls.length === 0}
+        >
+          {isLaunching ? (
+            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+          ) : (
+            <Play className="mr-1 h-3 w-3" />
+          )}
+          Start
+        </Button>
+        <DeleteConfirmButton
+          onConfirm={handleDelete}
+          isPending={deleteTask.isPending}
+          resourceLabel="request"
+        />
+      </div>
     </div>
   );
 }
@@ -323,18 +347,21 @@ function QrRow({
   primaryCoverageRef?: string;
 }) {
   const [isLaunching, setIsLaunching] = useState(false);
+  const openDtrTask = useDtrTaskSheet();
   const questionnaireUrl = qr.questionnaire;
   const label = formatQuestionnaireName(questionnaireUrl);
   const dateStr = qr.authored ?? qr.meta?.lastUpdated;
   const date = formatClinicalDate(dateStr);
-  const datePrefix = actionLabel === "View" ? "Completed" : "Updated";
+  const isAmended = qr.status === "amended";
+  const datePrefix =
+    actionLabel === "Resume" ? "Updated" : isAmended ? "Updated" : "Completed";
 
   const qrCoverageRef = parseCoverageInfoFromResource(qr).find(
     (ci) => ci.coverage,
   )?.coverage;
   const coverageRef = qrCoverageRef ?? primaryCoverageRef;
 
-  const handleLaunch = useCallback(async () => {
+  const handleLaunch = useCallback(() => {
     if (!qr.id || !questionnaireUrl) return;
     setIsLaunching(true);
     try {
@@ -342,11 +369,11 @@ function QrRow({
         coverageRef,
         `QuestionnaireResponse/${qr.id}`,
       ].filter((x): x is string => !!x);
-      await launchSmartApp({
+      openDtrTask({
+        iss: providerFhirUrl,
         patientId,
-        questionnaire: [questionnaireUrl],
-        providerFhirUrl,
-        fhirContext,
+        questionnaire: serializeQuestionnaireSearch([questionnaireUrl]),
+        fhirContext: fhirContext.join(","),
       });
     } catch (err) {
       console.error("DTR launch failed:", err);
@@ -354,33 +381,64 @@ function QrRow({
     } finally {
       setIsLaunching(false);
     }
-  }, [qr.id, questionnaireUrl, patientId, providerFhirUrl, coverageRef]);
+  }, [
+    qr.id,
+    questionnaireUrl,
+    patientId,
+    providerFhirUrl,
+    coverageRef,
+    openDtrTask,
+  ]);
+
+  const deleteQr = useDeleteQuestionnaireResponse();
+  const handleDelete = useCallback(() => {
+    if (!qr.id) return;
+    deleteQr.mutate(qr.id, {
+      onSuccess: () => toast.success("Response deleted"),
+      onError: (err) =>
+        toast.error(err instanceof Error ? err.message : "Delete failed"),
+    });
+  }, [deleteQr, qr.id]);
 
   return (
     <div className="flex items-center justify-between py-3 first:pt-0 last:pb-0">
       <div className="min-w-0 space-y-0.5">
-        <p className="text-sm font-medium truncate">{label}</p>
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-medium truncate">{label}</p>
+          {isAmended && (
+            <Badge variant="secondary" className="text-xs">
+              Amended
+            </Badge>
+          )}
+        </div>
         {date && (
           <p className="text-xs text-muted-foreground">
             {datePrefix} {date}
           </p>
         )}
       </div>
-      <Button
-        variant={actionLabel === "View" ? "outline" : "default"}
-        size="sm"
-        onClick={handleLaunch}
-        disabled={isLaunching || !questionnaireUrl}
-      >
-        {isLaunching ? (
-          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-        ) : actionLabel === "View" ? (
-          <CheckCircle className="mr-1 h-3 w-3" />
-        ) : (
-          <Play className="mr-1 h-3 w-3" />
-        )}
-        {actionLabel}
-      </Button>
+      <div className="flex items-center gap-1">
+        <Button
+          variant={actionLabel === "View" ? "outline" : "default"}
+          size="sm"
+          onClick={handleLaunch}
+          disabled={isLaunching || !questionnaireUrl}
+        >
+          {isLaunching ? (
+            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+          ) : actionLabel === "View" ? (
+            <CheckCircle className="mr-1 h-3 w-3" />
+          ) : (
+            <Play className="mr-1 h-3 w-3" />
+          )}
+          {actionLabel}
+        </Button>
+        <DeleteConfirmButton
+          onConfirm={handleDelete}
+          isPending={deleteQr.isPending}
+          resourceLabel="response"
+        />
+      </div>
     </div>
   );
 }

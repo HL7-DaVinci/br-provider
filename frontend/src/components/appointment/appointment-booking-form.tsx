@@ -244,13 +244,13 @@ export function AppointmentBookingForm({
 
       {/* Insurance / Coverage */}
       <div className="space-y-1.5">
-        <Label>Insurance / Coverage</Label>
+        <Label>Insurance / Coverage (optional)</Label>
         <Select
           value={form.coverageRef}
           onValueChange={(v) => update({ coverageRef: v })}
         >
           <SelectTrigger className="w-full">
-            <SelectValue placeholder="Select coverage (optional)" />
+            <SelectValue placeholder="Select coverage" />
           </SelectTrigger>
           <SelectContent>
             {coverages.map((cov) => (

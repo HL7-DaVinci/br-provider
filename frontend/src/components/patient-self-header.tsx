@@ -65,7 +65,7 @@ export function PatientSelfHeader({ patient }: PatientSelfHeaderProps) {
           </span>
         ))}
       </div>
-      <div className="mt-2 ml-0 text-sm text-primary font-normal flex items-center">
+      <div className="mt-2 ml-0 text-sm text-muted-foreground font-normal flex items-center">
         <CoverageInfo
           coverage={coverage}
           coverageLoading={coverageLoading}

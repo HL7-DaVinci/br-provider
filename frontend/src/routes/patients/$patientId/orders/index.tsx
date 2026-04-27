@@ -31,7 +31,7 @@ function OrdersList() {
   }
 
   return (
-    <div className="p-6 max-w-6xl space-y-4">
+    <div className="p-6 max-w-7xl space-y-4">
       <h2 className="text-base font-semibold">
         Orders
         {!isLoading && orders && (
@@ -75,6 +75,8 @@ function OrdersList() {
           {
             header: "Coverage",
             className: "whitespace-nowrap",
+            tooltip:
+              "CRD stage — whether the payer's Coverage Requirements Discovery hook has returned coverage guidance for this order.",
             accessor: (o) => (
               <PipelineStageCell
                 order={o}
@@ -87,6 +89,8 @@ function OrdersList() {
           {
             header: "Documentation",
             className: "whitespace-nowrap",
+            tooltip:
+              "DTR stage — whether the questionnaires required by the payer (if any) have been completed for this order.",
             accessor: (o) => (
               <PipelineStageCell
                 order={o}
@@ -99,6 +103,8 @@ function OrdersList() {
           {
             header: "Authorization",
             className: "whitespace-nowrap",
+            tooltip:
+              "PAS stage — whether a prior authorization decision has been received from the payer for this order.",
             accessor: (o) => (
               <PipelineStageCell
                 order={o}
@@ -111,11 +117,15 @@ function OrdersList() {
           {
             header: "DTR",
             className: "whitespace-nowrap",
+            tooltip:
+              "Launch the DTR workspace for this order to fill or view payer documentation.",
             accessor: (o) => <DtrAction order={o} patientId={patientId} />,
           },
           {
             header: "Prior Auth",
             className: "whitespace-nowrap",
+            tooltip:
+              "Submit or track a Prior Authorization Support (PAS) request for this order.",
             accessor: (o) => <PaAction order={o} patientId={patientId} />,
           },
         ]}

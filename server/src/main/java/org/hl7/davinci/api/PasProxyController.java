@@ -18,6 +18,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.B2BTokenService;
+import org.hl7.davinci.security.LocalSystemTokenService;
 import org.hl7.davinci.security.CertificateHolder;
 import org.hl7.davinci.security.OutboundTargetValidator;
 import org.hl7.davinci.security.SecurityProperties;
@@ -49,6 +50,7 @@ public class PasProxyController {
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
     private final B2BTokenService b2bTokenService;
+    private final LocalSystemTokenService localSystemTokenService;
     private final SecurityProperties securityProperties;
     private final ServerProperties serverProperties;
     private final CertificateHolder certificateHolder;
@@ -57,12 +59,14 @@ public class PasProxyController {
 
     public PasProxyController(
             B2BTokenService b2bTokenService,
+            LocalSystemTokenService localSystemTokenService,
             SecurityProperties securityProperties,
             ServerProperties serverProperties,
             CertificateHolder certificateHolder,
             OutboundTargetValidator outboundTargetValidator,
             ObjectMapper objectMapper) {
         this.b2bTokenService = b2bTokenService;
+        this.localSystemTokenService = localSystemTokenService;
         this.securityProperties = securityProperties;
         this.serverProperties = serverProperties;
         this.certificateHolder = certificateHolder;
@@ -480,7 +484,10 @@ public class PasProxyController {
             .GET();
 
         if (UrlMatchUtil.matchesBaseUrl(url, serverProperties.getLocalServerAddress())) {
-            request.header(securityProperties.getBypassHeader(), "1");
+            String systemToken = localSystemTokenService.mintSystemToken(ProxyUtil.FHIR_READ_SCOPES);
+            if (systemToken != null) {
+                request.header("Authorization", "Bearer " + systemToken);
+            }
         } else {
             SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder);
             String accessToken = SpaAuthController.getTokenForServer(session, url);

@@ -285,8 +285,9 @@ public class UdapClientRegistration {
         }
 
         // Redirect to the SPA's callback route (uses externalBaseUrl in dev mode)
-        String callbackBase = securityProperties.getExternalBaseUrl() != null
-            ? securityProperties.getExternalBaseUrl().replaceAll("/+$", "") + "/"
+        String externalBaseUrl = securityProperties.getExternalBaseUrl();
+        String callbackBase = (externalBaseUrl != null && !externalBaseUrl.isBlank())
+            ? externalBaseUrl.replaceAll("/+$", "") + "/"
             : baseUrl;
         String regRedirectUri = callbackBase + "callback";
 
@@ -304,7 +305,7 @@ public class UdapClientRegistration {
             .claim("contacts", List.of("mailto:admin@localhost"))
             .claim("logo_uri", "https://build.fhir.org/icon-fhir-16.png")
             .claim("token_endpoint_auth_method", List.of("private_key_jwt"))
-            .claim("scope", securityProperties.getScope())
+            .claim("scope", buildRegistrationScope())
             .build();
 
         // UDAP IG requires only alg and x5c in the header (no kid)
@@ -340,6 +341,26 @@ public class UdapClientRegistration {
 
         logger.info("UDAP client registered with client_id: {} via {}", regClientId, udapDiscoveryUrl);
         return new ServerRegistration(regClientId, authorizeEp, tokenEp, regRedirectUri, issuerStr, userinfoEp);
+    }
+
+    /**
+     * Builds the scope string used in the DCR software statement. Includes the
+     * configured identity scopes plus the role-based resource scopes the SPA
+     * may request after login. The authorization server uses this list to
+     * decide which scopes the client is allowed to request at /authorize time;
+     * scopes omitted here will be rejected as out-of-bounds even if the SPA
+     * later asks for them.
+     */
+    private String buildRegistrationScope() {
+        java.util.LinkedHashSet<String> scopes = new java.util.LinkedHashSet<>();
+        for (String s : securityProperties.getScope().split("\\s+")) {
+            if (!s.isBlank()) {
+                scopes.add(s);
+            }
+        }
+        scopes.addAll(securityProperties.getPractitionerScopes());
+        scopes.addAll(securityProperties.getPatientScopes());
+        return String.join(" ", scopes);
     }
 
     public String getClientId() { return clientId; }

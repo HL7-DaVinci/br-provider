@@ -482,19 +482,52 @@ security:
   default-user-password: test
   fetch-cert-retry-attempts: 10
   fetch-cert-retry-delay: 5000
-  bypass-header: X-Bypass-Auth
   ssl-verify: false
   external-base-url: http://localhost:3000
   oauth-client-id: provider-client
   scope: "openid udap fhirUser profile"
+  practitioner-scopes:
+    - "user/*.cruds"
+  patient-scopes:
+    - "patient/*.rs"
+    - "patient/Appointment.cruds"
+    - "patient/QuestionnaireResponse.cruds"
+  # Non patient compartment resource types a patient-scoped token may read
+  reference-data-resources:
+    - "Organization"
+    - "Practitioner"
+    - "PractitionerRole"
+    - "Location"
+    - "HealthcareService"
+    - "Endpoint"
+    - "Substance"
+    - "Medication"
+    - "MedicationKnowledge"
+    - "Device"
+    - "DeviceDefinition"
+  # Resource types that aren't in the Patient compartment definition
+  # but should be treated as patient-scoped via the listed search parameters.
+  # e.g. allow a patient-scoped token to query their tasks at /fhir/Task?patient=123
+  patient-compartment-extensions:
+    Task:
+      - "patient"
+      - "subject"
+      - "owner"
   client-name: "Da Vinci Burden Reduction Provider Client"
   allowed-local-hosts:
     - "localhost"
     - "127.0.0.1"
     - "[::1]"
-    # - "host.docker.internal"
+    - "host.docker.internal"
   public-endpoints:
     - /fhir/metadata
     - /fhir/.well-known/udap
+    - /fhir/.well-known/smart-configuration
     - /.well-known/udap
     - /.well-known/openid-configuration
+  smart-public-client-id: br-provider-smart-public
+  smart-public-client-name: "Da Vinci Provider SMART Public Test Client"
+  smart-public-redirect-uris:
+    - http://localhost:3000/callback
+    - http://127.0.0.1:3000/callback
+    - http://localhost/custom/smart/redirect # local Inferno testing

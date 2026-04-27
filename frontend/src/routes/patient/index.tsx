@@ -51,7 +51,7 @@ function PatientDashboard() {
       .slice(0, 3) ?? [];
 
   return (
-    <div className="p-6 md:p-10 max-w-6xl space-y-6">
+    <div className="p-6 md:p-10 max-w-7xl space-y-6">
       {/* Quick Actions */}
       <div className="grid gap-4 md:grid-cols-3">
         <Link to="/patient/appointments" className="block">
@@ -109,9 +109,9 @@ function PatientDashboard() {
           <div className="flex items-center justify-between">
             <CardTitle className="text-sm">Upcoming Appointments</CardTitle>
             <Link to="/patient/appointments/new">
-              <Button variant="outline" size="sm" className="h-7 text-xs">
+              <Button size="sm" className="h-7 text-xs">
                 <CalendarPlus className="mr-1 h-3 w-3" />
-                Book New
+                Book Appointment
               </Button>
             </Link>
           </div>

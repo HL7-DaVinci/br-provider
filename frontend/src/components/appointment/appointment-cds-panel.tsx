@@ -1,6 +1,7 @@
 import { AlertCircle, Code } from "lucide-react";
 import { useCallback } from "react";
 import { toast } from "sonner";
+import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
 import {
   JsonViewerDialog,
   useJsonViewer,
@@ -9,12 +10,12 @@ import { CdsCard } from "@/components/order-form/cds-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useFhirServer } from "@/hooks/use-fhir-server";
-import { launchSmartApp } from "@/lib/api";
 import type {
   CdsCard as CdsCardType,
   CdsHookResponse,
   CdsLink,
 } from "@/lib/cds-types";
+import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
 
 interface AppointmentCdsPanelProps {
   cards: CdsCardType[];
@@ -33,9 +34,10 @@ export function AppointmentCdsPanel({
 }: AppointmentCdsPanelProps) {
   const { serverUrl } = useFhirServer();
   const { viewerData, openViewer, closeViewer } = useJsonViewer();
+  const openDtrTask = useDtrTaskSheet();
 
   const handleSmartLaunch = useCallback(
-    async (link: CdsLink) => {
+    (link: CdsLink) => {
       const rawAppContext =
         typeof link.appContext === "string" ? link.appContext : undefined;
 
@@ -54,17 +56,19 @@ export function AppointmentCdsPanel({
       }
 
       try {
-        await launchSmartApp({
+        openDtrTask({
+          iss: serverUrl,
           patientId,
-          fhirContext,
+          fhirContext: fhirContext.join(","),
           coverageAssertionId:
             typeof parsedContext?.coverageAssertionId === "string"
               ? parsedContext.coverageAssertionId
               : undefined,
-          questionnaire: Array.isArray(parsedContext?.questionnaire)
-            ? parsedContext.questionnaire
-            : [],
-          providerFhirUrl: serverUrl,
+          questionnaire: serializeQuestionnaireSearch(
+            Array.isArray(parsedContext?.questionnaire)
+              ? parsedContext.questionnaire
+              : [],
+          ),
           appContext: rawAppContext,
         });
       } catch (err) {
@@ -72,7 +76,7 @@ export function AppointmentCdsPanel({
         toast.error("Failed to launch SMART app");
       }
     },
-    [patientId, serverUrl],
+    [patientId, serverUrl, openDtrTask],
   );
 
   const hasCards = cards.length > 0;

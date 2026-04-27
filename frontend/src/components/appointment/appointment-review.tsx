@@ -1,13 +1,14 @@
 import type { Appointment, Resource } from "fhir/r4";
 import {
   CalendarCheck,
-  ChevronLeft,
   Code,
   ExternalLink,
   Loader2,
+  Pencil,
 } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { toast } from "sonner";
+import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
 import {
   JsonViewerDialog,
   useJsonViewer,
@@ -17,7 +18,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useFhirServer } from "@/hooks/use-fhir-server";
-import { DTR_COMPLETION_CHANNEL, launchSmartApp } from "@/lib/api";
 import type {
   CdsCard as CdsCardType,
   CdsHookResponse,
@@ -25,6 +25,9 @@ import type {
 } from "@/lib/cds-types";
 import { formatClinicalDate } from "@/lib/clinical-formatters";
 import { COVERAGE_INFO_EXT_URL, hasDtrDoc } from "@/lib/coverage-extensions";
+import { subscribeDtrCompletion } from "@/lib/dtr-completion";
+import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
+import { isTerminalQrStatus } from "@/lib/qr-status";
 import { AppointmentCdsPanel } from "./appointment-cds-panel";
 
 function getPractitionerDisplay(appointment: Partial<Appointment>): string {
@@ -66,6 +69,7 @@ interface AppointmentReviewProps {
   onBack?: () => void;
   /** Custom action bar rendered instead of the default booking actions. */
   actions?: React.ReactNode;
+  onDocumentationCompleted?: () => Promise<void> | void;
 }
 
 export function AppointmentReview({
@@ -81,39 +85,45 @@ export function AppointmentReview({
   onConfirm,
   onBack,
   actions,
+  onDocumentationCompleted,
 }: AppointmentReviewProps) {
   const { serverUrl } = useFhirServer();
   const { viewerData, openViewer, closeViewer } = useJsonViewer();
+  const openDtrTask = useDtrTaskSheet();
   const dtrNeeded = coverageInfo.some(hasDtrDoc);
 
-  // Listen for DTR completion
   useEffect(() => {
-    const channel = new BroadcastChannel(DTR_COMPLETION_CHANNEL);
-    channel.onmessage = () => {
-      toast.success("Documentation completed");
-    };
-    return () => channel.close();
-  }, []);
+    return subscribeDtrCompletion((message) => {
+      if (!isTerminalQrStatus(message.status)) return;
+      if (message.patientId && message.patientId !== patientId) return;
+      toast.success(
+        message.status === "amended"
+          ? "Documentation updated"
+          : "Documentation completed",
+      );
+      void onDocumentationCompleted?.();
+    });
+  }, [patientId, onDocumentationCompleted]);
 
   const handleDtrLaunch = useCallback(
-    async (ci: CoverageInformation) => {
+    (ci: CoverageInformation) => {
       try {
         const fhirContext: string[] = [];
         if (ci.coverage) fhirContext.push(ci.coverage);
 
-        await launchSmartApp({
+        openDtrTask({
+          iss: serverUrl,
           patientId,
-          fhirContext,
+          fhirContext: fhirContext.join(","),
           coverageAssertionId: ci.coverageAssertionId,
-          questionnaire: ci.questionnaire ?? [],
-          providerFhirUrl: serverUrl,
+          questionnaire: serializeQuestionnaireSearch(ci.questionnaire ?? []),
         });
       } catch (err) {
         console.error("DTR launch failed:", err);
         toast.error("Failed to launch documentation");
       }
     },
-    [patientId, serverUrl],
+    [patientId, serverUrl, openDtrTask],
   );
 
   return (
@@ -252,8 +262,8 @@ export function AppointmentReview({
         (onConfirm && onBack && (
           <div className="flex gap-3">
             <Button variant="outline" onClick={onBack}>
-              <ChevronLeft className="mr-2 h-4 w-4" />
-              Back
+              <Pencil className="mr-2 h-4 w-4" />
+              Edit
             </Button>
             <Button
               className="flex-1"

@@ -32,6 +32,14 @@ interface LhcFormRendererProps {
   isSaving?: boolean;
   /** When true, the built-in footer buttons are hidden (for adaptive wrapper). */
   hideFooter?: boolean;
+  /** When true, renders the form non-editable and hides the footer buttons. */
+  readOnly?: boolean;
+  /**
+   * When false, hides the "Save Draft" button so the only save path is
+   * "Complete". Used when editing a terminal (completed/amended) QR, where
+   * regressing to in-progress is not a valid FHIR transition.
+   */
+  allowInProgressSave?: boolean;
   ref?: React.Ref<LhcFormRendererHandle>;
 }
 
@@ -47,6 +55,8 @@ export function LhcFormRenderer({
   onSave,
   isSaving = false,
   hideFooter = false,
+  readOnly = false,
+  allowInProgressSave = true,
   ref,
 }: LhcFormRendererProps) {
   const shellRef = useRef<HTMLDivElement>(null);
@@ -252,7 +262,11 @@ export function LhcFormRenderer({
           <div
             ref={containerRef}
             className={`lhc-form-container pb-8 ${
-              loading || error ? "pointer-events-none opacity-0" : ""
+              loading || error
+                ? "pointer-events-none opacity-0"
+                : readOnly
+                  ? "pointer-events-none opacity-75"
+                  : ""
             }`}
             aria-hidden={loading || error ? true : undefined}
           />
@@ -277,7 +291,7 @@ export function LhcFormRenderer({
         )}
       </div>
 
-      {!loading && !error && !hideFooter && (
+      {!loading && !error && !hideFooter && !readOnly && (
         <div
           ref={footerRef}
           className={`shrink-0 ${
@@ -300,13 +314,15 @@ export function LhcFormRenderer({
             </Button>
 
             <div className="flex gap-2">
-              <Button
-                variant="outline"
-                onClick={() => handleSave("in-progress")}
-                disabled={isSaving}
-              >
-                Save Draft
-              </Button>
+              {allowInProgressSave && (
+                <Button
+                  variant="outline"
+                  onClick={() => handleSave("in-progress")}
+                  disabled={isSaving}
+                >
+                  Save Draft
+                </Button>
+              )}
               <Button
                 onClick={() => handleSave("completed")}
                 disabled={isSaving}

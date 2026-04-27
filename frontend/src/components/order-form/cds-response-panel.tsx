@@ -1,6 +1,7 @@
 import { AlertCircle, Code } from "lucide-react";
 import { useCallback } from "react";
 import { toast } from "sonner";
+import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
 import {
   JsonViewerDialog,
   useJsonViewer,
@@ -11,12 +12,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useFhirServer } from "@/hooks/use-fhir-server";
 import { useOrderContext } from "@/hooks/use-order-context";
-import { launchSmartApp } from "@/lib/api";
 import type {
   CdsCard as CdsCardType,
   CdsLink,
   CdsSuggestion,
 } from "@/lib/cds-types";
+import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
 
 export function CdsResponsePanel() {
   const { state, dispatch } = useOrderContext();
@@ -30,6 +31,7 @@ export function CdsResponsePanel() {
   } = state;
   const { viewerData, openViewer, closeViewer } = useJsonViewer();
   const { serverUrl } = useFhirServer();
+  const openDtrTask = useDtrTaskSheet();
   const hasCards = cdsCards.length > 0;
 
   const handleApplySuggestion = useCallback(
@@ -56,7 +58,7 @@ export function CdsResponsePanel() {
   );
 
   const handleSmartLaunch = useCallback(
-    async (link: CdsLink) => {
+    (link: CdsLink) => {
       const rawAppContext =
         typeof link.appContext === "string" ? link.appContext : undefined;
 
@@ -79,18 +81,20 @@ export function CdsResponsePanel() {
       }
 
       try {
-        await launchSmartApp({
+        openDtrTask({
+          iss: serverUrl,
           patientId: state.patientId,
           encounterId: state.encounter?.id,
-          fhirContext,
+          fhirContext: fhirContext.join(","),
           coverageAssertionId:
             typeof parsedContext?.coverageAssertionId === "string"
               ? parsedContext.coverageAssertionId
               : undefined,
-          questionnaire: Array.isArray(parsedContext?.questionnaire)
-            ? parsedContext.questionnaire
-            : [],
-          providerFhirUrl: serverUrl,
+          questionnaire: serializeQuestionnaireSearch(
+            Array.isArray(parsedContext?.questionnaire)
+              ? parsedContext.questionnaire
+              : [],
+          ),
           appContext: rawAppContext,
         });
       } catch (err) {
@@ -98,7 +102,7 @@ export function CdsResponsePanel() {
         toast.error("Failed to launch SMART app");
       }
     },
-    [state.patientId, state.encounter?.id, serverUrl],
+    [state.patientId, state.encounter?.id, serverUrl, openDtrTask],
   );
 
   return (

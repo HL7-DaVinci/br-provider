@@ -19,6 +19,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -40,7 +41,7 @@ import {
   usePasUpdate,
 } from "@/hooks/use-pas";
 import { usePayerServer } from "@/hooks/use-payer-server";
-import { fhirProxyUrl, launchSmartApp } from "@/lib/api";
+import { fhirProxyUrl } from "@/lib/api";
 import {
   formatClinicalDate,
   formatPatientName,
@@ -49,6 +50,8 @@ import {
   COVERAGE_INFO_EXT_URL,
   parseExtensionFields,
 } from "@/lib/coverage-extensions";
+import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
+import { isTerminalQrStatus } from "@/lib/qr-status";
 
 interface PasSearch {
   coverageId?: string;
@@ -74,6 +77,7 @@ function PasPage() {
   const { coverageId, claimResponseId, qrIds, orderType } = Route.useSearch();
   const { serverUrl: providerFhirUrl } = useFhirServer();
   const { fhirUrl: payerFhirUrl } = usePayerServer();
+  const openDtrTask = useDtrTaskSheet();
   const queryClient = useQueryClient();
 
   const invalidateClaimResponseList = useCallback(() => {
@@ -193,7 +197,7 @@ function PasPage() {
     isPended && taskQuestionnaireUrls.length > 0 ? patientId : undefined,
   );
   const newCompletedQrs = (orderQrBundle?.entry ?? [])
-    .filter((e) => e.resource?.status === "completed")
+    .filter((e) => isTerminalQrStatus(e.resource?.status))
     .map((e) => e.resource as QuestionnaireResponse)
     .filter((qr) => {
       if (!activeClaimResponse?.created) return true;
@@ -286,7 +290,7 @@ function PasPage() {
     );
   }
 
-  const handleDtrLaunch = useCallback(async () => {
+  const handleDtrLaunch = useCallback(() => {
     if (!taskQuestionnaireUrls.length) return;
     setIsLaunchingDtr(true);
     try {
@@ -295,11 +299,11 @@ function PasPage() {
         `${resolvedOrderType}/${orderId}`,
       ].filter(Boolean);
 
-      await launchSmartApp({
+      openDtrTask({
+        iss: providerFhirUrl,
         patientId,
-        fhirContext,
-        questionnaire: taskQuestionnaireUrls,
-        providerFhirUrl,
+        fhirContext: fhirContext.join(","),
+        questionnaire: serializeQuestionnaireSearch(taskQuestionnaireUrls),
       });
     } catch (err) {
       console.error("DTR launch from PAS failed:", err);
@@ -313,6 +317,7 @@ function PasPage() {
     orderId,
     patientId,
     providerFhirUrl,
+    openDtrTask,
   ]);
 
   function handlePasUpdate() {
@@ -447,7 +452,7 @@ function PasPage() {
                     <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                     <Badge
                       variant={
-                        qr?.status === "completed" ? "default" : "secondary"
+                        isTerminalQrStatus(qr?.status) ? "default" : "secondary"
                       }
                       className="text-xs"
                     >

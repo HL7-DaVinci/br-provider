@@ -33,7 +33,6 @@ import {
 } from "@/hooks/use-clinical-api";
 import { OrderFormProvider, useOrderContext } from "@/hooks/use-order-context";
 import { usePayerServer } from "@/hooks/use-payer-server";
-import { DTR_COMPLETION_CHANNEL } from "@/lib/api";
 import type {
   OrderDispatchContext,
   OrderSelectContext,
@@ -45,6 +44,7 @@ import {
   buildSignedOrdersTransactionBundle,
   restoreOrdersFromResources,
 } from "@/lib/draft-orders";
+import { subscribeDtrCompletion } from "@/lib/dtr-completion";
 
 export const Route = createFileRoute(
   "/patients/$patientId/encounter/$encounterId",
@@ -93,20 +93,13 @@ function ActiveEncounterWorkflow({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  // Listen for DTR completion in child windows and refetch order data
   useEffect(() => {
-    try {
-      const channel = new BroadcastChannel(DTR_COMPLETION_CHANNEL);
-      channel.onmessage = () => {
-        invalidateOrderQueries(queryClient);
-        queryClient.invalidateQueries({
-          queryKey: ["fhir", "QuestionnaireResponse"],
-        });
-      };
-      return () => channel.close();
-    } catch {
-      // BroadcastChannel not supported in this browser
-    }
+    return subscribeDtrCompletion(() => {
+      invalidateOrderQueries(queryClient);
+      queryClient.invalidateQueries({
+        queryKey: ["fhir", "QuestionnaireResponse"],
+      });
+    });
   }, [queryClient]);
 
   const hasFiredEncounterStart = useRef(false);

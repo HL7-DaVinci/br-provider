@@ -33,7 +33,7 @@ function ConditionsList() {
   }
 
   return (
-    <div className="p-6 max-w-6xl">
+    <div className="p-6 max-w-7xl">
       <h2 className="text-base font-semibold mb-3">
         Conditions
         {!isLoading && data?.total !== undefined && (

@@ -47,6 +47,27 @@ export function usePractitioners() {
   });
 }
 
+export function useDeleteAppointment() {
+  const { serverUrl } = useFhirServer();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const proxyUrl = fhirProxyUrl(`${serverUrl}/Appointment/${id}`);
+      const response = await fetch(proxyUrl, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to delete appointment: ${response.status}`);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["fhir", "Appointment"] });
+    },
+  });
+}
+
 export function useCreateAppointment() {
   const { serverUrl } = useFhirServer();
   const queryClient = useQueryClient();

@@ -1,11 +1,13 @@
 package org.hl7.davinci.security;
 
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Date;
+import java.util.List;
 import javax.net.ssl.SSLContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -95,7 +97,57 @@ public class TokenValidator {
             throw new JOSEException("Token expired");
         }
 
+        if (!isRemote) {
+            validateAudience(claims);
+        }
+
         return claims;
+    }
+
+    void validateAudience(JWTClaimsSet claims) throws JOSEException {
+        List<String> audiences = claims.getAudience();
+        if (audiences == null || audiences.stream().noneMatch(this::isAudienceAllowed)) {
+            throw new JOSEException("Token audience does not match this FHIR server");
+        }
+    }
+
+    /**
+     * An audience matches the configured smart FHIR base URL exactly, or
+     * matches by scheme/port/path with a host listed in allowedLocalHosts
+     * so a token issued for http://localhost:8080/fhir is also valid when
+     * the request comes in on http://host.docker.internal:8080/fhir.
+     */
+    boolean isAudienceAllowed(String audience) {
+        String normalizedAudience = normalizeUrl(audience);
+        String normalizedBase = normalizeUrl(securityProperties.getSmartFhirBaseUrl());
+        if (normalizedAudience.equals(normalizedBase)) {
+            return true;
+        }
+        try {
+            URI audUri = new URI(normalizedAudience);
+            URI baseUri = new URI(normalizedBase);
+            if (audUri.getPort() != baseUri.getPort()
+                    || !nullSafe(audUri.getScheme()).equalsIgnoreCase(nullSafe(baseUri.getScheme()))
+                    || !nullSafe(audUri.getPath()).equals(nullSafe(baseUri.getPath()))) {
+                return false;
+            }
+            String audHost = audUri.getHost();
+            if (audHost == null) {
+                return false;
+            }
+            return securityProperties.getAllowedLocalHosts().stream()
+                .anyMatch(allowed -> allowed.equalsIgnoreCase(audHost));
+        } catch (URISyntaxException e) {
+            return false;
+        }
+    }
+
+    private static String normalizeUrl(String value) {
+        return value == null ? "" : value.replaceAll("/+$", "");
+    }
+
+    private static String nullSafe(String value) {
+        return value == null ? "" : value;
     }
 
     /**

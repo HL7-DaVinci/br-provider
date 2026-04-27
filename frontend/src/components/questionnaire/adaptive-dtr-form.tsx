@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useNextQuestion } from "@/hooks/use-questionnaire";
 import type { AnswerSnapshot } from "@/lib/information-origin";
+import { isTerminalQrStatus } from "@/lib/qr-status";
 import {
   LhcFormRenderer,
   type LhcFormRendererHandle,
@@ -27,6 +28,14 @@ interface AdaptiveDtrFormProps {
   ) => void;
   isSaving?: boolean;
   payerFhirUrl: string;
+  /** When true, renders the form non-editable and hides the action buttons. */
+  readOnly?: boolean;
+  /**
+   * When false, hides the "Save Draft" button so the only save path is
+   * "Complete". Used when editing a terminal (completed/amended) QR, where
+   * regressing to in-progress is not a valid FHIR transition.
+   */
+  allowInProgressSave?: boolean;
 }
 
 /**
@@ -44,6 +53,8 @@ export function AdaptiveDtrForm({
   onSave,
   isSaving = false,
   payerFhirUrl,
+  readOnly = false,
+  allowInProgressSave = true,
 }: AdaptiveDtrFormProps) {
   const formRef = useRef<LhcFormRendererHandle>(null);
   const nextQuestion = useNextQuestion(payerFhirUrl);
@@ -60,7 +71,7 @@ export function AdaptiveDtrForm({
     prepopulated,
   );
   const [isCompleted, setIsCompleted] = useState(
-    prepopulated?.status === "completed",
+    isTerminalQrStatus(prepopulated?.status),
   );
   // Incrementing key forces LhcFormRenderer to fully re-mount with new items
   const [round, setRound] = useState(0);
@@ -106,7 +117,7 @@ export function AdaptiveDtrForm({
       setCurrentQr(result);
       setRound((r) => r + 1);
 
-      if (result.status === "completed") {
+      if (isTerminalQrStatus(result.status)) {
         setIsCompleted(true);
       }
     } catch (err) {
@@ -159,56 +170,65 @@ export function AdaptiveDtrForm({
           originIndex={originIndex}
           onSave={noop}
           hideFooter
+          readOnly={readOnly}
         />
       </div>
 
-      <div className="shrink-0 border-t pt-4 space-y-3">
-        {/* Adaptive progress indicator */}
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Badge variant="secondary" className="text-xs">
-            Adaptive
-          </Badge>
-          {isCompleted ? (
-            <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
-              <CheckCircle className="h-3.5 w-3.5" />
-              All questions answered
-            </span>
-          ) : (
-            <span>
-              Round {round + 1} — answer the questions above and click Continue
-            </span>
-          )}
+      {!readOnly && (
+        <div className="shrink-0 border-t pt-4 space-y-3">
+          {/* Adaptive progress indicator */}
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Badge variant="secondary" className="text-xs">
+              Adaptive
+            </Badge>
+            {isCompleted ? (
+              <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
+                <CheckCircle className="h-3.5 w-3.5" />
+                All questions answered
+              </span>
+            ) : (
+              <span>
+                Round {round + 1} — answer the questions above and click
+                Continue
+              </span>
+            )}
+          </div>
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <div className="flex gap-2">
+            {allowInProgressSave && (
+              <Button
+                variant="outline"
+                onClick={handleSaveDraft}
+                disabled={isSaving}
+              >
+                <Save className="h-4 w-4 mr-1.5" />
+                Save Draft
+              </Button>
+            )}
+
+            {!isCompleted ? (
+              <Button
+                onClick={handleContinue}
+                disabled={nextQuestion.isPending}
+              >
+                {nextQuestion.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                ) : (
+                  <ArrowRight className="h-4 w-4 mr-1.5" />
+                )}
+                {nextQuestion.isPending ? "Loading..." : "Continue"}
+              </Button>
+            ) : (
+              <Button onClick={handleSaveCompleted} disabled={isSaving}>
+                <CheckCircle className="h-4 w-4 mr-1.5" />
+                {isSaving ? "Saving..." : "Complete"}
+              </Button>
+            )}
+          </div>
         </div>
-
-        {error && <p className="text-sm text-destructive">{error}</p>}
-
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={handleSaveDraft}
-            disabled={isSaving}
-          >
-            <Save className="h-4 w-4 mr-1.5" />
-            Save Draft
-          </Button>
-
-          {!isCompleted ? (
-            <Button onClick={handleContinue} disabled={nextQuestion.isPending}>
-              {nextQuestion.isPending ? (
-                <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-              ) : (
-                <ArrowRight className="h-4 w-4 mr-1.5" />
-              )}
-              {nextQuestion.isPending ? "Loading..." : "Continue"}
-            </Button>
-          ) : (
-            <Button onClick={handleSaveCompleted} disabled={isSaving}>
-              <CheckCircle className="h-4 w-4 mr-1.5" />
-              {isSaving ? "Saving..." : "Complete"}
-            </Button>
-          )}
-        </div>
-      </div>
+      )}
     </div>
   );
 }

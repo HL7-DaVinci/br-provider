@@ -31,6 +31,7 @@ import {
   type OrderResource,
 } from "@/lib/order-types";
 import { resolvePasOrderLink } from "@/lib/pas-utils";
+import type { AnyQrStatus } from "@/lib/qr-status";
 import { useDtrQuestionnaireResponseIds } from "./use-dtr-qr-store";
 import { fhirFetch } from "./use-fhir-api";
 import { useFhirServer } from "./use-fhir-server";
@@ -674,11 +675,64 @@ export function useEncounterQuestionnaireResponses(encounterId: string) {
   });
 }
 
+export function useDeleteQuestionnaireResponse() {
+  const { serverUrl } = useFhirServer();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const proxyUrl = fhirProxyUrl(`${serverUrl}/QuestionnaireResponse/${id}`);
+      const response = await fetch(proxyUrl, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(
+          `Failed to delete QuestionnaireResponse: ${response.status}`,
+        );
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ["fhir", "QuestionnaireResponse"],
+      });
+    },
+  });
+}
+
+export function useDeleteTask() {
+  const { serverUrl } = useFhirServer();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const proxyUrl = fhirProxyUrl(`${serverUrl}/Task/${id}`);
+      const response = await fetch(proxyUrl, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to delete Task: ${response.status}`);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["fhir", "Task"] });
+      queryClient.invalidateQueries({
+        queryKey: ["pas", "patient-documentation-tasks"],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["pas", "documentation-tasks"],
+      });
+    },
+  });
+}
+
 export function usePatientQuestionnaireResponses(
   patientId: string,
-  status?: "completed" | "in-progress",
+  status?: AnyQrStatus | AnyQrStatus[],
 ) {
   const { serverUrl } = useFhirServer();
+  const statusParam = Array.isArray(status) ? status.join(",") : status;
 
   return useQuery({
     queryKey: [
@@ -686,7 +740,7 @@ export function usePatientQuestionnaireResponses(
       "QuestionnaireResponse",
       "patient",
       patientId,
-      status ?? "any",
+      statusParam ?? "any",
       serverUrl,
     ],
     queryFn: () => {
@@ -695,7 +749,7 @@ export function usePatientQuestionnaireResponses(
         _sort: "-_lastUpdated",
         _count: "50",
       });
-      if (status) params.set("status", status);
+      if (statusParam) params.set("status", statusParam);
       return fhirFetch<Bundle<QuestionnaireResponse>>(
         `${serverUrl}/QuestionnaireResponse?${params.toString()}`,
       );

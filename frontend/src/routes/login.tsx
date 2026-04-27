@@ -9,7 +9,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { startLogin } from "@/lib/auth";
 
 interface TestAccount {
   username: string;
@@ -62,32 +61,37 @@ function LoginPage() {
     "practitioner",
   );
 
-  async function submitLogin() {
+  function submitLogin() {
     const account = accounts.find((a) => a.username === selectedUsername);
     if (!account) return;
 
     setError(undefined);
     setSubmitting(true);
-    try {
-      // Authenticate with Spring Security first (establishes session cookie)
-      await fetch("/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          username: account.username,
-          password: account.password,
-        }),
-        credentials: "include",
-        redirect: "manual",
-      });
 
-      // Now start the OAuth flow -- Spring Authorization Server will see the
-      // authenticated session and skip the form login redirect entirely
-      startLogin();
-    } catch {
-      setError("Unable to reach the server.");
-      setSubmitting(false);
-    }
+    // Use a real form POST so the browser follows Spring's redirect chain.
+    // When a SMART/OAuth client triggered the login, Spring's saved request
+    // resumes /oauth2/authorize and the browser ends up at the client's
+    // redirect_uri. Otherwise the configured defaultSuccessUrl /auth/login
+    // takes the user into the SPA's own Tiered OAuth flow.
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = "/login";
+    form.style.display = "none";
+
+    const usernameField = document.createElement("input");
+    usernameField.type = "hidden";
+    usernameField.name = "username";
+    usernameField.value = account.username;
+    form.appendChild(usernameField);
+
+    const passwordField = document.createElement("input");
+    passwordField.type = "hidden";
+    passwordField.name = "password";
+    passwordField.value = account.password;
+    form.appendChild(passwordField);
+
+    document.body.appendChild(form);
+    form.submit();
   }
 
   function handleTabChange(value: string) {

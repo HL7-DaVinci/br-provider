@@ -87,6 +87,7 @@ public class SpaAuthController {
     private final CertificateHolder certificateHolder;
     private final SecurityProperties securityProperties;
     private final ServerProperties serverProperties;
+    private final FhirUserDetailsService userDetailsService;
     private final ConcurrentHashMap<String, PendingFlow> pendingFlows = new ConcurrentHashMap<>();
 
     /**
@@ -105,11 +106,13 @@ public class SpaAuthController {
             UdapClientRegistration udapClient,
             CertificateHolder certificateHolder,
             SecurityProperties securityProperties,
-            ServerProperties serverProperties) {
+            ServerProperties serverProperties,
+            FhirUserDetailsService userDetailsService) {
         this.udapClient = udapClient;
         this.certificateHolder = certificateHolder;
         this.securityProperties = securityProperties;
         this.serverProperties = serverProperties;
+        this.userDetailsService = userDetailsService;
     }
 
     /**
@@ -274,18 +277,19 @@ public class SpaAuthController {
             String authorizeBase = securityProperties.getAuthorizationEndpoint() != null
                 ? securityProperties.getAuthorizationEndpoint()
                 : udapClient.getAuthorizeEndpoint();
+            String requestedScope = buildLoginScope();
             String authorizeUrl = authorizeBase
                 + "?response_type=code"
                 + "&client_id=" + udapClient.getClientId()
                 + "&redirect_uri=" + URI.create(redirectUri).toASCIIString()
-                + "&scope=" + securityProperties.getScope().replace(" ", "+")
+                + "&scope=" + URLEncoder.encode(requestedScope, StandardCharsets.UTF_8)
                 + "&code_challenge=" + codeChallenge
                 + "&code_challenge_method=S256"
                 + "&state=" + state
                 + "&idp=" + securityProperties.getIdpBaseUrl()
                 + "&prompt=login";
 
-            logger.debug("SPA login redirect to: {}", authorizeUrl);
+            logger.debug("SPA login redirect to: {} (requested scope: {})", authorizeUrl, requestedScope);
             return ResponseEntity.status(302).location(URI.create(authorizeUrl)).build();
 
         } catch (java.net.ConnectException e) {
@@ -295,6 +299,37 @@ public class SpaAuthController {
             logger.error("Login initiation failed: {}", e.getMessage(), e);
             return redirectToLoginWithError("login_failed");
         }
+    }
+
+    /**
+     * Builds the scope string to request from the FAST RI based on the
+     * authenticated user's FHIR resource type. Identity scopes from
+     * security.scope are always included; resource-access scopes are appended
+     * from security.practitioner-scopes or security.patient-scopes per role.
+     * If no user is authenticated yet (or their type is unknown), returns
+     * identity scopes only -- the resulting token will not authorize any
+     * /fhir/... access, which is the correct fail-closed behavior.
+     */
+    private String buildLoginScope() {
+        java.util.LinkedHashSet<String> scopes = new java.util.LinkedHashSet<>();
+        for (String s : securityProperties.getScope().split("\\s+")) {
+            if (!s.isBlank()) {
+                scopes.add(s);
+            }
+        }
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.isAuthenticated()) {
+            FhirUserDetails user = userDetailsService.getFhirUser(authentication.getName());
+            if (user != null) {
+                String type = user.getFhirResourceType();
+                if ("Practitioner".equals(type)) {
+                    scopes.addAll(securityProperties.getPractitionerScopes());
+                } else if ("Patient".equals(type)) {
+                    scopes.addAll(securityProperties.getPatientScopes());
+                }
+            }
+        }
+        return String.join(" ", scopes);
     }
 
     private ResponseEntity<?> redirectToLoginWithError(String errorCode) {

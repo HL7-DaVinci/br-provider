@@ -18,7 +18,9 @@ public class AuthInterceptor extends BaseInterceptor {
     private final SecurityProperties securityProperties;
     private final TokenValidator tokenValidator;
 
-    public AuthInterceptor(SecurityProperties securityProperties, TokenValidator tokenValidator) {
+    public AuthInterceptor(
+            SecurityProperties securityProperties,
+            TokenValidator tokenValidator) {
         this.securityProperties = securityProperties;
         this.tokenValidator = tokenValidator;
     }
@@ -47,6 +49,9 @@ public class AuthInterceptor extends BaseInterceptor {
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             try {
                 JWTClaimsSet claims = tokenValidator.validate(authHeader.substring(7));
+                // Resource-level access enforcement happens in SmartAuthorizationInterceptor;
+                // expose the claims so it can build per-request HAPI rules.
+                request.setAttribute(SmartAuthorizationInterceptor.CLAIMS_REQUEST_ATTR, claims);
                 logTokenAccess(claims, path);
                 return true;
             } catch (Exception e) {

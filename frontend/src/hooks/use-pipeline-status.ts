@@ -15,12 +15,13 @@ import {
   derivePipelineStatus,
   type PipelineStatus,
 } from "@/lib/pipeline-status";
+import { isTerminalQrStatus } from "@/lib/qr-status";
 
 export function deriveDtrStatus(
   qrBundle: Bundle<QuestionnaireResponse> | undefined,
 ): "none" | "in-progress" | "completed" {
   const entries = qrBundle?.entry ?? [];
-  if (entries.some((e) => e.resource?.status === "completed"))
+  if (entries.some((e) => isTerminalQrStatus(e.resource?.status)))
     return "completed";
   if (entries.some((e) => e.resource?.status === "in-progress"))
     return "in-progress";
