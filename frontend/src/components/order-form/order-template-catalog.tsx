@@ -21,6 +21,7 @@ import {
 const CATEGORY_LABELS: Record<TemplateCategory, string> = {
   DME: "Durable Medical Equipment",
   Services: "Services",
+  Medications: "Medications",
 };
 
 export function OrderTemplateCatalog() {
@@ -75,7 +76,7 @@ export function OrderTemplateCatalog() {
                     value={t.id}
                     disabled={selectedIds.has(t.id)}
                   >
-                    {t.code} — {t.display}
+                    {t.code} - {t.display}
                   </SelectItem>
                 ))}
               </SelectGroup>

@@ -64,6 +64,7 @@ export function LhcFormRenderer({
   const containerRef = useRef<HTMLDivElement>(null);
   const footerRef = useRef<HTMLDivElement>(null);
   const formReadyRef = useRef(false);
+  const pendingInitRef = useRef<Promise<void>>(Promise.resolve());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [shouldPinActions, setShouldPinActions] = useState(false);
@@ -72,8 +73,16 @@ export function LhcFormRenderer({
 
   useEffect(() => {
     let cancelled = false;
+    const previousInit = pendingInitRef.current;
 
-    async function init() {
+    const thisInit = (async () => {
+      try {
+        await previousInit;
+      } catch {
+        // a prior init failing shouldn't block this one
+      }
+      if (cancelled) return;
+
       try {
         await loadLhcForms();
         if (cancelled || !containerRef.current) return;
@@ -119,9 +128,10 @@ export function LhcFormRenderer({
           setLoading(false);
         }
       }
-    }
+    })();
 
-    init();
+    pendingInitRef.current = thisInit;
+
     return () => {
       cancelled = true;
       if (containerRef.current) {
@@ -291,7 +301,7 @@ export function LhcFormRenderer({
         )}
       </div>
 
-      {!loading && !error && !hideFooter && !readOnly && (
+      {!loading && !error && !hideFooter && (
         <div
           ref={footerRef}
           className={`shrink-0 ${
@@ -313,23 +323,25 @@ export function LhcFormRenderer({
               View Response
             </Button>
 
-            <div className="flex gap-2">
-              {allowInProgressSave && (
+            {!readOnly && (
+              <div className="flex gap-2">
+                {allowInProgressSave && (
+                  <Button
+                    variant="outline"
+                    onClick={() => handleSave("in-progress")}
+                    disabled={isSaving}
+                  >
+                    Save Draft
+                  </Button>
+                )}
                 <Button
-                  variant="outline"
-                  onClick={() => handleSave("in-progress")}
+                  onClick={() => handleSave("completed")}
                   disabled={isSaving}
                 >
-                  Save Draft
+                  {isSaving ? "Saving..." : "Complete"}
                 </Button>
-              )}
-              <Button
-                onClick={() => handleSave("completed")}
-                disabled={isSaving}
-              >
-                {isSaving ? "Saving..." : "Complete"}
-              </Button>
-            </div>
+              </div>
+            )}
           </div>
         </div>
       )}

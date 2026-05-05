@@ -25,8 +25,7 @@ public final class ProxyUtil {
 
     public static final String ACTIVE_PROVIDER_FHIR_BASE_HEADER = "X-Provider-Fhir-Base";
 
-    public static final List<String> DTR_SCOPES = List.of(
-        "system/Questionnaire.rs", "system/ValueSet.rs", "system/Library.rs");
+    public static final List<String> DTR_SCOPES = List.of("system/*.rs");
 
     public static final List<String> PAS_SCOPES = List.of(
         "system/Claim.crus", "system/ClaimResponse.rs");

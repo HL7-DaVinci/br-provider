@@ -3,8 +3,9 @@ import type {
   Questionnaire,
   QuestionnaireResponse,
 } from "fhir/r4";
-import { ArrowRight, CheckCircle, Loader2, Save } from "lucide-react";
+import { ArrowRight, CheckCircle, Code, Loader2, Save } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
+import { JsonViewerDialog } from "@/components/json-viewer-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useNextQuestion } from "@/hooks/use-questionnaire";
@@ -76,6 +77,14 @@ export function AdaptiveDtrForm({
   // Incrementing key forces LhcFormRenderer to fully re-mount with new items
   const [round, setRound] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [viewingResponse, setViewingResponse] =
+    useState<QuestionnaireResponse | null>(null);
+
+  const handleViewResponse = useCallback(() => {
+    const qr = formRef.current?.extractQr("in-progress");
+    if (qr) setViewingResponse(qr);
+    else if (currentQr) setViewingResponse(currentQr);
+  }, [currentQr]);
 
   const handleContinue = useCallback(async () => {
     setError(null);
@@ -174,60 +183,87 @@ export function AdaptiveDtrForm({
         />
       </div>
 
-      {!readOnly && (
-        <div className="shrink-0 border-t pt-4 space-y-3">
-          {/* Adaptive progress indicator */}
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Badge variant="secondary" className="text-xs">
-              Adaptive
-            </Badge>
-            {isCompleted ? (
-              <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
-                <CheckCircle className="h-3.5 w-3.5" />
-                All questions answered
-              </span>
-            ) : (
-              <span>
-                Round {round + 1} — answer the questions above and click
-                Continue
-              </span>
-            )}
-          </div>
+      <div className="shrink-0 border-t pt-4 space-y-3">
+        {!readOnly && (
+          <>
+            {/* Adaptive progress indicator */}
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Badge variant="secondary" className="text-xs">
+                Adaptive
+              </Badge>
+              {isCompleted ? (
+                <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
+                  <CheckCircle className="h-3.5 w-3.5" />
+                  All questions answered
+                </span>
+              ) : (
+                <span>
+                  Round {round + 1} - answer the questions above and click
+                  Continue
+                </span>
+              )}
+            </div>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+          </>
+        )}
 
-          <div className="flex gap-2">
-            {allowInProgressSave && (
-              <Button
-                variant="outline"
-                onClick={handleSaveDraft}
-                disabled={isSaving}
-              >
-                <Save className="h-4 w-4 mr-1.5" />
-                Save Draft
-              </Button>
-            )}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleViewResponse}
+            className="w-fit rounded-full border border-border/60 bg-muted/35 px-3 text-muted-foreground hover:border-border hover:bg-muted/60 hover:text-foreground"
+          >
+            <span className="flex size-6 items-center justify-center rounded-full bg-background/80">
+              <Code className="h-3.5 w-3.5" />
+            </span>
+            View Response
+          </Button>
 
-            {!isCompleted ? (
-              <Button
-                onClick={handleContinue}
-                disabled={nextQuestion.isPending}
-              >
-                {nextQuestion.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                ) : (
-                  <ArrowRight className="h-4 w-4 mr-1.5" />
-                )}
-                {nextQuestion.isPending ? "Loading..." : "Continue"}
-              </Button>
-            ) : (
-              <Button onClick={handleSaveCompleted} disabled={isSaving}>
-                <CheckCircle className="h-4 w-4 mr-1.5" />
-                {isSaving ? "Saving..." : "Complete"}
-              </Button>
-            )}
-          </div>
+          {!readOnly && (
+            <div className="flex gap-2">
+              {allowInProgressSave && (
+                <Button
+                  variant="outline"
+                  onClick={handleSaveDraft}
+                  disabled={isSaving}
+                >
+                  <Save className="h-4 w-4 mr-1.5" />
+                  Save Draft
+                </Button>
+              )}
+
+              {!isCompleted ? (
+                <Button
+                  onClick={handleContinue}
+                  disabled={nextQuestion.isPending}
+                >
+                  {nextQuestion.isPending ? (
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                  ) : (
+                    <ArrowRight className="h-4 w-4 mr-1.5" />
+                  )}
+                  {nextQuestion.isPending ? "Loading..." : "Continue"}
+                </Button>
+              ) : (
+                <Button onClick={handleSaveCompleted} disabled={isSaving}>
+                  <CheckCircle className="h-4 w-4 mr-1.5" />
+                  {isSaving ? "Saving..." : "Complete"}
+                </Button>
+              )}
+            </div>
+          )}
         </div>
+      </div>
+
+      {viewingResponse && (
+        <JsonViewerDialog
+          data={viewingResponse}
+          title="QuestionnaireResponse"
+          description="Current adaptive response state"
+          onClose={() => setViewingResponse(null)}
+        />
       )}
     </div>
   );

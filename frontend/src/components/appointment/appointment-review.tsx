@@ -1,12 +1,13 @@
 import type { Appointment, Resource } from "fhir/r4";
 import {
   CalendarCheck,
+  CheckCircle,
   Code,
   ExternalLink,
   Loader2,
   Pencil,
 } from "lucide-react";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
 import {
@@ -18,6 +19,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useFhirServer } from "@/hooks/use-fhir-server";
+import {
+  findReusableQr,
+  usePatientQrIndex,
+} from "@/hooks/use-patient-qr-index";
 import type {
   CdsCard as CdsCardType,
   CdsHookResponse,
@@ -105,18 +110,42 @@ export function AppointmentReview({
     });
   }, [patientId, onDocumentationCompleted]);
 
+  const qrIndex = usePatientQrIndex(patientId);
+
+  const dtrCiStates = useMemo(() => {
+    return coverageInfo.filter(hasDtrDoc).map((ci) => {
+      const canonicals = ci.questionnaire ?? [];
+      const reusableByCanonical = canonicals.map((canonical) => ({
+        canonical,
+        reusable: findReusableQr(qrIndex, canonical),
+      }));
+      const unsatisfied = reusableByCanonical
+        .filter((s) => !s.reusable)
+        .map((s) => s.canonical);
+      return {
+        ci,
+        canonicals,
+        unsatisfied,
+        allSatisfied: canonicals.length > 0 && unsatisfied.length === 0,
+      };
+    });
+  }, [coverageInfo, qrIndex]);
+
   const handleDtrLaunch = useCallback(
-    (ci: CoverageInformation) => {
+    (ci: CoverageInformation, unsatisfied: string[]) => {
       try {
         const fhirContext: string[] = [];
         if (ci.coverage) fhirContext.push(ci.coverage);
+
+        const canonicalsToFill =
+          unsatisfied.length > 0 ? unsatisfied : (ci.questionnaire ?? []);
 
         openDtrTask({
           iss: serverUrl,
           patientId,
           fhirContext: fhirContext.join(","),
           coverageAssertionId: ci.coverageAssertionId,
-          questionnaire: serializeQuestionnaireSearch(ci.questionnaire ?? []),
+          questionnaire: serializeQuestionnaireSearch(canonicalsToFill),
         });
       } catch (err) {
         console.error("DTR launch failed:", err);
@@ -242,17 +271,29 @@ export function AppointmentReview({
               The payer requires additional documentation for this appointment.
               Completing it now can speed up prior authorization.
             </p>
-            {coverageInfo.filter(hasDtrDoc).map((ci) => (
-              <Button
-                key={ci.coverageAssertionId ?? "dtr"}
-                variant="outline"
-                size="sm"
-                onClick={() => handleDtrLaunch(ci)}
-              >
-                <ExternalLink className="mr-2 h-4 w-4" />
-                Complete Documentation
-              </Button>
-            ))}
+            {dtrCiStates.map(({ ci, unsatisfied, allSatisfied }) =>
+              allSatisfied ? (
+                <Button
+                  key={ci.coverageAssertionId ?? "dtr-done"}
+                  variant="outline"
+                  size="sm"
+                  disabled
+                >
+                  <CheckCircle className="mr-2 h-4 w-4" />
+                  Documentation provided
+                </Button>
+              ) : (
+                <Button
+                  key={ci.coverageAssertionId ?? "dtr"}
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleDtrLaunch(ci, unsatisfied)}
+                >
+                  <ExternalLink className="mr-2 h-4 w-4" />
+                  Complete Documentation
+                </Button>
+              ),
+            )}
           </CardContent>
         </Card>
       )}

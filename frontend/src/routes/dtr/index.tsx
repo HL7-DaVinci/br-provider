@@ -15,6 +15,7 @@ export const Route = createFileRoute("/dtr/")({
     orderRef: search.orderRef as string | undefined,
     coverageAssertionId: search.coverageAssertionId as string | undefined,
     questionnaire: search.questionnaire as string | undefined,
+    relatedOrderRefs: search.relatedOrderRefs as string | undefined,
     appContext: search.appContext as string | undefined,
   }),
   component: DtrFormPage,

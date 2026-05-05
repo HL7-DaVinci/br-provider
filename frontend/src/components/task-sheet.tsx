@@ -59,6 +59,16 @@ export function TaskSheetProvider({ children }: { children: ReactNode }) {
               width: sheet?.width ?? "920px",
               maxWidth: "calc(100vw - 1rem)",
             }}
+            onInteractOutside={(event) => {
+              // LForms (Angular CDK) renders datepicker, autocomplete, and
+              // similar popups into a body-level overlay container, outside
+              // this dialog's DOM. Without this guard, picking a date is
+              // treated as an outside interaction and dismisses the sheet.
+              const target = event.target as HTMLElement | null;
+              if (target?.closest(".cdk-overlay-container")) {
+                event.preventDefault();
+              }
+            }}
           >
             <div className="flex min-h-16 shrink-0 items-center justify-between gap-3 border-b px-4 py-3">
               <div className="min-w-0">

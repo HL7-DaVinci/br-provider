@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type {
   Bundle,
   ParametersParameter,
@@ -16,6 +21,82 @@ interface QuestionnairePackageParams {
   orderRef?: string;
   coverageAssertionId?: string;
   questionnaire?: string[];
+  enabled?: boolean;
+}
+
+interface QuestionnairePackageResult {
+  bundle: Bundle;
+  questionnaire: Questionnaire | null;
+  questionnaireResponse: QuestionnaireResponse | null;
+  contentServerUrl: string | null;
+  terminologyServerUrl: string | null;
+}
+
+async function fetchQuestionnairePackage(
+  params: QuestionnairePackageParams,
+): Promise<QuestionnairePackageResult> {
+  const body = await buildQuestionnairePackageParams(params);
+
+  const response = await loggedFetch(
+    "/api/dtr/questionnaire-package",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payerFhirUrl: params.payerFhirUrl, body }),
+      credentials: "same-origin",
+    },
+    {
+      payerUrl: params.payerFhirUrl,
+      operationName: "$questionnaire-package",
+    },
+  );
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => null);
+    throw new Error(
+      errorBody?.error ??
+        `Failed to fetch questionnaire package: ${response.status}`,
+    );
+  }
+
+  const data = await response.json();
+  const { contentServerUrl, terminologyServerUrl } = deriveServerUrls(data);
+  return {
+    bundle: data as Bundle,
+    questionnaire: findResourceInResponse<Questionnaire>(data, "Questionnaire"),
+    questionnaireResponse: findResourceInResponse<QuestionnaireResponse>(
+      data,
+      "QuestionnaireResponse",
+    ),
+    contentServerUrl,
+    terminologyServerUrl,
+  };
+}
+
+function questionnairePackageQueryKey(
+  params: QuestionnairePackageParams,
+): unknown[] {
+  return [
+    "dtr",
+    "questionnaire-package",
+    params.payerFhirUrl,
+    params.providerFhirUrl,
+    params.coverageRef,
+    params.orderRef,
+    params.questionnaire ?? [],
+    params.coverageAssertionId,
+  ];
+}
+
+function isPackageEnabled(params: QuestionnairePackageParams): boolean {
+  if (params.enabled === false) return false;
+  return (
+    !!params.payerFhirUrl &&
+    !!params.providerFhirUrl &&
+    (!!params.coverageRef ||
+      !!params.orderRef ||
+      (params.questionnaire?.length ?? 0) > 0)
+  );
 }
 
 /**
@@ -25,65 +106,65 @@ interface QuestionnairePackageParams {
  */
 export function useQuestionnairePackage(params: QuestionnairePackageParams) {
   return useQuery({
-    queryKey: [
-      "dtr",
-      "questionnaire-package",
-      params.payerFhirUrl,
-      params.providerFhirUrl,
-      params.coverageRef,
-      params.orderRef,
-      params.questionnaire ?? [],
-      params.coverageAssertionId,
-    ],
-    queryFn: async () => {
-      const body = await buildQuestionnairePackageParams(params);
-
-      const response = await loggedFetch(
-        "/api/dtr/questionnaire-package",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ payerFhirUrl: params.payerFhirUrl, body }),
-          credentials: "same-origin",
-        },
-        {
-          payerUrl: params.payerFhirUrl,
-          operationName: "$questionnaire-package",
-        },
-      );
-
-      if (!response.ok) {
-        const errorBody = await response.json().catch(() => null);
-        throw new Error(
-          errorBody?.error ??
-            `Failed to fetch questionnaire package: ${response.status}`,
-        );
-      }
-
-      const data = await response.json();
-      const { contentServerUrl, terminologyServerUrl } = deriveServerUrls(data);
-      return {
-        bundle: data as Bundle,
-        questionnaire: findResourceInResponse<Questionnaire>(
-          data,
-          "Questionnaire",
-        ),
-        questionnaireResponse: findResourceInResponse<QuestionnaireResponse>(
-          data,
-          "QuestionnaireResponse",
-        ),
-        contentServerUrl,
-        terminologyServerUrl,
-      };
-    },
-    enabled:
-      !!params.payerFhirUrl &&
-      !!params.providerFhirUrl &&
-      (!!params.coverageRef ||
-        !!params.orderRef ||
-        (params.questionnaire?.length ?? 0) > 0),
+    queryKey: questionnairePackageQueryKey(params),
+    queryFn: () => fetchQuestionnairePackage(params),
+    enabled: isPackageEnabled(params),
     staleTime: 5 * 60 * 1000,
     retry: 1,
+  });
+}
+
+export interface QuestionnairePackageEntry {
+  canonical: string;
+  questionnaire: Questionnaire | null;
+  questionnaireResponse: QuestionnaireResponse | null;
+  contentServerUrl: string | null;
+  terminologyServerUrl: string | null;
+  isLoading: boolean;
+  isError: boolean;
+  error: unknown;
+}
+
+/**
+ * Fetches a questionnaire package per canonical, in parallel. Each entry's
+ * `$questionnaire-package` runs the payer's prepopulation library against
+ * current provider FHIR data at the moment its query fires, so a sequenced
+ * flow that reaches Q2 after Q1 is saved sees the freshest provider state.
+ *
+ * Returns one entry per input canonical, in the same order.
+ */
+export function useQuestionnairePackages(
+  canonicals: string[],
+  rest: Omit<QuestionnairePackageParams, "questionnaire">,
+): QuestionnairePackageEntry[] {
+  const queries = useQueries({
+    queries: canonicals.map((canonical) => {
+      const params: QuestionnairePackageParams = {
+        ...rest,
+        questionnaire: [canonical],
+      };
+      return {
+        queryKey: questionnairePackageQueryKey(params),
+        queryFn: () => fetchQuestionnairePackage(params),
+        enabled: !!canonical && isPackageEnabled(params),
+        staleTime: 5 * 60 * 1000,
+        retry: 1,
+      };
+    }),
+  });
+
+  return canonicals.map((canonical, idx) => {
+    const q = queries[idx];
+    return {
+      canonical,
+      questionnaire: q?.data?.questionnaire ?? null,
+      questionnaireResponse: q?.data?.questionnaireResponse ?? null,
+      contentServerUrl: q?.data?.contentServerUrl ?? null,
+      terminologyServerUrl: q?.data?.terminologyServerUrl ?? null,
+      isLoading: q?.isLoading ?? false,
+      isError: q?.isError ?? false,
+      error: q?.error,
+    };
   });
 }
 

@@ -7,6 +7,7 @@ export interface DtrCompletionMessage {
   id: string;
   status: ActiveQrStatus | TerminalQrStatus;
   orderRef?: string;
+  orderRefs?: string[];
   patientId?: string;
   coverageRef?: string;
   coverageAssertionId?: string;

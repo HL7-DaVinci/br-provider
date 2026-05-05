@@ -14,3 +14,15 @@ export function parseQuestionnaireSearch(
 ): string[] {
   return questionnaire?.split(",").filter(Boolean) ?? [];
 }
+
+export function serializeOrderRefs(
+  orderRefs: string[] | null | undefined,
+): string | undefined {
+  if (!orderRefs) return undefined;
+  const refs = orderRefs.filter(Boolean);
+  return refs.length > 0 ? refs.join(",") : undefined;
+}
+
+export function parseOrderRefs(orderRefs: string | undefined): string[] {
+  return orderRefs?.split(",").filter(Boolean) ?? [];
+}

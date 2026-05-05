@@ -1,5 +1,6 @@
 import type { DomainResource, Extension } from "fhir/r4";
 import type { CoverageInformation } from "@/lib/cds-types";
+import type { OrderEntry } from "./order-types";
 
 export const COVERAGE_INFO_EXT_URL =
   "http://hl7.org/fhir/us/davinci-crd/StructureDefinition/ext-coverage-information";
@@ -99,3 +100,50 @@ export const hasDtrDoc = (ci: CoverageInformation): boolean =>
   !!ci.docNeeded &&
   ci.docNeeded !== "no-doc" &&
   (ci.questionnaire?.length ?? 0) > 0;
+
+/**
+ * Returns refs (`ResourceType/id`) of orders, other than the focus order, that
+ * list at least one of `focusCanonicals` in a DTR-relevant CoverageInformation
+ * entry. Used to coordinate cross-order questionnaire reuse during DTR launch.
+ */
+export function findOrdersSharingCanonicals(
+  orders: OrderEntry[],
+  focusOrderRef: string,
+  focusCanonicals: string[],
+): string[] {
+  if (focusCanonicals.length === 0) return [];
+  const focusSet = new Set(focusCanonicals);
+  const refs = new Set<string>();
+  for (const entry of orders) {
+    const id = entry.resource.id;
+    if (!id) continue;
+    const ref = `${entry.resourceType}/${id}`;
+    if (ref === focusOrderRef) continue;
+    const cis = parseCoverageInfoFromResource(entry.resource).filter(hasDtrDoc);
+    for (const ci of cis) {
+      const matched = (ci.questionnaire ?? []).some((c) => focusSet.has(c));
+      if (matched) {
+        refs.add(ref);
+        break;
+      }
+    }
+  }
+  return Array.from(refs);
+}
+
+/**
+ * Returns true iff `a` and `b` share the DTR-IG-defined primary key for
+ * a CoverageInformation extension repetition: the combination of `coverage`
+ * AND `coverage-assertion-id`. Both halves must be present on both sides;
+ * a CI missing either half cannot participate in a primary-key match.
+ */
+export function coverageInfoPrimaryKeyEquals(
+  a: CoverageInformation,
+  b: CoverageInformation,
+): boolean {
+  if (!a.coverage || !a.coverageAssertionId) return false;
+  if (!b.coverage || !b.coverageAssertionId) return false;
+  return (
+    a.coverage === b.coverage && a.coverageAssertionId === b.coverageAssertionId
+  );
+}

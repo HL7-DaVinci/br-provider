@@ -2,8 +2,9 @@ import type { Extension } from "fhir/r4";
 import type { OrderResourceType } from "./order-types";
 
 const HCPCS_SYSTEM = "http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets";
+const RXNORM_SYSTEM = "http://www.nlm.nih.gov/research/umls/rxnorm";
 
-export type TemplateCategory = "DME" | "Services";
+export type TemplateCategory = "DME" | "Services" | "Medications";
 
 export interface OrderTemplate {
   id: string;
@@ -59,6 +60,35 @@ const TEMPLATES: OrderTemplate[] = [
     display: "Hospital Bed with Side Rails",
     description:
       "Hospital bed, fixed height, with any type side rails, with mattress",
+    category: "DME",
+    resourceType: "DeviceRequest",
+    codeSystem: HCPCS_SYSTEM,
+  },
+  {
+    id: "dme-e0431",
+    code: "E0431",
+    display: "Portable Gaseous Oxygen System",
+    description: "Portable gaseous oxygen system, rental",
+    category: "DME",
+    resourceType: "DeviceRequest",
+    codeSystem: HCPCS_SYSTEM,
+  },
+  {
+    id: "dme-e1390",
+    code: "E1390",
+    display: "Oxygen Concentrator",
+    description:
+      "Oxygen concentrator, single delivery port, capable of delivering 85% or greater oxygen concentration at the prescribed flow rate",
+    category: "DME",
+    resourceType: "DeviceRequest",
+    codeSystem: HCPCS_SYSTEM,
+  },
+  {
+    id: "dme-e0251",
+    code: "E0251",
+    display: "Hospital Bed without Mattress",
+    description:
+      "Hospital bed, fixed height, with any type side rails, without mattress",
     category: "DME",
     resourceType: "DeviceRequest",
     codeSystem: HCPCS_SYSTEM,
@@ -122,6 +152,48 @@ const TEMPLATES: OrderTemplate[] = [
     resourceType: "ServiceRequest",
     codeSystem: HCPCS_SYSTEM,
   },
+
+  // Medications (MedicationRequest) - codes match payer library focus codes
+  {
+    id: "med-azathioprine-105585",
+    code: "105585",
+    display: "Azathioprine",
+    description:
+      "Azathioprine 50 MG Oral Tablet (immunosuppressive - triggers ImmunosuppressiveDrugs rule)",
+    category: "Medications",
+    resourceType: "MedicationRequest",
+    codeSystem: RXNORM_SYSTEM,
+  },
+  {
+    id: "med-cyclosporine-105611",
+    code: "105611",
+    display: "Cyclosporine",
+    description:
+      "Cyclosporine 100 MG Oral Capsule (immunosuppressive - triggers ImmunosuppressiveDrugs rule)",
+    category: "Medications",
+    resourceType: "MedicationRequest",
+    codeSystem: RXNORM_SYSTEM,
+  },
+  {
+    id: "med-morphine-197696",
+    code: "197696",
+    display: "Morphine Sulfate",
+    description:
+      "Morphine Sulfate 30 MG Oral Tablet (Schedule II opioid - triggers OpioidPrescribing rule)",
+    category: "Medications",
+    resourceType: "MedicationRequest",
+    codeSystem: RXNORM_SYSTEM,
+  },
+  {
+    id: "med-hydrocodone-acetaminophen-1049502",
+    code: "1049502",
+    display: "Hydrocodone/Acetaminophen",
+    description:
+      "Hydrocodone Bitartrate 5 MG / Acetaminophen 325 MG Oral Tablet (Schedule II opioid - triggers OpioidPrescribing rule)",
+    category: "Medications",
+    resourceType: "MedicationRequest",
+    codeSystem: RXNORM_SYSTEM,
+  },
 ];
 
 export function getTemplatesByCategory(): Record<
@@ -131,6 +203,7 @@ export function getTemplatesByCategory(): Record<
   const grouped: Record<TemplateCategory, OrderTemplate[]> = {
     DME: [],
     Services: [],
+    Medications: [],
   };
   for (const template of TEMPLATES) {
     grouped[template.category].push(template);

@@ -23,6 +23,7 @@ const tabs = [
   { label: "Medications", to: "/patients/$patientId/medications" },
   { label: "Orders", to: "/patients/$patientId/orders" },
   { label: "Coverage", to: "/patients/$patientId/coverage" },
+  { label: "Documentation", to: "/patients/$patientId/documentation" },
   { label: "Encounter", to: "/patients/$patientId/encounter" },
 ] as const;
 

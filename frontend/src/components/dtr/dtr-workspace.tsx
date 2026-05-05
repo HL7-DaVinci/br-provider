@@ -1,33 +1,42 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { Extension, Questionnaire, QuestionnaireResponse } from "fhir/r4";
-import { AlertCircle, ArrowLeft, CheckCircle2, Loader2 } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowLeft,
+  CheckCircle2,
+  Circle,
+  Clock,
+  Loader2,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdaptiveDtrForm } from "@/components/questionnaire/adaptive-dtr-form";
 import { LhcFormRenderer } from "@/components/questionnaire/lhc-form-renderer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
-import { invalidateOrderQueries } from "@/hooks/use-clinical-api";
+import {
+  invalidateOrderQueries,
+  usePatientQuestionnaireResponses,
+} from "@/hooks/use-clinical-api";
 import { saveDtrQuestionnaireResponseId } from "@/hooks/use-dtr-qr-store";
 import { fhirFetch } from "@/hooks/use-fhir-api";
 import { useFhirServer } from "@/hooks/use-fhir-server";
 import { usePayerServer } from "@/hooks/use-payer-server";
 import { usePrePopulatedQr } from "@/hooks/use-prepopulated-qr";
 import {
+  type QuestionnairePackageEntry,
   useProviderPopulate,
   useQuestionnairePackage,
+  useQuestionnairePackages,
   useSaveQuestionnaireResponse,
 } from "@/hooks/use-questionnaire";
-import { fhirProxyUrl } from "@/lib/api";
-import {
-  COVERAGE_INFO_EXT_URL,
-  parseExtensionFields,
-} from "@/lib/coverage-extensions";
+import { propagateCoverageInfo } from "@/lib/coverage-propagation";
 import { broadcastDtrCompletion } from "@/lib/dtr-completion";
-import { parseQuestionnaireSearch } from "@/lib/dtr-search";
+import { parseOrderRefs, parseQuestionnaireSearch } from "@/lib/dtr-search";
 import { normalizeServerUrl } from "@/lib/fhir-config";
 import { isTerminalQrStatus, type TerminalQrStatus } from "@/lib/qr-status";
+import { cn } from "@/lib/utils";
 
 const ADAPTIVE_EXT_URL =
   "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-questionnaireAdaptive";
@@ -45,6 +54,7 @@ export interface DtrTaskContext {
   orderRef?: string;
   coverageAssertionId?: string;
   questionnaire?: string;
+  relatedOrderRefs?: string;
   appContext?: string;
 }
 
@@ -57,15 +67,17 @@ function isAdaptiveQuestionnaire(q: Questionnaire): boolean {
   return q.extension?.some((e) => e.url === ADAPTIVE_EXT_URL) ?? false;
 }
 
-function upsertQrContextExtension(
+function upsertQrContextExtensions(
   extensions: Extension[],
-  orderRef: string,
+  orderRefs: string[],
 ): Extension[] {
   const filtered = extensions.filter((e) => e.url !== QR_CONTEXT_EXT_URL);
-  filtered.push({
-    url: QR_CONTEXT_EXT_URL,
-    valueReference: { reference: orderRef },
-  });
+  for (const ref of orderRefs) {
+    filtered.push({
+      url: QR_CONTEXT_EXT_URL,
+      valueReference: { reference: ref },
+    });
+  }
   return filtered;
 }
 
@@ -80,7 +92,10 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
   >(null);
   const [savedResponseId, setSavedResponseId] = useState<string | undefined>();
   const [isEditing, setIsEditing] = useState<boolean>(false);
-  const [editingInitialized, setEditingInitialized] = useState<boolean>(false);
+  const [activeQuestionnaireIndex, setActiveQuestionnaireIndex] =
+    useState<number>(0);
+  const [activeIndexInitialized, setActiveIndexInitialized] =
+    useState<boolean>(false);
 
   const providerFhirUrl = context.iss
     ? normalizeServerUrl(context.iss)
@@ -108,6 +123,16 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
         r.startsWith("CommunicationRequest/"),
     );
 
+  const relatedOrderRefs = useMemo(
+    () => parseOrderRefs(context.relatedOrderRefs),
+    [context.relatedOrderRefs],
+  );
+
+  const allOrderRefs = useMemo(() => {
+    const refs = orderRef ? [orderRef, ...relatedOrderRefs] : relatedOrderRefs;
+    return Array.from(new Set(refs.filter(Boolean)));
+  }, [orderRef, relatedOrderRefs]);
+
   const existingQrRef = fhirContextRefs.find((ref) =>
     ref.startsWith("QuestionnaireResponse/"),
   );
@@ -122,96 +147,207 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     enabled: !!existingQrId && !!providerFhirUrl,
   });
 
-  useEffect(() => {
-    if (existingQr?.id && !savedResponseId) {
-      setSavedResponseId(existingQr.id);
+  const completedQrsQuery = usePatientQuestionnaireResponses(
+    context.patientId ?? "",
+    ["completed", "amended"],
+  );
+  const inProgressQrsQuery = usePatientQuestionnaireResponses(
+    context.patientId ?? "",
+    "in-progress",
+  );
+
+  const qrByCanonical = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        completed: QuestionnaireResponse[];
+        inProgress: QuestionnaireResponse[];
+      }
+    >();
+    for (const c of questionnaireCanonicals) {
+      map.set(c, { completed: [], inProgress: [] });
     }
-  }, [existingQr?.id, savedResponseId]);
 
-  useEffect(() => {
-    if (editingInitialized) return;
-    if (existingQrId && !existingQr) return;
-    setIsEditing(!isTerminalQrStatus(existingQr?.status));
-    setEditingInitialized(true);
-  }, [existingQr, existingQrId, editingInitialized]);
+    const collect = (
+      bundleEntries: Array<{ resource?: QuestionnaireResponse | unknown }>,
+      bucket: "completed" | "inProgress",
+    ) => {
+      for (const entry of bundleEntries) {
+        const qr = entry.resource;
+        if (!isQuestionnaireResponse(qr)) continue;
+        const c = qr.questionnaire;
+        if (!c) continue;
+        const stripped = stripCanonicalVersion(c);
+        for (const target of questionnaireCanonicals) {
+          if (target === c || stripCanonicalVersion(target) === stripped) {
+            map.get(target)?.[bucket].push(qr);
+            break;
+          }
+        }
+      }
+    };
 
-  const {
-    data: packageData,
-    isLoading,
-    isError,
-    error,
-  } = useQuestionnairePackage({
+    collect(completedQrsQuery.data?.entry ?? [], "completed");
+    collect(inProgressQrsQuery.data?.entry ?? [], "inProgress");
+
+    const sortByLastUpdatedDesc = (
+      a: QuestionnaireResponse,
+      b: QuestionnaireResponse,
+    ) => (b.meta?.lastUpdated ?? "").localeCompare(a.meta?.lastUpdated ?? "");
+    for (const entry of map.values()) {
+      entry.completed.sort(sortByLastUpdatedDesc);
+      entry.inProgress.sort(sortByLastUpdatedDesc);
+    }
+
+    return map;
+  }, [
+    questionnaireCanonicals,
+    completedQrsQuery.data,
+    inProgressQrsQuery.data,
+  ]);
+
+  const isMultiQ = questionnaireCanonicals.length > 1;
+
+  const packageEntries = useQuestionnairePackages(questionnaireCanonicals, {
+    payerFhirUrl,
+    providerFhirUrl,
+    coverageRef,
+    orderRef,
+    coverageAssertionId: context.coverageAssertionId,
+  });
+
+  const singularQuery = useQuestionnairePackage({
     payerFhirUrl,
     providerFhirUrl,
     coverageRef,
     orderRef,
     coverageAssertionId: context.coverageAssertionId,
     questionnaire: questionnaireCanonicals,
+    enabled: !isMultiQ,
   });
+
+  const totalQuestionnaires = isMultiQ ? packageEntries.length : 1;
+  const safeActiveIndex = Math.min(
+    activeQuestionnaireIndex,
+    Math.max(totalQuestionnaires - 1, 0),
+  );
+
+  const activeEntry: QuestionnairePackageEntry | null = isMultiQ
+    ? (packageEntries[safeActiveIndex] ?? null)
+    : null;
+
+  const activePackage = isMultiQ
+    ? activeEntry
+      ? {
+          questionnaire: activeEntry.questionnaire,
+          questionnaireResponse: activeEntry.questionnaireResponse,
+          contentServerUrl: activeEntry.contentServerUrl,
+          terminologyServerUrl: activeEntry.terminologyServerUrl,
+        }
+      : null
+    : (singularQuery.data ?? null);
+
+  const isLoading = isMultiQ
+    ? (activeEntry?.isLoading ?? false)
+    : singularQuery.isLoading;
+  const isError = isMultiQ
+    ? (activeEntry?.isError ?? false)
+    : singularQuery.isError;
+  const error = isMultiQ ? activeEntry?.error : singularQuery.error;
 
   const { data: providerQr } = useProviderPopulate({
     payerFhirUrl,
-    contentServerUrl: packageData?.contentServerUrl,
-    terminologyServerUrl: packageData?.terminologyServerUrl,
-    questionnaire: packageData?.questionnaire ?? null,
+    contentServerUrl: activePackage?.contentServerUrl,
+    terminologyServerUrl: activePackage?.terminologyServerUrl,
+    questionnaire: activePackage?.questionnaire ?? null,
     patientId: context.patientId,
   });
 
   const { mergedQr, originIndex } = usePrePopulatedQr({
-    payerQr: packageData?.questionnaireResponse ?? null,
+    payerQr: activePackage?.questionnaireResponse ?? null,
     providerQr: providerQr ?? null,
   });
 
-  const initialQr = existingQr ?? mergedQr;
+  const activeCanonical =
+    questionnaireCanonicals[safeActiveIndex] ??
+    questionnaireCanonicals[0] ??
+    null;
+
+  const activeExistingQr = useMemo(() => {
+    if (existingQr?.questionnaire && activeCanonical) {
+      const fhirContextStripped = stripCanonicalVersion(
+        existingQr.questionnaire,
+      );
+      const activeStripped = stripCanonicalVersion(activeCanonical);
+      if (
+        existingQr.questionnaire === activeCanonical ||
+        fhirContextStripped === activeStripped
+      ) {
+        return existingQr;
+      }
+    }
+    if (!activeCanonical) return null;
+    const entry = qrByCanonical.get(activeCanonical);
+    return entry?.completed[0] ?? entry?.inProgress[0] ?? null;
+  }, [existingQr, activeCanonical, qrByCanonical]);
+
+  const initialQr = activeExistingQr ?? mergedQr;
   const saveResponse = useSaveQuestionnaireResponse(providerFhirUrl);
 
-  const propagateCoverageInfo = useCallback(
+  // Sync per-tab state when the active questionnaire changes (initial load,
+  // tab nav, or QR refetch after save). Drives "view vs edit", QR id continuity,
+  // and clears any stale completion-card flag.
+  // activeCanonical must be in the deps: when switching between tabs that both
+  // lack an existing QR, neither id nor status changes value, so without this
+  // the reset is skipped and a stale savedResponseId from the previous tab's
+  // POST gets reused as a PUT target on the next tab's save.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeCanonical
+  useEffect(() => {
+    setSavedResponseId(activeExistingQr?.id);
+    setSavedStatus(null);
+    setIsEditing(!isTerminalQrStatus(activeExistingQr?.status));
+  }, [activeCanonical, activeExistingQr?.id, activeExistingQr?.status]);
+
+  // On initial load (multi-Q only), jump to the first canonical that doesn't
+  // already have a terminal QR. If all are terminal, stay on index 0 so the
+  // user lands somewhere meaningful.
+  useEffect(() => {
+    if (activeIndexInitialized) return;
+    if (!isMultiQ) {
+      setActiveIndexInitialized(true);
+      return;
+    }
+    if (completedQrsQuery.isLoading || inProgressQrsQuery.isLoading) {
+      return;
+    }
+    const firstUnsatisfied = questionnaireCanonicals.findIndex((c) => {
+      const entry = qrByCanonical.get(c);
+      return !entry?.completed.length;
+    });
+    setActiveQuestionnaireIndex(firstUnsatisfied >= 0 ? firstUnsatisfied : 0);
+    setActiveIndexInitialized(true);
+  }, [
+    activeIndexInitialized,
+    isMultiQ,
+    completedQrsQuery.isLoading,
+    inProgressQrsQuery.isLoading,
+    questionnaireCanonicals,
+    qrByCanonical,
+  ]);
+
+  const propagateCoverage = useCallback(
     async (qr: QuestionnaireResponse) => {
-      if (!orderRef || !providerFhirUrl) return;
+      if (allOrderRefs.length === 0 || !providerFhirUrl) return;
 
-      const matchingCoverageInfoExt = (qr.extension ?? []).find((ext) => {
-        if (ext.url !== COVERAGE_INFO_EXT_URL || !ext.extension) return false;
-        const parsed = parseExtensionFields(ext.extension);
-        return (
-          parsed.coverage === coverageRef ||
-          parsed.coverageAssertionId === context.coverageAssertionId
-        );
-      });
-
-      if (!matchingCoverageInfoExt) return;
-
-      const orderUrl = `${providerFhirUrl}/${orderRef}`;
-      const orderResponse = await fetch(fhirProxyUrl(orderUrl), {
-        credentials: "same-origin",
-      });
-      if (!orderResponse.ok) return;
-      const order = await orderResponse.json();
-
-      order.extension = (order.extension ?? []).map((ext: Extension) => {
-        if (ext.url !== COVERAGE_INFO_EXT_URL || !ext.extension) return ext;
-        const parsed = parseExtensionFields(ext.extension);
-        const isMatch =
-          parsed.coverage === coverageRef ||
-          parsed.coverageAssertionId === context.coverageAssertionId;
-        return isMatch ? matchingCoverageInfoExt : ext;
-      });
-
-      await fetch(fhirProxyUrl(orderUrl), {
-        method: "PUT",
-        headers: { "Content-Type": "application/fhir+json" },
-        credentials: "same-origin",
-        body: JSON.stringify(order),
+      await propagateCoverageInfo({
+        qr,
+        orderRefs: allOrderRefs,
+        providerFhirUrl,
       });
 
       invalidateOrderQueries(queryClient);
     },
-    [
-      orderRef,
-      providerFhirUrl,
-      coverageRef,
-      context.coverageAssertionId,
-      queryClient,
-    ],
+    [allOrderRefs, providerFhirUrl, queryClient],
   );
 
   const notifyDtrCompletion = useCallback(
@@ -221,7 +357,8 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     ) => {
       broadcastDtrCompletion({
         status,
-        orderRef,
+        orderRef: allOrderRefs[0] ?? orderRef,
+        orderRefs: allOrderRefs.length > 0 ? allOrderRefs : undefined,
         patientId: context.patientId,
         coverageRef,
         coverageAssertionId: context.coverageAssertionId,
@@ -230,6 +367,7 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       });
     },
     [
+      allOrderRefs,
       orderRef,
       context.patientId,
       context.coverageAssertionId,
@@ -240,8 +378,10 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
 
   const handleSave = useCallback(
     (response: QuestionnaireResponse, status: "in-progress" | "completed") => {
-      const persistedStatus: "in-progress" | TerminalQrStatus =
-        isTerminalQrStatus(existingQr?.status) ? "amended" : status;
+      const isAmend = isTerminalQrStatus(activeExistingQr?.status);
+      const persistedStatus: "in-progress" | TerminalQrStatus = isAmend
+        ? "amended"
+        : status;
       response.status = persistedStatus;
 
       if (context.patientId) {
@@ -255,18 +395,23 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
         response.id = savedResponseId;
       }
 
-      if (orderRef) {
-        response.extension = upsertQrContextExtension(
+      if (allOrderRefs.length > 0) {
+        response.extension = upsertQrContextExtensions(
           response.extension ?? [],
-          orderRef,
+          allOrderRefs,
         );
 
-        if (orderRef.startsWith("ServiceRequest/")) {
-          response.basedOn = [{ reference: orderRef }];
+        const serviceRequestRefs = allOrderRefs.filter((ref) =>
+          ref.startsWith("ServiceRequest/"),
+        );
+        if (serviceRequestRefs.length > 0) {
+          response.basedOn = serviceRequestRefs.map((ref) => ({
+            reference: ref,
+          }));
         }
       }
 
-      const sourceQr = existingQr ?? mergedQr;
+      const sourceQr = activeExistingQr ?? mergedQr;
       if (sourceQr?.extension) {
         const existingUrls = new Set(
           (response.extension ?? []).map((e) => e.url),
@@ -282,19 +427,39 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       saveResponse.mutate(response, {
         onSuccess: async (saved) => {
           if (saved?.id) setSavedResponseId(saved.id);
-          if (saved?.id && orderRef) {
-            saveDtrQuestionnaireResponseId(orderRef, saved.id);
+          if (saved?.id) {
+            for (const ref of allOrderRefs) {
+              saveDtrQuestionnaireResponseId(ref, saved.id);
+            }
           }
 
-          if (isTerminalQrStatus(persistedStatus) && saved && orderRef) {
-            await propagateCoverageInfo(saved);
+          if (
+            isTerminalQrStatus(persistedStatus) &&
+            saved &&
+            allOrderRefs.length > 0
+          ) {
+            await propagateCoverage(saved);
           }
 
           queryClient.invalidateQueries({
             queryKey: ["fhir", "QuestionnaireResponse"],
           });
           notifyDtrCompletion(saved, persistedStatus);
-          setSavedStatus(persistedStatus);
+
+          const isTerminal = isTerminalQrStatus(persistedStatus);
+          const hasMoreQuestionnaires =
+            isMultiQ && safeActiveIndex < totalQuestionnaires - 1;
+
+          if (isTerminal && hasMoreQuestionnaires) {
+            setActiveQuestionnaireIndex(safeActiveIndex + 1);
+          } else if (isTerminal && isMultiQ) {
+            // Multi-Q final save: stay on the active tab. The patient-QR refetch
+            // updates activeExistingQr, which the per-tab effect uses to flip
+            // the form into terminal/view mode. Skip the completion card so the
+            // user can still navigate between tabs.
+          } else {
+            setSavedStatus(persistedStatus);
+          }
         },
       });
     },
@@ -303,12 +468,15 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       context.encounterId,
       saveResponse,
       savedResponseId,
-      orderRef,
-      existingQr,
+      allOrderRefs,
+      activeExistingQr,
       mergedQr,
-      propagateCoverageInfo,
+      propagateCoverage,
       notifyDtrCompletion,
       queryClient,
+      isMultiQ,
+      safeActiveIndex,
+      totalQuestionnaires,
     ],
   );
 
@@ -318,7 +486,7 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     }
   }, [savedStatus]);
 
-  if (isTerminalQrStatus(savedStatus)) {
+  if (!isMultiQ && isTerminalQrStatus(savedStatus)) {
     const isAmended = savedStatus === "amended";
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
@@ -391,17 +559,17 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
           ))}
         {coverageRef && <span>Coverage: {coverageRef}</span>}
         {orderRef && <span>Order: {orderRef}</span>}
-        {existingQr && (
+        {activeExistingQr && (
           <>
             <span className="text-amber-600 dark:text-amber-400">
-              {existingQr.status === "in-progress"
+              {activeExistingQr.status === "in-progress"
                 ? "Resuming"
                 : isEditing
                   ? "Amending"
                   : "Viewing"}
-              : QuestionnaireResponse/{existingQr.id}
+              : QuestionnaireResponse/{activeExistingQr.id}
             </span>
-            {isTerminalQrStatus(existingQr.status) && !isEditing && (
+            {isTerminalQrStatus(activeExistingQr.status) && !isEditing && (
               <Button
                 size="sm"
                 variant="outline"
@@ -413,6 +581,47 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
           </>
         )}
       </div>
+
+      {isMultiQ && (
+        <div className="mb-4 shrink-0 flex flex-wrap gap-1 border-b border-border">
+          {questionnaireCanonicals.map((canonical, idx) => {
+            const entry = packageEntries[idx];
+            const qrEntry = qrByCanonical.get(canonical);
+            const tabState = qrEntry?.completed.length
+              ? "completed"
+              : qrEntry?.inProgress.length
+                ? "in-progress"
+                : "pending";
+            const title =
+              entry?.questionnaire?.title ??
+              entry?.questionnaire?.name ??
+              friendlyCanonicalName(canonical);
+            const isActive = idx === safeActiveIndex;
+            return (
+              <button
+                key={canonical}
+                type="button"
+                onClick={() => setActiveQuestionnaireIndex(idx)}
+                className={cn(
+                  "flex cursor-pointer items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px transition-colors",
+                  isActive
+                    ? "border-primary text-foreground font-medium"
+                    : "border-transparent text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {tabState === "completed" ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+                ) : tabState === "in-progress" ? (
+                  <Clock className="h-3.5 w-3.5 text-amber-600" />
+                ) : (
+                  <Circle className="h-3.5 w-3.5 text-muted-foreground" />
+                )}
+                <span>{title}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {isLoading && (
         <div className="flex items-center justify-center min-h-[30vh]">
@@ -439,7 +648,7 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
         </div>
       )}
 
-      {!isLoading && !isError && !packageData?.questionnaire && (
+      {!isLoading && !isError && !activePackage?.questionnaire && (
         <div className="flex items-center justify-center min-h-[30vh]">
           <div className="max-w-md space-y-4 text-center">
             <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground" />
@@ -454,32 +663,58 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
         </div>
       )}
 
-      {packageData?.questionnaire && (
+      {activePackage?.questionnaire && (
         <div className="min-h-0 flex-1">
-          {isAdaptiveQuestionnaire(packageData.questionnaire) ? (
+          {isAdaptiveQuestionnaire(activePackage.questionnaire) ? (
             <AdaptiveDtrForm
-              questionnaire={packageData.questionnaire}
+              questionnaire={activePackage.questionnaire}
               prepopulated={initialQr ?? undefined}
               originIndex={originIndex}
               onSave={handleSave}
               isSaving={saveResponse.isPending}
               payerFhirUrl={payerFhirUrl}
               readOnly={!isEditing}
-              allowInProgressSave={!isTerminalQrStatus(existingQr?.status)}
+              allowInProgressSave={
+                !isTerminalQrStatus(activeExistingQr?.status)
+              }
             />
           ) : (
             <LhcFormRenderer
-              questionnaire={packageData.questionnaire}
+              questionnaire={activePackage.questionnaire}
               prepopulated={initialQr ?? undefined}
               originIndex={originIndex}
               onSave={handleSave}
               isSaving={saveResponse.isPending}
               readOnly={!isEditing}
-              allowInProgressSave={!isTerminalQrStatus(existingQr?.status)}
+              allowInProgressSave={
+                !isTerminalQrStatus(activeExistingQr?.status)
+              }
             />
           )}
         </div>
       )}
     </div>
   );
+}
+
+function isQuestionnaireResponse(
+  resource: unknown,
+): resource is QuestionnaireResponse {
+  return (
+    !!resource &&
+    typeof resource === "object" &&
+    (resource as { resourceType?: string }).resourceType ===
+      "QuestionnaireResponse"
+  );
+}
+
+function stripCanonicalVersion(canonical: string): string {
+  const pipeIdx = canonical.indexOf("|");
+  return pipeIdx === -1 ? canonical : canonical.substring(0, pipeIdx);
+}
+
+function friendlyCanonicalName(canonical: string): string {
+  const stripped = stripCanonicalVersion(canonical);
+  const slashIdx = stripped.lastIndexOf("/");
+  return slashIdx === -1 ? stripped : stripped.substring(slashIdx + 1);
 }

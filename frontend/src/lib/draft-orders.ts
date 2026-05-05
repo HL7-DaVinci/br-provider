@@ -107,6 +107,9 @@ function buildOrderResource(
     case "DeviceRequest":
       base.codeCodeableConcept = codeableConcept;
       break;
+    case "MedicationRequest":
+      base.medicationCodeableConcept = codeableConcept;
+      break;
     default:
       base.code = codeableConcept;
   }

@@ -114,7 +114,7 @@ public class DtrPopulateController {
 
             String localFhirBase = securityProperties.getServerBaseUrl() + "/fhir";
             var client = fhirContext.newRestfulGenericClient(localFhirBase);
-            String systemToken = localSystemTokenService.mintSystemToken(DTR_SCOPES);
+            String systemToken = localSystemTokenService.mintSystemToken(ProxyUtil.DTR_SCOPES);
             if (systemToken == null) {
                 return ResponseEntity.internalServerError()
                     .body(Map.of("error", "Internal authorization unavailable for $populate"));
