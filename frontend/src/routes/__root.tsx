@@ -2,15 +2,15 @@ import { TanStackDevtools } from "@tanstack/react-devtools";
 import {
   createRootRoute,
   Link,
-  Navigate,
   Outlet,
   useMatchRoute,
+  useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 
 import { Bell, LogIn, LogOut, Settings, Wrench } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   DevToolsDrawer,
   DRAWER_WIDTH,
@@ -35,9 +35,15 @@ export const Route = createRootRoute({
   notFoundComponent: NotFoundComponent,
 });
 
+// Stable search object so the redirect-to-login navigate has the same
+// reference every render (props churn is what makes TanStack's <Navigate>
+// re-fire its layout effect each render).
+const LOGIN_SEARCH = { error: undefined } as const;
+
 function RootComponent() {
   const matchRoute = useMatchRoute();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerPinned, setDrawerPinned] = useState(false);
@@ -54,13 +60,55 @@ function RootComponent() {
     setDrawerPinned(pinned);
   }, []);
 
+  // Determine route gating in pure expressions so the redirect effect below
+  // sees stable boolean deps. Using <Navigate> here re-fires its layout
+  // effect on every render (its props are recreated by JSX even when their
+  // contents are stable), which races with auth-state churn during a
+  // server-switch + signOut and overflows React's update budget.
+  const isCallbackRoute = matchRoute({ to: "/callback" });
+  const isPublicRoute = matchRoute({ to: "/" }) || matchRoute({ to: "/login" });
+  const needsLoginRedirect =
+    authEnabled &&
+    !isRestoringSession &&
+    !isAuthenticated &&
+    !isPublicRoute &&
+    !isCallbackRoute;
+  const isPatientSide =
+    pathname === "/patient" || pathname.startsWith("/patient/");
+  const isPractitionerSide =
+    pathname === "/practitioner" ||
+    pathname.startsWith("/practitioner/") ||
+    pathname.startsWith("/patients/");
+  const wrongSideRedirect =
+    authEnabled &&
+    isAuthenticated &&
+    fhirUserType &&
+    !isPublicRoute &&
+    !isCallbackRoute
+      ? fhirUserType === "Patient" && isPractitionerSide
+        ? "/patient"
+        : fhirUserType === "Practitioner" && isPatientSide
+          ? "/practitioner"
+          : null
+      : null;
+
+  useEffect(() => {
+    if (needsLoginRedirect) {
+      navigate({ to: "/login", search: LOGIN_SEARCH });
+    }
+  }, [needsLoginRedirect, navigate]);
+
+  useEffect(() => {
+    if (wrongSideRedirect) {
+      navigate({ to: wrongSideRedirect });
+    }
+  }, [wrongSideRedirect, navigate]);
+
   // Callback page has its own full-page layout; render without app shell
-  if (matchRoute({ to: "/callback" })) {
+  if (isCallbackRoute) {
     return <Outlet />;
   }
 
-  // Protected routes: everything except / and /login requires authentication
-  const isPublicRoute = matchRoute({ to: "/" }) || matchRoute({ to: "/login" });
   if (authEnabled && isRestoringSession && !isPublicRoute) {
     return (
       <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">
@@ -69,23 +117,8 @@ function RootComponent() {
     );
   }
 
-  if (authEnabled && !isAuthenticated && !isPublicRoute) {
-    return <Navigate to="/login" search={{ error: undefined }} />;
-  }
-
-  if (authEnabled && isAuthenticated && fhirUserType && !isPublicRoute) {
-    const isPatientSide =
-      pathname === "/patient" || pathname.startsWith("/patient/");
-    const isPractitionerSide =
-      pathname === "/practitioner" ||
-      pathname.startsWith("/practitioner/") ||
-      pathname.startsWith("/patients/");
-    if (fhirUserType === "Patient" && isPractitionerSide) {
-      return <Navigate to="/patient" />;
-    }
-    if (fhirUserType === "Practitioner" && isPatientSide) {
-      return <Navigate to="/practitioner" />;
-    }
+  if (needsLoginRedirect || wrongSideRedirect) {
+    return null;
   }
 
   return (

@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { Encounter } from "fhir/r4";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   useDeleteDraftOrder,
   useFinishEncounter,
+  useOrderQuestionnaireResponses,
   useSaveDraftOrders,
   useSaveOrders,
 } from "./use-clinical-api";
@@ -20,7 +21,26 @@ vi.mock("./use-fhir-server", () => ({
     setServerUrl: vi.fn(),
     isCustomServer: false,
   }),
+  awaitActiveServerSync: () => Promise.resolve(),
 }));
+
+vi.mock("./use-payer-server", () => ({
+  usePayerServer: () => ({
+    fhirUrl: "",
+    isCustomServer: false,
+    presetServers: [],
+    setServerUrl: vi.fn(),
+  }),
+  awaitActivePayerSync: () => Promise.resolve(),
+}));
+
+/** Extract the upstream FHIR URL from a /api/fhir-proxy?url=... wrapper. */
+function decodeFhirProxyUrl(proxyUrl: string): string {
+  const queryIdx = proxyUrl.indexOf("?");
+  if (queryIdx === -1) return proxyUrl;
+  const params = new URLSearchParams(proxyUrl.slice(queryIdx + 1));
+  return params.get("url") ?? proxyUrl;
+}
 
 function createQueryClient() {
   return new QueryClient({
@@ -242,5 +262,86 @@ describe("useClinicalApi mutations", () => {
       queryClient.getQueryState(["fhir", "DraftOrders", "enc-1", SERVER_URL])
         ?.isInvalidated,
     ).toBe(true);
+  });
+});
+
+describe("useOrderQuestionnaireResponses", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("queries QuestionnaireResponse by DTR qr-context, not based-on or per-id", async () => {
+    const queryClient = createQueryClient();
+    const wrapper = createWrapper(queryClient);
+
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "application/fhir+json" }),
+      json: async () => ({
+        resourceType: "Bundle",
+        type: "searchset",
+        entry: [],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderHook(
+      () => useOrderQuestionnaireResponses("ServiceRequest/sr-1", "pat-1"),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+
+    const fhirUrl = decodeFhirProxyUrl(String(fetchSpy.mock.calls[0][0]));
+    expect(fhirUrl).toContain("context=ServiceRequest%2Fsr-1");
+    expect(fhirUrl).toContain("patient=pat-1");
+    expect(fhirUrl).not.toContain("based-on");
+    expect(fhirUrl).not.toMatch(/QuestionnaireResponse\/[^?]/);
+  });
+
+  it("works uniformly for non-ServiceRequest order types (Appointment)", async () => {
+    const queryClient = createQueryClient();
+    const wrapper = createWrapper(queryClient);
+
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "application/fhir+json" }),
+      json: async () => ({
+        resourceType: "Bundle",
+        type: "searchset",
+        entry: [],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderHook(
+      () => useOrderQuestionnaireResponses("Appointment/appt-9", "pat-1"),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+
+    const fhirUrl = decodeFhirProxyUrl(String(fetchSpy.mock.calls[0][0]));
+    expect(fhirUrl).toContain("context=Appointment%2Fappt-9");
+    expect(fhirUrl).not.toContain("based-on");
+  });
+
+  it("does not fire when orderRef is undefined", () => {
+    const queryClient = createQueryClient();
+    const wrapper = createWrapper(queryClient);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderHook(() => useOrderQuestionnaireResponses(undefined, "pat-1"), {
+      wrapper,
+    });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

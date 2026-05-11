@@ -5,12 +5,10 @@ import {
 } from "@/lib/fhir-config";
 
 const USERINFO_KEY = "spa_userinfo";
-const SESSION_SERVER_KEY = "spa_session_server";
 const callbackRequests = new Map<string, Promise<void>>();
 
 export function clearAuthStorage(): void {
   sessionStorage.removeItem(USERINFO_KEY);
-  sessionStorage.removeItem(SESSION_SERVER_KEY);
 }
 
 // Redirects to the server which initiates the OAuth2 flow.
@@ -75,14 +73,9 @@ export async function handleCallback(
       const err = await response.json();
       throw new Error(err.error_description || "Token exchange failed");
     }
-    const { authenticated, userinfo, serverUrl } = await response.json();
-    if (authenticated) {
-      if (userinfo) {
-        sessionStorage.setItem(USERINFO_KEY, JSON.stringify(userinfo));
-      }
-      if (serverUrl) {
-        sessionStorage.setItem(SESSION_SERVER_KEY, serverUrl);
-      }
+    const { authenticated, userinfo } = await response.json();
+    if (authenticated && userinfo) {
+      sessionStorage.setItem(USERINFO_KEY, JSON.stringify(userinfo));
     }
   })();
 
@@ -105,15 +98,8 @@ export async function checkSession(): Promise<{
   const data = await response.json();
   if (!data.authenticated) {
     clearAuthStorage();
-  } else {
-    if (data.userinfo) {
-      sessionStorage.setItem(USERINFO_KEY, JSON.stringify(data.userinfo));
-    }
-    if (data.serverUrl) {
-      sessionStorage.setItem(SESSION_SERVER_KEY, data.serverUrl);
-    } else {
-      sessionStorage.removeItem(SESSION_SERVER_KEY);
-    }
+  } else if (data.userinfo) {
+    sessionStorage.setItem(USERINFO_KEY, JSON.stringify(data.userinfo));
   }
   return data;
 }
@@ -144,11 +130,4 @@ export function getUserInfo(): {
 
 export function isAuthenticated(): boolean {
   return getUserInfo() !== null;
-}
-
-/**
- * Returns the authenticated server URL for the current session, or null.
- */
-export function getSessionServerUrl(): string | null {
-  return sessionStorage.getItem(SESSION_SERVER_KEY);
 }

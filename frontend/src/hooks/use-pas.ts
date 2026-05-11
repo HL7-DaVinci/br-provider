@@ -1,6 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { Bundle, ClaimResponse, Task } from "fhir/r4";
-import { ACTIVE_PROVIDER_FHIR_BASE_HEADER } from "@/lib/api";
 import { loggedFetch } from "@/lib/logged-fetch";
 import { fhirFetch } from "./use-fhir-api";
 
@@ -33,10 +32,7 @@ export function usePasSubmit() {
         "/api/pas/submit",
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            [ACTIVE_PROVIDER_FHIR_BASE_HEADER]: params.providerFhirUrl,
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(params),
           credentials: "same-origin",
         },
@@ -67,10 +63,7 @@ export function usePasUpdate() {
         "/api/pas/update",
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            [ACTIVE_PROVIDER_FHIR_BASE_HEADER]: params.providerFhirUrl,
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(params),
           credentials: "same-origin",
         },
@@ -143,17 +136,11 @@ export function usePasInquiry(params: PasInquiryParams | undefined) {
   return useQuery({
     queryKey: ["pas", "inquiry", params?.claimResponseId],
     queryFn: async () => {
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      if (params?.providerFhirUrl) {
-        headers[ACTIVE_PROVIDER_FHIR_BASE_HEADER] = params.providerFhirUrl;
-      }
       const response = await loggedFetch(
         "/api/pas/inquiry",
         {
           method: "POST",
-          headers,
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(params),
           credentials: "same-origin",
         },

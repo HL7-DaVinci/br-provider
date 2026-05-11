@@ -187,12 +187,20 @@ public class FhirProxyController {
         // Payer FHIR servers (static allowlist)
         if (serverProperties.isPayerFhirUrl(target)) return true;
 
-        // Custom server from current session (dynamic)
+        // Custom server / payer from current session (dynamic). Both are
+        // user-selected via the settings dialog and pushed to the session
+        // through /auth/active-server and /auth/active-payer respectively.
         if (session != null) {
             String sessionServer = (String) session.getAttribute(
                 SpaAuthController.SESSION_SERVER_URL);
             if (sessionServer != null
                     && UrlMatchUtil.matchesBaseUrl(target, sessionServer)) {
+                return true;
+            }
+            String sessionPayer = (String) session.getAttribute(
+                SpaAuthController.SESSION_PAYER_FHIR_URL);
+            if (sessionPayer != null
+                    && UrlMatchUtil.matchesBaseUrl(target, sessionPayer)) {
                 return true;
             }
         }

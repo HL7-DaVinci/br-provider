@@ -1,18 +1,28 @@
 package org.hl7.davinci.api;
 
 import java.util.List;
-import java.util.Map;
 
-import org.hl7.davinci.security.B2BTokenService;
-import org.hl7.davinci.security.LocalSystemTokenService;
+import org.hl7.davinci.config.ServerProperties;
+import org.hl7.davinci.security.CertificateHolder;
 import org.hl7.davinci.security.SecurityProperties;
+import org.hl7.davinci.security.SpaAuthController;
 import org.hl7.davinci.util.UrlMatchUtil;
-import org.hl7.fhir.r4.model.Coding;
-import org.hl7.fhir.r4.model.Endpoint;
+import org.hl7.fhir.r4.model.Bundle;
+import org.hl7.fhir.r4.model.OperationOutcome;
+import org.hl7.fhir.r4.model.OperationOutcome.IssueSeverity;
+import org.hl7.fhir.r4.model.OperationOutcome.IssueType;
 import org.hl7.fhir.r4.model.Parameters;
+import org.hl7.fhir.r4.model.Parameters.ParametersParameterComponent;
 import org.hl7.fhir.r4.model.Questionnaire;
 import org.hl7.fhir.r4.model.QuestionnaireResponse;
-import org.hl7.fhir.r4.model.StringType;
+import org.hl7.fhir.r4.model.Reference;
+import org.hl7.fhir.r4.model.Resource;
+import org.opencds.cqf.fhir.cql.EvaluationSettings;
+import org.opencds.cqf.fhir.cr.CrSettings;
+import org.opencds.cqf.fhir.cr.questionnaire.QuestionnaireProcessor;
+import org.opencds.cqf.fhir.utility.monad.Eithers;
+import org.opencds.cqf.fhir.utility.repository.InMemoryFhirRepository;
+import org.opencds.cqf.fhir.utility.repository.RestRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -22,151 +32,190 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import ca.uhn.fhir.context.FhirContext;
-import ca.uhn.fhir.rest.client.interceptor.SimpleRequestHeaderInterceptor;
+import ca.uhn.fhir.repository.IRepository;
+import ca.uhn.fhir.rest.api.server.IRepositoryFactory;
+import ca.uhn.fhir.rest.api.server.SystemRequestDetails;
+import ca.uhn.fhir.rest.client.api.IGenericClient;
+import ca.uhn.fhir.rest.client.interceptor.BearerTokenAuthInterceptor;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpSession;
 
 /**
- * BFF endpoint for DTR pre-population using HAPI CR's Questionnaire/$populate.
- * Builds FHIR Endpoint resources pointing to the content and terminology servers
- * derived from the $questionnaire-package bundle, so the CQL engine resolves
- * Libraries and ValueSets from their origin servers.
+ * DTR pre-population endpoint for the SPA. This is a BFF operation, not a
+ * conformant SDC $populate: it borrows the SDC body shape (subject,
+ * context) but adds a `packagebundle` parameter that carries the payer's
+ * supporting artifacts (Libraries, ValueSets, CodeSystems) from the prior
+ * $questionnaire-package response, so the engine never has to re-fetch
+ * them at evaluation time.
  *
- * @see <a href="https://build.fhir.org/ig/HL7/sdc/en/OperationDefinition-Questionnaire-populate.html">$populate</a>
+ * Internally it invokes cqf-fhir's {@link QuestionnaireProcessor}
+ * in-process. The package bundle is wrapped in an
+ * {@link InMemoryFhirRepository} that serves as both content source
+ * (Library / StructureDefinition lookups) and terminology source
+ * (ValueSet / CodeSystem lookups). Patient and clinical retrieves are
+ * routed to the active provider FHIR server resolved from the session
+ * (set by the OAuth callback or by `POST /auth/active-server`): the
+ * local JPA repository when the active base is this server, or a
+ * {@link RestRepository} carrying the user's session bearer token
+ * otherwise.
+ *
+ * Body shape (FHIR Parameters):
+ *   - subject         : Reference to Patient (target subject of the QR)
+ *   - questionnaire   : Resource (the Questionnaire to populate)
+ *   - context         : repeated launchContext bindings (name + content parts)
+ *   - packagebundle   : Resource (Bundle from the payer's $questionnaire-package)
  */
 @RestController
 @RequestMapping("/api/dtr")
 public class DtrPopulateController {
 
     private static final Logger logger = LoggerFactory.getLogger(DtrPopulateController.class);
-    private static final List<String> DTR_SCOPES = ProxyUtil.DTR_SCOPES;
 
     private final FhirContext fhirContext;
-    private final B2BTokenService b2bTokenService;
-    private final LocalSystemTokenService localSystemTokenService;
+    private final IRepositoryFactory repositoryFactory;
+    private final EvaluationSettings evaluationSettings;
+    private final ServerProperties serverProperties;
     private final SecurityProperties securityProperties;
+    private final CertificateHolder certificateHolder;
 
     public DtrPopulateController(
             FhirContext fhirContext,
-            B2BTokenService b2bTokenService,
-            LocalSystemTokenService localSystemTokenService,
-            SecurityProperties securityProperties) {
+            IRepositoryFactory repositoryFactory,
+            EvaluationSettings evaluationSettings,
+            ServerProperties serverProperties,
+            SecurityProperties securityProperties,
+            CertificateHolder certificateHolder) {
         this.fhirContext = fhirContext;
-        this.b2bTokenService = b2bTokenService;
-        this.localSystemTokenService = localSystemTokenService;
+        this.repositoryFactory = repositoryFactory;
+        this.evaluationSettings = evaluationSettings;
+        this.serverProperties = serverProperties;
         this.securityProperties = securityProperties;
+        this.certificateHolder = certificateHolder;
     }
 
-    /**
-     * Accepts an inline Questionnaire and delegates to Questionnaire/$populate,
-     * pointing the CQL engine at the appropriate content and terminology servers
-     * for Library and ValueSet resolution.
-     */
-    @PostMapping("/populate")
-    public ResponseEntity<?> populate(@RequestBody String body) {
+    @PostMapping(value = "/populate", consumes = "application/fhir+json", produces = "application/fhir+json")
+    public ResponseEntity<String> populate(@RequestBody String body, HttpServletRequest request) {
+        Parameters input;
         try {
-            var parsed = fhirContext.newJsonParser().parseResource(Parameters.class, body);
+            input = (Parameters) fhirContext.newJsonParser().parseResource(body);
+        } catch (Exception e) {
+            return errorOutcome(IssueType.STRUCTURE, "Request body is not a FHIR Parameters resource: " + e.getMessage());
+        }
 
-            Questionnaire questionnaire = null;
-            String patientId = null;
-            String contentServerUrl = null;
-            String terminologyServerUrl = null;
+        Bundle packageBundle = extractResource(input, "packagebundle", Bundle.class);
+        if (packageBundle == null) {
+            return errorOutcome(IssueType.INVALID,
+                "Missing required 'packagebundle' parameter (Bundle resource from $questionnaire-package)");
+        }
 
-            for (var param : parsed.getParameter()) {
-                switch (param.getName()) {
-                    case "questionnaire" -> {
-                        if (param.getResource() instanceof Questionnaire q)
-                            questionnaire = q;
-                    }
-                    case "patientId" -> {
-                        if (param.getValue() instanceof StringType s)
-                            patientId = s.getValue();
-                    }
-                    case "contentServerUrl" -> {
-                        if (param.getValue() instanceof StringType s)
-                            contentServerUrl = s.getValue();
-                    }
-                    case "terminologyServerUrl" -> {
-                        if (param.getValue() instanceof StringType s)
-                            terminologyServerUrl = s.getValue();
-                    }
-                }
-            }
+        Questionnaire questionnaire = extractResource(input, "questionnaire", Questionnaire.class);
+        if (questionnaire == null) {
+            return errorOutcome(IssueType.INVALID,
+                "Missing required 'questionnaire' parameter (embedded Questionnaire resource)");
+        }
 
-            if (questionnaire == null || patientId == null || contentServerUrl == null) {
-                return ResponseEntity.badRequest()
-                    .body(Map.of("error",
-                        "questionnaire, patientId, and contentServerUrl are required"));
-            }
+        String subject = extractReference(input, "subject");
+        if (subject == null) {
+            return errorOutcome(IssueType.INVALID,
+                "Missing required 'subject' parameter (Reference to Patient)");
+        }
 
-            if (terminologyServerUrl == null) {
-                terminologyServerUrl = contentServerUrl;
-            }
+        List<ParametersParameterComponent> contexts = input.getParameter().stream()
+            .filter(p -> "context".equals(p.getName()))
+            .toList();
 
-            // Build $populate input with inline Questionnaire and remote endpoints
-            // for Library/ValueSet resolution
-            Parameters populateInput = new Parameters();
-            populateInput.addParameter().setName("questionnaire").setResource(questionnaire);
-            populateInput.addParameter().setName("subject")
-                .setValue(new StringType("Patient/" + patientId));
-            populateInput.addParameter().setName("contentEndpoint")
-                .setResource(buildEndpoint(contentServerUrl));
-            populateInput.addParameter().setName("terminologyEndpoint")
-                .setResource(buildEndpoint(terminologyServerUrl));
+        try {
+            // Wrap the payer package bundle as an in-memory repository.
+            // Passed as both content (Library/StructureDefinition) and
+            // terminology (ValueSet/CodeSystem) source; QuestionnaireProcessor
+            // proxies the two slots internally.
+            InMemoryFhirRepository inMemoryRepo = new InMemoryFhirRepository(fhirContext, packageBundle);
 
-            String localFhirBase = securityProperties.getServerBaseUrl() + "/fhir";
-            var client = fhirContext.newRestfulGenericClient(localFhirBase);
-            String systemToken = localSystemTokenService.mintSystemToken(ProxyUtil.DTR_SCOPES);
-            if (systemToken == null) {
-                return ResponseEntity.internalServerError()
-                    .body(Map.of("error", "Internal authorization unavailable for $populate"));
-            }
-            client.registerInterceptor(
-                new SimpleRequestHeaderInterceptor("Authorization", "Bearer " + systemToken));
+            // Patient/clinical retrieves come from the session's active provider
+            // FHIR server: local JPA when the active base is this server,
+            // RestRepository carrying the user's session bearer token otherwise.
+            IRepository dataRepo = resolveDataRepository(request);
 
-            Parameters result = client.operation()
-                .onType("Questionnaire")
-                .named("$populate")
-                .withParameters(populateInput)
-                .execute();
+            CrSettings crSettings = new CrSettings().withEvaluationSettings(evaluationSettings);
+            QuestionnaireProcessor processor = new QuestionnaireProcessor(dataRepo, crSettings);
 
-            for (var param : result.getParameter()) {
-                if (param.getResource() instanceof QuestionnaireResponse qr) {
-                    String responseJson = fhirContext.newJsonParser().encodeResourceToString(qr);
-                    return ResponseEntity.ok()
-                        .header("Content-Type", "application/fhir+json")
-                        .body(responseJson);
-                }
-            }
+            QuestionnaireResponse result = (QuestionnaireResponse) processor.populate(
+                Eithers.forRight3(questionnaire),
+                subject,
+                contexts,
+                null,            // launchContext extension (passed via context list)
+                null,            // data Bundle (engine retrieves via dataRepo)
+                true,            // useServerData: retrieves go to the constructor's dataRepo
+                null,            // dataRepository (constructor's dataRepo is the source)
+                inMemoryRepo,    // contentRepository
+                inMemoryRepo);   // terminologyRepository
 
             return ResponseEntity.ok()
                 .header("Content-Type", "application/fhir+json")
                 .body(fhirContext.newJsonParser().encodeResourceToString(result));
-
         } catch (Exception e) {
-            logger.error("Populate failed: {}", e.getMessage());
-            return ResponseEntity.internalServerError()
-                .body(Map.of("error", e.getMessage()));
+            logger.error("Populate failed", e);
+            return errorOutcome(IssueType.EXCEPTION, e.getMessage());
         }
     }
 
     /**
-     * Builds a FHIR Endpoint resource for the given server URL.
-     * Includes a B2B Bearer token in the headers when available.
+     * Resolves the FHIR data repository for the current session. Returns the
+     * local JPA repository when the active provider base is this server (no
+     * HTTP hop, transactional reads). Otherwise builds a {@link RestRepository}
+     * pointed at the active base, attaching the user's SMART session bearer
+     * token when present.
+     *
+     * Uses the user's authorization_code session token from
+     * {@link SpaAuthController#SESSION_ACCESS_TOKEN}; never the B2B
+     * client_credentials token (DTR populate is a client action on behalf of
+     * a logged-in user).
+     *
+     * Package-private so {@code DtrPopulateControllerTest} can exercise the
+     * branching directly without standing up a full populate call.
      */
-    private Endpoint buildEndpoint(String serverUrl) {
-        String normalizedUrl = UrlMatchUtil.normalizeUrl(serverUrl);
-
-        Endpoint endpoint = new Endpoint();
-        endpoint.setStatus(Endpoint.EndpointStatus.ACTIVE);
-        endpoint.setConnectionType(new Coding(
-            "http://terminology.hl7.org/CodeSystem/endpoint-connection-type",
-            "hl7-fhir-rest", null));
-        endpoint.setAddress(normalizedUrl);
-
-        String token = b2bTokenService.getTokenForServer(normalizedUrl, DTR_SCOPES);
-        if (token != null) {
-            endpoint.addHeader("Authorization: Bearer " + token);
+    IRepository resolveDataRepository(HttpServletRequest request) {
+        String activeBase = ProxyUtil.getActiveProviderFhirBase(request, serverProperties);
+        if (UrlMatchUtil.matchesBaseUrl(activeBase, serverProperties.getLocalServerAddress())) {
+            return repositoryFactory.create(new SystemRequestDetails());
         }
+        HttpSession session = request != null ? request.getSession(false) : null;
+        SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder);
+        String token = SpaAuthController.getTokenForServer(session, activeBase);
+        IGenericClient client = fhirContext.newRestfulGenericClient(activeBase);
+        if (token != null) {
+            client.registerInterceptor(new BearerTokenAuthInterceptor(token));
+        }
+        return new RestRepository(client);
+    }
 
-        return endpoint;
+    private <T extends Resource> T extractResource(Parameters input, String name, Class<T> type) {
+        return input.getParameter().stream()
+            .filter(p -> name.equals(p.getName()) && p.getResource() != null)
+            .map(ParametersParameterComponent::getResource)
+            .filter(type::isInstance)
+            .map(type::cast)
+            .findFirst()
+            .orElse(null);
+    }
+
+    private String extractReference(Parameters input, String name) {
+        return input.getParameter().stream()
+            .filter(p -> name.equals(p.getName()) && p.getValue() instanceof Reference)
+            .map(p -> ((Reference) p.getValue()).getReference())
+            .filter(s -> s != null && !s.isEmpty())
+            .findFirst()
+            .orElse(null);
+    }
+
+    private ResponseEntity<String> errorOutcome(IssueType code, String diagnostics) {
+        OperationOutcome outcome = new OperationOutcome();
+        outcome.addIssue()
+            .setSeverity(IssueSeverity.ERROR)
+            .setCode(code)
+            .setDiagnostics(diagnostics);
+        return ResponseEntity.internalServerError()
+            .header("Content-Type", "application/fhir+json")
+            .body(fhirContext.newJsonParser().encodeResourceToString(outcome));
     }
 }

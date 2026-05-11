@@ -19,11 +19,13 @@ import {
   invalidateOrderQueries,
   usePatientQuestionnaireResponses,
 } from "@/hooks/use-clinical-api";
-import { saveDtrQuestionnaireResponseId } from "@/hooks/use-dtr-qr-store";
 import { fhirFetch } from "@/hooks/use-fhir-api";
 import { useFhirServer } from "@/hooks/use-fhir-server";
+import {
+  getOrderSatisfactionState,
+  usePatientQrIndex,
+} from "@/hooks/use-patient-qr-index";
 import { usePayerServer } from "@/hooks/use-payer-server";
-import { usePrePopulatedQr } from "@/hooks/use-prepopulated-qr";
 import {
   type QuestionnairePackageEntry,
   useProviderPopulate,
@@ -35,6 +37,11 @@ import { propagateCoverageInfo } from "@/lib/coverage-propagation";
 import { broadcastDtrCompletion } from "@/lib/dtr-completion";
 import { parseOrderRefs, parseQuestionnaireSearch } from "@/lib/dtr-search";
 import { normalizeServerUrl } from "@/lib/fhir-config";
+import {
+  applyPopulateResult,
+  buildOriginIndex,
+  stampOrigins,
+} from "@/lib/information-origin";
 import { isTerminalQrStatus, type TerminalQrStatus } from "@/lib/qr-status";
 import { cn } from "@/lib/utils";
 
@@ -120,8 +127,12 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
         r.startsWith("DeviceRequest/") ||
         r.startsWith("NutritionOrder/") ||
         r.startsWith("VisionPrescription/") ||
-        r.startsWith("CommunicationRequest/"),
+        r.startsWith("CommunicationRequest/") ||
+        r.startsWith("Appointment/"),
     );
+  const encounterRef = context.encounterId
+    ? `Encounter/${context.encounterId}`
+    : undefined;
 
   const relatedOrderRefs = useMemo(
     () => parseOrderRefs(context.relatedOrderRefs),
@@ -147,64 +158,50 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     enabled: !!existingQrId && !!providerFhirUrl,
   });
 
-  const completedQrsQuery = usePatientQuestionnaireResponses(
-    context.patientId ?? "",
-    ["completed", "amended"],
-  );
   const inProgressQrsQuery = usePatientQuestionnaireResponses(
     context.patientId ?? "",
     "in-progress",
   );
 
-  const qrByCanonical = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        completed: QuestionnaireResponse[];
-        inProgress: QuestionnaireResponse[];
-      }
-    >();
-    for (const c of questionnaireCanonicals) {
-      map.set(c, { completed: [], inProgress: [] });
-    }
+  // Patient-wide QR index for order-anchored satisfaction state. Drives tab
+  // decoration and the read-only display fallback in activeExistingQr when a
+  // completed/amended QR is linked to this order via qr-context — so re-opens
+  // and post-save renders show the finished documentation instead of a blank
+  // form. The DTR cross-questionnaire-prepopulation prohibition (don't pull
+  // answers from a completed QR into a *different* questionnaire) is a
+  // separate concern, not enforced here.
+  const qrIndex = usePatientQrIndex(context.patientId ?? "");
 
-    const collect = (
-      bundleEntries: Array<{ resource?: QuestionnaireResponse | unknown }>,
-      bucket: "completed" | "inProgress",
-    ) => {
-      for (const entry of bundleEntries) {
-        const qr = entry.resource;
-        if (!isQuestionnaireResponse(qr)) continue;
-        const c = qr.questionnaire;
-        if (!c) continue;
-        const stripped = stripCanonicalVersion(c);
-        for (const target of questionnaireCanonicals) {
-          if (target === c || stripCanonicalVersion(target) === stripped) {
-            map.get(target)?.[bucket].push(qr);
-            break;
-          }
+  // qrByCanonical tracks in-progress QRs for the workspace's selected
+  // canonicals; it is the resume source. Completed/amended QRs show via
+  // qrIndex (above) in read-only mode; Amend is the explicit path to edit.
+  const qrByCanonical = useMemo(() => {
+    const map = new Map<string, { inProgress: QuestionnaireResponse[] }>();
+    for (const c of questionnaireCanonicals) {
+      map.set(c, { inProgress: [] });
+    }
+    for (const entry of inProgressQrsQuery.data?.entry ?? []) {
+      const qr = entry.resource;
+      if (!isQuestionnaireResponse(qr)) continue;
+      const c = qr.questionnaire;
+      if (!c) continue;
+      const stripped = stripCanonicalVersion(c);
+      for (const target of questionnaireCanonicals) {
+        if (target === c || stripCanonicalVersion(target) === stripped) {
+          map.get(target)?.inProgress.push(qr);
+          break;
         }
       }
-    };
-
-    collect(completedQrsQuery.data?.entry ?? [], "completed");
-    collect(inProgressQrsQuery.data?.entry ?? [], "inProgress");
-
-    const sortByLastUpdatedDesc = (
+    }
+    const byUpdatedDesc = (
       a: QuestionnaireResponse,
       b: QuestionnaireResponse,
     ) => (b.meta?.lastUpdated ?? "").localeCompare(a.meta?.lastUpdated ?? "");
     for (const entry of map.values()) {
-      entry.completed.sort(sortByLastUpdatedDesc);
-      entry.inProgress.sort(sortByLastUpdatedDesc);
+      entry.inProgress.sort(byUpdatedDesc);
     }
-
     return map;
-  }, [
-    questionnaireCanonicals,
-    completedQrsQuery.data,
-    inProgressQrsQuery.data,
-  ]);
+  }, [questionnaireCanonicals, inProgressQrsQuery.data]);
 
   const isMultiQ = questionnaireCanonicals.length > 1;
 
@@ -239,13 +236,22 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
   const activePackage = isMultiQ
     ? activeEntry
       ? {
+          bundle: activeEntry.bundle,
           questionnaire: activeEntry.questionnaire,
           questionnaireResponse: activeEntry.questionnaireResponse,
           contentServerUrl: activeEntry.contentServerUrl,
           terminologyServerUrl: activeEntry.terminologyServerUrl,
         }
       : null
-    : (singularQuery.data ?? null);
+    : singularQuery.data
+      ? {
+          bundle: singularQuery.data.bundle,
+          questionnaire: singularQuery.data.questionnaire,
+          questionnaireResponse: singularQuery.data.questionnaireResponse,
+          contentServerUrl: singularQuery.data.contentServerUrl,
+          terminologyServerUrl: singularQuery.data.terminologyServerUrl,
+        }
+      : null;
 
   const isLoading = isMultiQ
     ? (activeEntry?.isLoading ?? false)
@@ -255,17 +261,31 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     : singularQuery.isError;
   const error = isMultiQ ? activeEntry?.error : singularQuery.error;
 
-  const { data: providerQr } = useProviderPopulate({
-    payerFhirUrl,
-    contentServerUrl: activePackage?.contentServerUrl,
-    terminologyServerUrl: activePackage?.terminologyServerUrl,
-    questionnaire: activePackage?.questionnaire ?? null,
-    patientId: context.patientId,
-  });
+  // Build SDC context entries from launchContext extensions on the active
+  // Questionnaire, plus a synthetic `patient` entry to anchor HAPI cr's
+  // PopulateRequest.getSubjectId on Patient (it falls back to context[0]
+  // when no "patient" context is present, which would otherwise pick the
+  // clinical/MedicationRequest binding as the subject).
+  const patientRef = context.patientId
+    ? `Patient/${context.patientId}`
+    : undefined;
+  const contexts = useMemo(
+    () =>
+      buildLaunchContexts(
+        activePackage?.questionnaire ?? null,
+        patientRef,
+        orderRef,
+        encounterRef,
+      ),
+    [activePackage?.questionnaire, patientRef, orderRef, encounterRef],
+  );
 
-  const { mergedQr, originIndex } = usePrePopulatedQr({
-    payerQr: activePackage?.questionnaireResponse ?? null,
-    providerQr: providerQr ?? null,
+  const { data: populateResult } = useProviderPopulate({
+    questionnaire: activePackage?.questionnaire ?? undefined,
+    packageBundle: activePackage?.bundle ?? undefined,
+    subject: context.patientId ? `Patient/${context.patientId}` : undefined,
+    contexts,
+    providerFhirUrl,
   });
 
   const activeCanonical =
@@ -288,10 +308,66 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     }
     if (!activeCanonical) return null;
     const entry = qrByCanonical.get(activeCanonical);
-    return entry?.completed[0] ?? entry?.inProgress[0] ?? null;
-  }, [existingQr, activeCanonical, qrByCanonical]);
+    if (entry?.inProgress[0]) return entry.inProgress[0];
+    // No in-progress to resume: fall back to a completed/amended QR anchored
+    // to this order via qr-context so the form renders the finished doc in
+    // read-only mode. Without this, post-save and re-open paths show a blank
+    // form and the user is stuck re-launching DTR for the same order line.
+    // The Amend button is the explicit edit path; mergedQr renders the QR
+    // verbatim (no populate blending) so the user's answers stay authoritative.
+    if (orderRef) {
+      const orderState = getOrderSatisfactionState(
+        qrIndex,
+        activeCanonical,
+        orderRef,
+      );
+      if (orderState.kind === "completedForThisOrder") {
+        return orderState.qr;
+      }
+    }
+    return null;
+  }, [existingQr, activeCanonical, qrByCanonical, qrIndex, orderRef]);
 
-  const initialQr = activeExistingQr ?? mergedQr;
+  // Merge populate result over the existing in-progress QR (resume) or the
+  // payer-shipped draft per DTR resumption rules. The base is the existing
+  // QR when present so the user's manual/override edits are preserved; fresh
+  // auto-* values from populate flow in via applyPopulateResult's merge table.
+  // stampOrigins on the payer draft enforces auto-server origin where the
+  // payer pre-populated values for the no-existing-QR first-launch path.
+  const { mergedQr, originIndex } = useMemo(() => {
+    const payerDraft = activePackage?.questionnaireResponse ?? null;
+    const candidate = populateResult?.response ?? null;
+    // Terminal QRs (completed/amended) render verbatim. The submitted answers
+    // are authoritative and must not be blended with a fresh populate result,
+    // which would overwrite user-confirmed values with stale auto values.
+    if (activeExistingQr && isTerminalQrStatus(activeExistingQr.status)) {
+      return {
+        mergedQr: activeExistingQr,
+        originIndex: buildOriginIndex(activeExistingQr),
+      };
+    }
+    const base =
+      activeExistingQr ??
+      (payerDraft ? stampOrigins(payerDraft, "auto-server") : null);
+    if (!base && !candidate) {
+      return {
+        mergedQr: null as QuestionnaireResponse | null,
+        originIndex: new Map(),
+      };
+    }
+    const merged =
+      base && candidate
+        ? applyPopulateResult(base, candidate)
+        : (base ?? candidate);
+    return {
+      mergedQr: merged,
+      originIndex: merged ? buildOriginIndex(merged) : new Map(),
+    };
+  }, [activeExistingQr, activePackage?.questionnaireResponse, populateResult]);
+
+  // mergedQr already incorporates activeExistingQr as the base when present,
+  // so it's the single source of truth for what to feed LHC-Forms.
+  const initialQr = mergedQr;
   const saveResponse = useSaveQuestionnaireResponse(providerFhirUrl);
 
   // Sync per-tab state when the active questionnaire changes (initial load,
@@ -317,19 +393,19 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       setActiveIndexInitialized(true);
       return;
     }
-    if (completedQrsQuery.isLoading || inProgressQrsQuery.isLoading) {
+    if (inProgressQrsQuery.isLoading) {
       return;
     }
-    const firstUnsatisfied = questionnaireCanonicals.findIndex((c) => {
+    // Land on the first canonical without an in-progress resume; otherwise index 0.
+    const firstNotResumable = questionnaireCanonicals.findIndex((c) => {
       const entry = qrByCanonical.get(c);
-      return !entry?.completed.length;
+      return !entry?.inProgress.length;
     });
-    setActiveQuestionnaireIndex(firstUnsatisfied >= 0 ? firstUnsatisfied : 0);
+    setActiveQuestionnaireIndex(firstNotResumable >= 0 ? firstNotResumable : 0);
     setActiveIndexInitialized(true);
   }, [
     activeIndexInitialized,
     isMultiQ,
-    completedQrsQuery.isLoading,
     inProgressQrsQuery.isLoading,
     questionnaireCanonicals,
     qrByCanonical,
@@ -427,11 +503,6 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       saveResponse.mutate(response, {
         onSuccess: async (saved) => {
           if (saved?.id) setSavedResponseId(saved.id);
-          if (saved?.id) {
-            for (const ref of allOrderRefs) {
-              saveDtrQuestionnaireResponseId(ref, saved.id);
-            }
-          }
 
           if (
             isTerminalQrStatus(persistedStatus) &&
@@ -587,11 +658,16 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
           {questionnaireCanonicals.map((canonical, idx) => {
             const entry = packageEntries[idx];
             const qrEntry = qrByCanonical.get(canonical);
-            const tabState = qrEntry?.completed.length
-              ? "completed"
-              : qrEntry?.inProgress.length
-                ? "in-progress"
-                : "pending";
+            const orderState = orderRef
+              ? getOrderSatisfactionState(qrIndex, canonical, orderRef)
+              : { kind: "notStarted" as const };
+            const tabState =
+              orderState.kind === "completedForThisOrder"
+                ? "completed"
+                : qrEntry?.inProgress.length ||
+                    orderState.kind === "inProgressForThisOrder"
+                  ? "in-progress"
+                  : "pending";
             const title =
               entry?.questionnaire?.title ??
               entry?.questionnaire?.name ??
@@ -717,4 +793,58 @@ function friendlyCanonicalName(canonical: string): string {
   const stripped = stripCanonicalVersion(canonical);
   const slashIdx = stripped.lastIndexOf("/");
   return slashIdx === -1 ? stripped : stripped.substring(slashIdx + 1);
+}
+
+const SDC_LAUNCH_CONTEXT_URL =
+  "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-launchContext";
+
+/**
+ * Reads the active Questionnaire's sdc-questionnaire-launchContext extensions
+ * and binds each to the matching local FHIR resource reference for $populate.
+ *
+ * Always includes a `patient` context entry when a patient ref is provided —
+ * HAPI cr's PopulateRequest.getSubjectId picks the first context entry's
+ * content as the subject when no entry is named "patient", ignoring the
+ * explicit `subject` parameter. Without this, a `clinical` context bound to an
+ * order type leaks into the subject slot and the CQL `context Patient`
+ * scope evaluates against the wrong resource.
+ */
+function buildLaunchContexts(
+  questionnaire: Questionnaire | null,
+  patientRef: string | undefined,
+  orderRef: string | undefined,
+  encounterRef: string | undefined,
+): Record<string, string[]> {
+  const contexts: Record<string, string[]> = {};
+  if (patientRef) {
+    contexts.patient = [patientRef];
+  }
+  if (!questionnaire?.extension) return contexts;
+
+  for (const ext of questionnaire.extension) {
+    if (ext.url !== SDC_LAUNCH_CONTEXT_URL) continue;
+    const nameExt = ext.extension?.find((e) => e.url === "name");
+    const code = nameExt?.valueCoding?.code;
+    if (!code) continue;
+    const ref = bindLaunchContextRef(code, orderRef, encounterRef);
+    if (ref) {
+      contexts[code] = [ref];
+    }
+  }
+  return contexts;
+}
+
+function bindLaunchContextRef(
+  code: string,
+  orderRef: string | undefined,
+  encounterRef: string | undefined,
+): string | undefined {
+  switch (code) {
+    case "clinical":
+      return orderRef;
+    case "encounter":
+      return encounterRef;
+    default:
+      return undefined;
+  }
 }

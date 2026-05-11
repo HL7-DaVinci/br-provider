@@ -1,5 +1,3 @@
-export const ACTIVE_PROVIDER_FHIR_BASE_HEADER = "X-Provider-Fhir-Base";
-
 /**
  * Constructs the BFF FHIR proxy URL for a given FHIR server URL.
  * All FHIR requests to authenticated servers should route through this proxy

@@ -65,8 +65,30 @@ public class SpaAuthController {
     /** Session attribute holding the id token for the authenticated server */
     public static final String SESSION_ID_TOKEN = "bff.id_token";
 
-    /** Session attribute holding the authenticated server's base URL */
+    /**
+     * Session attribute holding the FHIR base URL the SPA is currently
+     * pointed at. Set by the OAuth callback (initial login) and by
+     * `POST /auth/active-server`. Independent of where any stored token
+     * was issued: anonymous selection of a public server can change this
+     * without invalidating an authenticated session.
+     */
     public static final String SESSION_SERVER_URL = "bff.server_url";
+
+    /**
+     * Session attribute holding the FHIR base URL that the stored access
+     * token was issued for. Set only by {@link #storeServerToken} during
+     * the OAuth code-exchange or refresh. Decoupled from
+     * {@link #SESSION_SERVER_URL} so the active server can be switched to
+     * an unauthenticated public server without wiping the authentication.
+     */
+    public static final String SESSION_TOKEN_SERVER_URL = "bff.token_server_url";
+
+    /**
+     * Session attribute holding the active payer FHIR base URL. Set by
+     * `POST /auth/active-payer` so the FHIR proxy will trust user-selected
+     * payer hosts that aren't in the static configured-payer allowlist.
+     */
+    public static final String SESSION_PAYER_FHIR_URL = "bff.payer_fhir_url";
 
     /** Session attribute holding userinfo claims for the authenticated user */
     public static final String SESSION_USERINFO = "bff.userinfo";
@@ -88,6 +110,7 @@ public class SpaAuthController {
     private final SecurityProperties securityProperties;
     private final ServerProperties serverProperties;
     private final FhirUserDetailsService userDetailsService;
+    private final OutboundTargetValidator outboundTargetValidator;
     private final ConcurrentHashMap<String, PendingFlow> pendingFlows = new ConcurrentHashMap<>();
 
     /**
@@ -107,12 +130,14 @@ public class SpaAuthController {
             CertificateHolder certificateHolder,
             SecurityProperties securityProperties,
             ServerProperties serverProperties,
-            FhirUserDetailsService userDetailsService) {
+            FhirUserDetailsService userDetailsService,
+            OutboundTargetValidator outboundTargetValidator) {
         this.udapClient = udapClient;
         this.certificateHolder = certificateHolder;
         this.securityProperties = securityProperties;
         this.serverProperties = serverProperties;
         this.userDetailsService = userDetailsService;
+        this.outboundTargetValidator = outboundTargetValidator;
     }
 
     /**
@@ -139,7 +164,13 @@ public class SpaAuthController {
             String tokenEndpoint, String clientId) {
         String normalized = UrlMatchUtil.normalizeUrl(serverUrl);
         session.setAttribute(SESSION_ACCESS_TOKEN, accessToken);
-        session.setAttribute(SESSION_SERVER_URL, normalized);
+        session.setAttribute(SESSION_TOKEN_SERVER_URL, normalized);
+        // Also seed the active-server URL on first-time login so a freshly
+        // authenticated session has a sensible default. POST /auth/active-server
+        // (boot-sync from the SPA's localStorage) can override this later.
+        if (session.getAttribute(SESSION_SERVER_URL) == null) {
+            session.setAttribute(SESSION_SERVER_URL, normalized);
+        }
         if (idToken != null) {
             session.setAttribute(SESSION_ID_TOKEN, idToken);
         }
@@ -159,14 +190,37 @@ public class SpaAuthController {
     }
 
     /**
-     * Returns the stored access token if the target URL matches the authenticated server.
-     * Returns null if no matching token exists or the session is null.
+     * Records the active provider FHIR server URL for the session.
+     *
+     * Independent of the auth bundle: the stored token (if any) stays
+     * tied to {@link #SESSION_TOKEN_SERVER_URL}, so switching the active
+     * server to an unauthenticated public host does not destroy the
+     * existing session. {@link #getTokenForServer} only returns the token
+     * when the requested URL matches the auth URL, so an active=public,
+     * auth=local session sends anonymous calls to public and bearer
+     * calls to local — both correct.
+     */
+    public static void setActiveServer(HttpSession session, String url) {
+        if (session == null) return;
+        if (url == null || url.isBlank()) {
+            throw new IllegalArgumentException("url is required");
+        }
+        String normalized = UrlMatchUtil.normalizeUrl(url);
+        session.setAttribute(SESSION_SERVER_URL, normalized);
+    }
+
+    /**
+     * Returns the stored access token if the target URL matches the URL the
+     * token was issued for ({@link #SESSION_TOKEN_SERVER_URL}). The active
+     * SPA server ({@link #SESSION_SERVER_URL}) is intentionally NOT used
+     * here: those two can diverge when the user picks a public/anonymous
+     * server, and the token must only be sent to its origin.
      */
     public static String getTokenForServer(HttpSession session, String targetUrl) {
         if (session == null) return null;
-        String serverUrl = (String) session.getAttribute(SESSION_SERVER_URL);
-        if (serverUrl == null) return null;
-        if (!UrlMatchUtil.matchesBaseUrl(targetUrl, serverUrl)) return null;
+        String tokenServerUrl = (String) session.getAttribute(SESSION_TOKEN_SERVER_URL);
+        if (tokenServerUrl == null) return null;
+        if (!UrlMatchUtil.matchesBaseUrl(targetUrl, tokenServerUrl)) return null;
         return (String) session.getAttribute(SESSION_ACCESS_TOKEN);
     }
 
@@ -192,8 +246,12 @@ public class SpaAuthController {
         String refreshToken = (String) session.getAttribute(SESSION_REFRESH_TOKEN);
         if (refreshToken == null) return;
 
-        String serverUrl = (String) session.getAttribute(SESSION_SERVER_URL);
+        String serverUrl = (String) session.getAttribute(SESSION_TOKEN_SERVER_URL);
         Logger log = LoggerFactory.getLogger(SpaAuthController.class);
+        if (serverUrl == null) {
+            log.warn("Missing token server URL for refresh token");
+            return;
+        }
         log.info("Refreshing expired token for server: {}", serverUrl);
 
         try {
@@ -240,6 +298,7 @@ public class SpaAuthController {
             } else {
                 log.warn("Token refresh failed: HTTP {} - clearing session", tokenResponse.statusCode());
                 session.removeAttribute(SESSION_ACCESS_TOKEN);
+                session.removeAttribute(SESSION_TOKEN_SERVER_URL);
                 session.removeAttribute(SESSION_TOKEN_EXPIRES_AT);
                 session.removeAttribute(SESSION_REFRESH_TOKEN);
                 session.removeAttribute(SESSION_TOKEN_ENDPOINT);
@@ -528,20 +587,29 @@ public class SpaAuthController {
             refreshTokenIfNeeded(session, securityProperties, certificateHolder);
 
             String accessToken = (String) session.getAttribute(SESSION_ACCESS_TOKEN);
+            String tokenServerUrl = (String) session.getAttribute(SESSION_TOKEN_SERVER_URL);
 
-            // If token is expired/missing after refresh attempt, clear the entire
-            // session so the stale Spring Security context does not persist
+            // No valid token: either anonymous selection (active server
+            // chosen via /auth/active-server with no login) or a token that
+            // has expired. Preserve the session — SESSION_SERVER_URL is the
+            // user's active-server preference and is independent of auth.
             if (accessToken == null || isTokenNearExpiry(session)) {
-                logger.info("Token expired or missing, invalidating session");
-                SecurityContextHolder.clearContext();
-                session.invalidate();
-                return ResponseEntity.ok(Map.of("authenticated", false));
+                return ResponseEntity.ok(Map.of(
+                    "authenticated", false,
+                    "serverUrl", serverUrl));
             }
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("authenticated", true);
             result.put("access_token", accessToken);
             result.put("serverUrl", serverUrl);
+            // Where the token is valid. Differs from `serverUrl` when the
+            // user signed in to one server then switched the active SPA
+            // server to a public/anonymous one. SPA can use this to label
+            // the auth state ("Signed in to X, currently using Y").
+            if (tokenServerUrl != null) {
+                result.put("tokenServerUrl", tokenServerUrl);
+            }
 
             // Include token expiry so the frontend can schedule proactive checks
             Object expiresAt = session.getAttribute(SESSION_TOKEN_EXPIRES_AT);
@@ -769,6 +837,89 @@ public class SpaAuthController {
      * Clears all per-server token attributes before invalidation to prevent
      * Spring Security's filter chain from re-saving the security context.
      */
+    public record ActiveServerRequest(String url) {}
+
+    /**
+     * Records the active provider FHIR server URL for the session. Lets the
+     * SPA push its localStorage selection into the session so subsequent
+     * BFF endpoints (CDS hooks, PAS, DTR populate) can resolve the active
+     * base without per-request headers.
+     *
+     * Validates the URL: configured local / trusted-provider hosts pass
+     * through; any other host is run through {@link OutboundTargetValidator}
+     * to block SSRF (private IPs, link-local, etc.) before being accepted.
+     * Without this gate, downstream consumers like PAS make raw HTTP to
+     * the session URL with no further check.
+     */
+    @PostMapping("/active-server")
+    public ResponseEntity<Void> setActiveServer(@RequestBody ActiveServerRequest body,
+            HttpServletRequest request) {
+        if (body == null || body.url() == null || body.url().isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        String normalized = UrlMatchUtil.normalizeUrl(body.url());
+        if (!isKnownProvider(normalized)) {
+            try {
+                outboundTargetValidator.validate(normalized);
+            } catch (Exception e) {
+                logger.warn("Rejecting active-server URL {}: {}", normalized, e.getMessage());
+                return ResponseEntity.badRequest().build();
+            }
+        }
+        HttpSession session = request.getSession(true);
+        setActiveServer(session, normalized);
+        return ResponseEntity.noContent().build();
+    }
+
+    private boolean isKnownProvider(String normalized) {
+        if (UrlMatchUtil.matchesBaseUrl(normalized, serverProperties.getLocalServerAddress())) {
+            return true;
+        }
+        for (String trusted : serverProperties.getTrustedProviderUrls()) {
+            if (UrlMatchUtil.matchesBaseUrl(normalized, trusted)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public record ActivePayerRequest(String fhirUrl) {}
+
+    /**
+     * Records the active payer FHIR base URL for the session. Mirrors
+     * {@link #setActiveServer} for payers, so the FHIR proxy will trust
+     * user-selected payer hosts that aren't in the static
+     * {@code app.payer-servers} allowlist (e.g. a public reference payer
+     * the user types into the settings dialog).
+     *
+     * Validates the URL: configured local / known-payer hosts pass through;
+     * any other host runs through {@link OutboundTargetValidator} for SSRF
+     * protection before acceptance.
+     */
+    @PostMapping("/active-payer")
+    public ResponseEntity<Void> setActivePayer(@RequestBody ActivePayerRequest body,
+            HttpServletRequest request) {
+        if (body == null || body.fhirUrl() == null || body.fhirUrl().isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        String normalized = UrlMatchUtil.normalizeUrl(body.fhirUrl());
+        if (!isKnownPayer(normalized)) {
+            try {
+                outboundTargetValidator.validate(normalized);
+            } catch (Exception e) {
+                logger.warn("Rejecting active-payer URL {}: {}", normalized, e.getMessage());
+                return ResponseEntity.badRequest().build();
+            }
+        }
+        HttpSession session = request.getSession(true);
+        session.setAttribute(SESSION_PAYER_FHIR_URL, normalized);
+        return ResponseEntity.noContent().build();
+    }
+
+    private boolean isKnownPayer(String normalized) {
+        return serverProperties.isPayerFhirUrl(normalized);
+    }
+
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(HttpServletRequest request, HttpServletResponse response) {
         SecurityContextHolder.clearContext();
@@ -776,7 +927,9 @@ public class SpaAuthController {
         if (session != null) {
             session.removeAttribute(SESSION_ACCESS_TOKEN);
             session.removeAttribute(SESSION_ID_TOKEN);
+            session.removeAttribute(SESSION_TOKEN_SERVER_URL);
             session.removeAttribute(SESSION_SERVER_URL);
+            session.removeAttribute(SESSION_PAYER_FHIR_URL);
             session.removeAttribute(SESSION_USERINFO);
             session.removeAttribute(SESSION_TOKEN_ENDPOINT);
             session.removeAttribute(SESSION_CLIENT_ID);

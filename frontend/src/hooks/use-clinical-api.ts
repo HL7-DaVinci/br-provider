@@ -32,7 +32,6 @@ import {
 } from "@/lib/order-types";
 import { resolvePasOrderLink } from "@/lib/pas-utils";
 import type { AnyQrStatus } from "@/lib/qr-status";
-import { useDtrQuestionnaireResponseIds } from "./use-dtr-qr-store";
 import { fhirFetch } from "./use-fhir-api";
 import { useFhirServer } from "./use-fhir-server";
 
@@ -567,19 +566,18 @@ export function useClaimResponses(patientId: string) {
 }
 
 /**
- * Query QuestionnaireResponses linked to a specific order.
+ * Query QuestionnaireResponses linked to a specific order via the DTR
+ * `qr-context` extension. The IG-defined SearchParameter is named `context`
+ * and resolves uniformly across ServiceRequest, MedicationRequest,
+ * DeviceRequest, NutritionOrder, Encounter, and Appointment.
  *
- * The bundled HAPI server does not support `QuestionnaireResponse?context=`
- * for the DTR qr-context extension out of the box, so this hook uses:
- * - `based-on=` for ServiceRequest-backed DTR launches
- * - localStorage-backed QR ids for all order types
+ * https://build.fhir.org/ig/HL7/davinci-dtr/en/SearchParameter-qr-context.html
  */
 export function useOrderQuestionnaireResponses(
   orderRef: string | undefined,
   patientId: string | undefined,
 ) {
   const { serverUrl } = useFhirServer();
-  const localQrIds = useDtrQuestionnaireResponseIds(orderRef);
 
   return useQuery({
     queryKey: [
@@ -589,64 +587,17 @@ export function useOrderQuestionnaireResponses(
       orderRef,
       patientId,
       serverUrl,
-      localQrIds,
     ],
-    queryFn: async () => {
-      const questionnairesById = new Map<string, QuestionnaireResponse>();
-
-      if (orderRef?.startsWith("ServiceRequest/")) {
-        const params = new URLSearchParams({
-          patient: patientId ?? "",
-          "based-on": orderRef,
-          _sort: "-_lastUpdated",
-          _count: "10",
-        });
-
-        try {
-          const bundle = await fhirFetch<Bundle<QuestionnaireResponse>>(
-            `${serverUrl}/QuestionnaireResponse?${params.toString()}`,
-          );
-          for (const entry of bundle.entry ?? []) {
-            const resource = entry.resource;
-            if (resource?.id) {
-              questionnairesById.set(resource.id, resource);
-            }
-          }
-        } catch {
-          // Ignore unsupported/empty search failures; local QR ids remain the
-          // primary order-scoped lookup path for non-ServiceRequest orders.
-        }
-      }
-
-      const localResults = await Promise.allSettled(
-        localQrIds.map((id) =>
-          fhirFetch<QuestionnaireResponse>(
-            `${serverUrl}/QuestionnaireResponse/${id}`,
-          ),
-        ),
+    queryFn: () => {
+      const params = new URLSearchParams({
+        patient: patientId ?? "",
+        context: orderRef ?? "",
+        _sort: "-_lastUpdated",
+        _count: "50",
+      });
+      return fhirFetch<Bundle<QuestionnaireResponse>>(
+        `${serverUrl}/QuestionnaireResponse?${params.toString()}`,
       );
-
-      for (const result of localResults) {
-        if (result.status !== "fulfilled") continue;
-        const qr = result.value;
-        if (!qr.id) continue;
-        questionnairesById.set(qr.id, qr);
-      }
-
-      const entries = [...questionnairesById.values()]
-        .sort((a, b) => {
-          const aDate = a.authored ?? a.meta?.lastUpdated ?? "";
-          const bDate = b.authored ?? b.meta?.lastUpdated ?? "";
-          return aDate < bDate ? 1 : aDate > bDate ? -1 : 0;
-        })
-        .map((resource) => ({ resource }));
-
-      return {
-        resourceType: "Bundle" as const,
-        type: "searchset" as const,
-        total: entries.length,
-        entry: entries,
-      } satisfies Bundle<QuestionnaireResponse>;
     },
     staleTime: 30 * 1000,
     retry: 1,

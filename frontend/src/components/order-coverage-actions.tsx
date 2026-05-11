@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
-import type { DomainResource, Extension, Resource } from "fhir/r4";
-import { CheckCircle, FileText, ShieldCheck } from "lucide-react";
+import type { DomainResource, Resource } from "fhir/r4";
+import { Eye, FileText, ShieldCheck } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
 import { Button } from "@/components/ui/button";
@@ -8,10 +8,10 @@ import {
   useEncounterOrders,
   useOrderQuestionnaireResponses,
 } from "@/hooks/use-clinical-api";
-import { useDtrQuestionnaireResponseIds } from "@/hooks/use-dtr-qr-store";
 import { useFhirServer } from "@/hooks/use-fhir-server";
 import {
-  findReusableQr,
+  aggregateOrderState,
+  getOrderSatisfactionState,
   usePatientQrIndex,
 } from "@/hooks/use-patient-qr-index";
 import {
@@ -19,7 +19,6 @@ import {
   hasDtrDoc,
   parseCoverageInfoFromResource,
 } from "@/lib/coverage-extensions";
-import { propagateCoverageInfo } from "@/lib/coverage-propagation";
 import {
   serializeOrderRefs,
   serializeQuestionnaireSearch,
@@ -27,16 +26,13 @@ import {
 import type { OrderEntry } from "@/lib/order-types";
 import { isTerminalQrStatus } from "@/lib/qr-status";
 
-const QR_CONTEXT_EXT_URL =
-  "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/qr-context";
-
 interface OrderActionProps {
   order: OrderEntry;
   patientId: string;
   encounterId?: string;
 }
 
-/** DTR launch/resume/attach button for an order. Renders nothing if no documentation is needed. */
+/** DTR launch/resume/view button for an order. Renders nothing if no documentation is needed. */
 export function DtrAction({ order, patientId, encounterId }: OrderActionProps) {
   const { serverUrl: providerFhirUrl } = useFhirServer();
   const [isLaunching, setIsLaunching] = useState(false);
@@ -71,22 +67,17 @@ export function DtrAction({ order, patientId, encounterId }: OrderActionProps) {
 
   const primaryCi = orderCoverageInfos[0];
 
-  const canonicalStates = useMemo(
-    () =>
-      orderCanonicals.map((canonical) => ({
-        canonical,
-        reusable: findReusableQr(qrIndex, canonical),
-      })),
-    [orderCanonicals, qrIndex],
-  );
+  const canonicalStates = useMemo(() => {
+    if (!orderRef) return [];
+    return orderCanonicals.map((canonical) => ({
+      canonical,
+      state: getOrderSatisfactionState(qrIndex, canonical, orderRef),
+    }));
+  }, [orderCanonicals, qrIndex, orderRef]);
 
-  const unsatisfiedCanonicals = useMemo(
-    () => canonicalStates.filter((s) => !s.reusable).map((s) => s.canonical),
-    [canonicalStates],
+  const aggregateState = aggregateOrderState(
+    canonicalStates.map((s) => s.state),
   );
-
-  const allSatisfied =
-    canonicalStates.length > 0 && unsatisfiedCanonicals.length === 0;
 
   const relatedOrderRefs = useMemo(() => {
     if (!encounterId || !orderRef) return [];
@@ -97,52 +88,23 @@ export function DtrAction({ order, patientId, encounterId }: OrderActionProps) {
     );
   }, [encounterId, orderRef, encounterOrdersQuery.data, orderCanonicals]);
 
-  const sourceOrderRef = useMemo(() => {
-    for (const state of canonicalStates) {
-      if (!state.reusable) continue;
-      const ref = findOtherOrderFromQr(state.reusable.extension, orderRef);
-      if (ref) return ref;
-    }
-    return undefined;
-  }, [canonicalStates, orderRef]);
-
-  const handleClick = useCallback(async () => {
+  const handleLaunch = useCallback(async () => {
     if (!orderRef || !primaryCi) return;
     setIsLaunching(true);
     try {
-      // Attach any reusable QRs' CoverageInformation extension to this order
-      // before opening the workspace, so the order's coverage status reflects
-      // the reused documentation even if the user never amends.
-      if (providerFhirUrl) {
-        for (const state of canonicalStates) {
-          if (!state.reusable) continue;
-          try {
-            await propagateCoverageInfo({
-              qr: state.reusable,
-              orderRefs: [orderRef],
-              providerFhirUrl,
-            });
-          } catch (err) {
-            console.warn("Attach reusable QR coverage info failed:", err);
-          }
-        }
-      }
-
       const fhirContext = [primaryCi.coverage, orderRef].filter(
         (x): x is string => !!x,
       );
 
-      // Resume hint: prefer the first unsatisfied canonical's draft QR. If
-      // everything is satisfied, the per-canonical lookup in the workspace
-      // surfaces each tab's terminal QR for view/amend.
-      const firstUnsatisfied = unsatisfiedCanonicals[0];
-      const firstEntry = firstUnsatisfied
-        ? qrIndex.byCanonical.get(firstUnsatisfied)
-        : undefined;
-      const resumeQrId =
-        firstEntry?.inProgress[0]?.id ?? firstEntry?.completed[0]?.id;
-      if (resumeQrId) {
-        fhirContext.push(`QuestionnaireResponse/${resumeQrId}`);
+      // Resume hint: include the in-progress QR id only if one is linked to
+      // this order via qr-context. Completed QRs are never seeded into populate.
+      const firstInProgress = canonicalStates.find(
+        (s) => s.state.kind === "inProgressForThisOrder",
+      );
+      if (firstInProgress?.state.kind === "inProgressForThisOrder") {
+        fhirContext.push(
+          `QuestionnaireResponse/${firstInProgress.state.qr.id}`,
+        );
       }
 
       openDtrTask({
@@ -163,9 +125,7 @@ export function DtrAction({ order, patientId, encounterId }: OrderActionProps) {
     orderRef,
     primaryCi,
     orderCanonicals,
-    unsatisfiedCanonicals,
     canonicalStates,
-    qrIndex.byCanonical,
     providerFhirUrl,
     patientId,
     encounterId,
@@ -175,16 +135,13 @@ export function DtrAction({ order, patientId, encounterId }: OrderActionProps) {
 
   if (!needsDoc) return null;
 
-  const hasInProgress = unsatisfiedCanonicals.some((canonical) => {
-    const entry = qrIndex.byCanonical.get(canonical);
-    return (entry?.inProgress.length ?? 0) > 0;
-  });
-
-  const label = allSatisfied
-    ? `Documentation provided${sourceOrderRef ? ` (from ${sourceOrderRef})` : ""}`
-    : hasInProgress
+  const isCompleted = aggregateState.kind === "completedForThisOrder";
+  const label = isCompleted
+    ? "View"
+    : aggregateState.kind === "inProgressForThisOrder"
       ? "Resume DTR"
       : "Launch DTR";
+  const ActionIcon = isCompleted ? Eye : FileText;
 
   return (
     <Button
@@ -192,30 +149,12 @@ export function DtrAction({ order, patientId, encounterId }: OrderActionProps) {
       size="sm"
       className="h-7 px-2 text-xs"
       disabled={isLaunching}
-      onClick={handleClick}
+      onClick={handleLaunch}
     >
-      {allSatisfied ? (
-        <CheckCircle className="h-3 w-3 mr-1" />
-      ) : (
-        <FileText className="h-3 w-3 mr-1" />
-      )}
+      <ActionIcon className="h-3 w-3 mr-1" />
       {label}
     </Button>
   );
-}
-
-/** Find an order ref from a QR's qr-context extensions that is not the current order. */
-function findOtherOrderFromQr(
-  extensions: Extension[] | undefined,
-  selfOrderRef: string | undefined,
-): string | undefined {
-  if (!extensions) return undefined;
-  for (const ext of extensions) {
-    if (ext.url !== QR_CONTEXT_EXT_URL) continue;
-    const ref = ext.valueReference?.reference;
-    if (ref && ref !== selfOrderRef) return ref;
-  }
-  return undefined;
 }
 
 /** PA submit link for an order. Renders nothing if no prior auth is needed. */
@@ -235,13 +174,12 @@ export function PaAction({
     needsDoc ? orderRef : undefined,
     needsDoc ? patientId : undefined,
   );
-  const localQrIds = useDtrQuestionnaireResponseIds(orderRef);
 
   const completedQrIds = (existingQrBundle?.entry ?? [])
     .filter((e) => isTerminalQrStatus(e.resource?.status))
     .map((e) => e.resource?.id)
     .filter((id): id is string => !!id);
-  const qrIdsForPas = completedQrIds.length > 0 ? completedQrIds : localQrIds;
+  const qrIdsForPas = completedQrIds;
 
   if (!needsAuth || !orderId) return null;
 

@@ -2,6 +2,7 @@ import type { Coverage, QuestionnaireResponse, Task } from "fhir/r4";
 import {
   CheckCircle,
   ClipboardList,
+  Eye,
   FileText,
   Loader2,
   Play,
@@ -9,6 +10,7 @@ import {
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { DeleteConfirmButton } from "@/components/delete-confirm-button";
+import { CompletedQrViewer } from "@/components/dtr/completed-qr-viewer";
 import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -333,6 +335,7 @@ function QrRow({
   primaryCoverageRef?: string;
 }) {
   const [isLaunching, setIsLaunching] = useState(false);
+  const [showViewer, setShowViewer] = useState(false);
   const openDtrTask = useDtrTaskSheet();
   const questionnaireUrl = qr.questionnaire;
   const label = formatQuestionnaireName(questionnaireUrl);
@@ -347,7 +350,7 @@ function QrRow({
   )?.coverage;
   const coverageRef = qrCoverageRef ?? primaryCoverageRef;
 
-  const handleLaunch = useCallback(() => {
+  const handleResume = useCallback(() => {
     if (!qr.id || !questionnaireUrl) return;
     setIsLaunching(true);
     try {
@@ -375,6 +378,9 @@ function QrRow({
     coverageRef,
     openDtrTask,
   ]);
+
+  const handleClick =
+    actionLabel === "View" ? () => setShowViewer(true) : handleResume;
 
   const deleteQr = useDeleteQuestionnaireResponse();
   const handleDelete = useCallback(() => {
@@ -407,13 +413,16 @@ function QrRow({
         <Button
           variant={actionLabel === "View" ? "outline" : "default"}
           size="sm"
-          onClick={handleLaunch}
-          disabled={isLaunching || !questionnaireUrl}
+          onClick={handleClick}
+          disabled={
+            (actionLabel === "Resume" && (isLaunching || !questionnaireUrl)) ||
+            (actionLabel === "View" && !qr.id)
+          }
         >
-          {isLaunching ? (
+          {isLaunching && actionLabel === "Resume" ? (
             <Loader2 className="mr-1 h-3 w-3 animate-spin" />
           ) : actionLabel === "View" ? (
-            <CheckCircle className="mr-1 h-3 w-3" />
+            <Eye className="mr-1 h-3 w-3" />
           ) : (
             <Play className="mr-1 h-3 w-3" />
           )}
@@ -425,6 +434,9 @@ function QrRow({
           resourceLabel="response"
         />
       </div>
+      {showViewer && (
+        <CompletedQrViewer qr={qr} onClose={() => setShowViewer(false)} />
+      )}
     </div>
   );
 }

@@ -21,11 +21,18 @@ export interface AnswerSnapshot {
 
 // -- Extension helpers --
 
-function makeOriginExtension(source: OriginSource): Extension {
-  return {
-    url: INFORMATION_ORIGIN_URL,
-    extension: [{ url: "source", valueCode: source }],
-  };
+function makeOriginExtension(
+  source: OriginSource,
+  authorRef?: string,
+): Extension {
+  const subExts: Extension[] = [{ url: "source", valueCode: source }];
+  if (authorRef && (source === "manual" || source === "override")) {
+    subExts.push({
+      url: "author",
+      valueReference: { reference: authorRef },
+    });
+  }
+  return { url: INFORMATION_ORIGIN_URL, extension: subExts };
 }
 
 function hasOriginExtension(answer: QuestionnaireResponseItemAnswer): boolean {
@@ -107,17 +114,6 @@ function walkAnswers(
   }
 }
 
-function buildItemMap(
-  items: QuestionnaireResponseItem[] | undefined,
-): Map<string, QuestionnaireResponseItem> {
-  const map = new Map<string, QuestionnaireResponseItem>();
-  if (!items) return map;
-  for (const item of items) {
-    map.set(item.linkId, item);
-  }
-  return map;
-}
-
 // -- Public API --
 
 /**
@@ -137,57 +133,6 @@ export function stampOrigins(
     }
   });
   return clone;
-}
-
-/**
- * Merges two QuestionnaireResponses by linkId.
- * Provider answers override payer answers for the same linkId.
- * Items only in one QR are preserved.
- */
-export function mergeQuestionnaireResponses(
-  payerQr: QuestionnaireResponse,
-  providerQr: QuestionnaireResponse,
-): QuestionnaireResponse {
-  const merged = structuredClone(payerQr);
-  merged.item = mergeItems(merged.item ?? [], providerQr.item ?? []);
-  return merged;
-}
-
-function mergeItems(
-  payerItems: QuestionnaireResponseItem[],
-  providerItems: QuestionnaireResponseItem[],
-): QuestionnaireResponseItem[] {
-  const providerMap = buildItemMap(providerItems);
-  const seen = new Set<string>();
-  const result: QuestionnaireResponseItem[] = [];
-
-  for (const payerItem of payerItems) {
-    seen.add(payerItem.linkId);
-    const providerItem = providerMap.get(payerItem.linkId);
-
-    if (providerItem) {
-      const providerHasAnswer =
-        providerItem.answer?.some((a) => extractAnswerValue(a) !== null) ??
-        false;
-
-      const merged: QuestionnaireResponseItem = {
-        ...payerItem,
-        answer: providerHasAnswer ? providerItem.answer : payerItem.answer,
-        item: mergeItems(payerItem.item ?? [], providerItem.item ?? []),
-      };
-      result.push(merged);
-    } else {
-      result.push(payerItem);
-    }
-  }
-
-  for (const providerItem of providerItems) {
-    if (!seen.has(providerItem.linkId)) {
-      result.push(providerItem);
-    }
-  }
-
-  return result;
 }
 
 /**
@@ -235,8 +180,10 @@ export function buildOriginIndex(
 export function applyOriginTracking(
   exportedQr: QuestionnaireResponse,
   originIndex: Map<string, AnswerSnapshot[]>,
+  options: { authorRef?: string } = {},
 ): QuestionnaireResponse {
   const result = structuredClone(exportedQr);
+  const authorRef = options.authorRef;
 
   function walkItems(items: QuestionnaireResponseItem[] | undefined): void {
     if (!items) return;
@@ -251,7 +198,7 @@ export function applyOriginTracking(
 
           const snapshot = snapshots?.[i];
 
-          // Remove any existing origin extensions (LHC-Forms may not preserve them)
+          // Strip any LHC-Forms-emitted origin extension before re-stamping.
           if (answer.extension) {
             answer.extension = answer.extension.filter(
               (e) => e.url !== INFORMATION_ORIGIN_URL,
@@ -259,19 +206,16 @@ export function applyOriginTracking(
             if (answer.extension.length === 0) delete answer.extension;
           }
 
+          let source: OriginSource;
           if (!snapshot) {
-            // No pre-populated value for this answer position
-            if (!answer.extension) answer.extension = [];
-            answer.extension.push(makeOriginExtension("manual"));
+            source = "manual";
           } else if (currentValue === snapshot.serializedValue) {
-            // Value unchanged from pre-population
-            if (!answer.extension) answer.extension = [];
-            answer.extension.push(makeOriginExtension(snapshot.source));
+            source = snapshot.source;
           } else {
-            // Value was modified by the user
-            if (!answer.extension) answer.extension = [];
-            answer.extension.push(makeOriginExtension("override"));
+            source = "override";
           }
+          if (!answer.extension) answer.extension = [];
+          answer.extension.push(makeOriginExtension(source, authorRef));
 
           walkItems(answer.item);
         }
@@ -282,4 +226,148 @@ export function applyOriginTracking(
 
   walkItems(result.item);
   return result;
+}
+
+/**
+ * Merges a freshly-populated candidate QuestionnaireResponse into an existing one
+ * per the DTR resumption rules:
+ *   manual answers are never replaced; they upshift to override when CQL
+ *   asserts a value at the same position;
+ *   override answers are never changed;
+ *   auto-server / auto-client answers are replaced by candidate values where
+ *   present (stamped auto-client) and kept where the candidate is empty.
+ *
+ * Items repeated at the same nesting level pair by occurrence index. Multi-answer
+ * arrays reconcile slot-by-slot. Recurses into both item.item and answer.item.
+ */
+export function applyPopulateResult(
+  existing: QuestionnaireResponse,
+  candidate: QuestionnaireResponse,
+): QuestionnaireResponse {
+  const merged = structuredClone(existing);
+  merged.item = mergeItemsByOrigin(merged.item ?? [], candidate.item ?? []);
+  return merged;
+}
+
+function mergeItemsByOrigin(
+  existingItems: QuestionnaireResponseItem[],
+  candidateItems: QuestionnaireResponseItem[],
+): QuestionnaireResponseItem[] {
+  const candidatesByLinkId = new Map<string, QuestionnaireResponseItem[]>();
+  for (const c of candidateItems) {
+    const arr = candidatesByLinkId.get(c.linkId) ?? [];
+    arr.push(c);
+    candidatesByLinkId.set(c.linkId, arr);
+  }
+  const consumed = new Map<string, number>();
+  const out: QuestionnaireResponseItem[] = [];
+
+  for (const existing of existingItems) {
+    const idx = consumed.get(existing.linkId) ?? 0;
+    const cand = candidatesByLinkId.get(existing.linkId)?.[idx];
+    consumed.set(existing.linkId, idx + 1);
+    out.push(reconcileItem(existing, cand));
+  }
+  for (const [linkId, list] of candidatesByLinkId) {
+    const used = consumed.get(linkId) ?? 0;
+    for (let i = used; i < list.length; i++) {
+      out.push(stampNewItem(list[i]));
+    }
+  }
+  return out;
+}
+
+function reconcileItem(
+  existing: QuestionnaireResponseItem,
+  candidate: QuestionnaireResponseItem | undefined,
+): QuestionnaireResponseItem {
+  const out: QuestionnaireResponseItem = { ...existing };
+  if (existing.item || candidate?.item) {
+    out.item = mergeItemsByOrigin(existing.item ?? [], candidate?.item ?? []);
+  }
+  out.answer = reconcileAnswers(existing.answer, candidate?.answer);
+  return out;
+}
+
+function reconcileAnswers(
+  existingAnswers: QuestionnaireResponseItemAnswer[] | undefined,
+  candidateAnswers: QuestionnaireResponseItemAnswer[] | undefined,
+): QuestionnaireResponseItemAnswer[] | undefined {
+  const existing = existingAnswers ?? [];
+  const candidate = candidateAnswers ?? [];
+  if (existing.length === 0 && candidate.length === 0) return undefined;
+
+  const len = Math.max(existing.length, candidate.length);
+  const out: QuestionnaireResponseItemAnswer[] = [];
+  for (let i = 0; i < len; i++) {
+    const e = existing[i];
+    const c = candidate[i];
+    const candidateHasValue = c !== undefined && extractAnswerValue(c) !== null;
+
+    if (e === undefined) {
+      if (c !== undefined) out.push(withOriginSource(c, "auto-client"));
+      continue;
+    }
+
+    const source = getOriginSource(e);
+    if (source === "override") {
+      out.push(e);
+    } else if (source === "manual") {
+      out.push(candidateHasValue ? withOriginSource(e, "override") : e);
+    } else if (!candidateHasValue) {
+      out.push(e);
+    } else {
+      out.push(withOriginSource(c, "auto-client"));
+    }
+  }
+
+  return out.map((a, idx) => {
+    const cAnswer = candidate[idx];
+    const cChildren = cAnswer?.item;
+    if (!a.item && !cChildren) return a;
+    return { ...a, item: mergeItemsByOrigin(a.item ?? [], cChildren ?? []) };
+  });
+}
+
+/**
+ * Sets information-origin.source to the given code, preserving every other
+ * sub-extension on an existing information-origin extension (notably author
+ * on manual / override answers).
+ */
+function withOriginSource(
+  answer: QuestionnaireResponseItemAnswer,
+  source: OriginSource,
+): QuestionnaireResponseItemAnswer {
+  const otherExts = (answer.extension ?? []).filter(
+    (e) => e.url !== INFORMATION_ORIGIN_URL,
+  );
+  const existingOrigin = (answer.extension ?? []).find(
+    (e) => e.url === INFORMATION_ORIGIN_URL,
+  );
+  const subExts = (existingOrigin?.extension ?? []).filter(
+    (e) => e.url !== "source",
+  );
+  const updatedOrigin: Extension = {
+    url: INFORMATION_ORIGIN_URL,
+    extension: [{ url: "source", valueCode: source }, ...subExts],
+  };
+  return { ...answer, extension: [...otherExts, updatedOrigin] };
+}
+
+/**
+ * Stamps auto-client on a candidate item that has no peer in the existing QR.
+ * Walks both item.item and answer.item so nested populated answers carry the
+ * required information-origin extension.
+ */
+function stampNewItem(
+  item: QuestionnaireResponseItem,
+): QuestionnaireResponseItem {
+  return {
+    ...item,
+    answer: item.answer?.map((a) => ({
+      ...withOriginSource(a, "auto-client"),
+      item: a.item?.map(stampNewItem),
+    })),
+    item: item.item?.map(stampNewItem),
+  };
 }

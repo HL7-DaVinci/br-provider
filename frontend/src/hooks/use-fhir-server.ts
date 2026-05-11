@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   FHIR_SERVERS,
   type FhirServer,
@@ -12,8 +12,41 @@ export interface UseFhirServerResult {
   serverUrl: string;
   server: FhirServer | undefined;
   presetServers: FhirServer[];
-  setServerUrl: (url: string) => void;
+  setServerUrl: (url: string) => Promise<void>;
   isCustomServer: boolean;
+}
+
+async function pushActiveServer(url: string): Promise<void> {
+  const res = await fetch("/auth/active-server", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) {
+    throw new Error(`active-server sync failed: ${res.status}`);
+  }
+}
+
+// Tracks the in-flight (or completed) boot-time push of the stored server URL
+// to the BFF session. Lazily initialized on first awaitActiveServerSync() or
+// on first useFhirServer() mount, so fhirFetch can gate its first request on
+// the BFF allowlist being in sync with the SPA's localStorage selection.
+let bootSyncPromise: Promise<void> | null = null;
+
+function ensureBootSync(): Promise<void> {
+  if (bootSyncPromise !== null) return bootSyncPromise;
+  const stored = getStoredServerUrl();
+  bootSyncPromise = stored
+    ? pushActiveServer(stored).catch((err) => {
+        console.error("active-server boot sync failed", err);
+      })
+    : Promise.resolve();
+  return bootSyncPromise;
+}
+
+export function awaitActiveServerSync(): Promise<void> {
+  return ensureBootSync();
 }
 
 const serverUrlStore = {
@@ -38,7 +71,8 @@ const serverUrlStore = {
     }
   },
 
-  setServerUrl(url: string): void {
+  async setServerUrl(url: string): Promise<void> {
+    await pushActiveServer(url);
     setStoredServerUrl(url);
     serverUrlStore.emit();
   },
@@ -51,9 +85,19 @@ export function useFhirServer(): UseFhirServerResult {
     serverUrlStore.getServerSnapshot,
   );
 
-  const setServerUrl = useCallback((url: string) => {
-    serverUrlStore.setServerUrl(url);
+  // Push the localStorage URL into the BFF session once per page load. Covers
+  // the case where the session expired (timeout, server restart, cleared
+  // cookies) but localStorage still remembers the user's last selection.
+  // The actual fetch is fired by ensureBootSync(); fhirFetch awaits the same
+  // promise via awaitActiveServerSync() so the first request doesn't race.
+  useEffect(() => {
+    ensureBootSync();
   }, []);
+
+  const setServerUrl = useCallback(
+    (url: string) => serverUrlStore.setServerUrl(url),
+    [],
+  );
 
   const server = getServerByUrl(serverUrl);
   const isCustomServer = !server;
@@ -77,7 +121,7 @@ export interface UseServerSelectionResult {
 }
 
 export function useServerSelection(
-  setServerUrl: (url: string) => void,
+  setServerUrl: (url: string) => Promise<void>,
   isCustomServer: boolean,
   currentServerUrl: string,
 ): UseServerSelectionResult {
@@ -101,7 +145,9 @@ export function useServerSelection(
       } else {
         setShowCustomInput(false);
         setIsEditing(false);
-        setServerUrl(value);
+        setServerUrl(value).catch((err) => {
+          console.error("server change failed", err);
+        });
       }
     },
     [setServerUrl],
@@ -109,7 +155,9 @@ export function useServerSelection(
 
   const handleCustomUrlSubmit = useCallback(() => {
     if (customUrl.trim()) {
-      setServerUrl(customUrl.trim().replace(/\/+$/, ""));
+      setServerUrl(customUrl.trim().replace(/\/+$/, "")).catch((err) => {
+        console.error("custom server submit failed", err);
+      });
       setShowCustomInput(false);
       setIsEditing(false);
       setCustomUrl("");

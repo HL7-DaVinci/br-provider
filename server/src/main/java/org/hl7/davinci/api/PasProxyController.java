@@ -225,8 +225,6 @@ public class PasProxyController {
         String orderId = (String) params.get("orderId");
 
         HttpSession session = request.getSession(false);
-        validateRequestedProviderTarget(
-            ProxyUtil.getRequestedProviderFhirBase(request), session);
         String providerFhirBase = ProxyUtil.getActiveProviderFhirBase(request, serverProperties);
 
         Map<String, Object> patient = readProviderResource(
@@ -396,8 +394,6 @@ public class PasProxyController {
 
         outboundTargetValidator.validate(UrlMatchUtil.normalizeUrl(payerFhirUrl));
         HttpSession session = request.getSession(false);
-        validateRequestedProviderTarget(
-            ProxyUtil.getRequestedProviderFhirBase(request), session);
 
         String providerFhirBase = ProxyUtil.getActiveProviderFhirBase(request, serverProperties);
 
@@ -728,43 +724,6 @@ public class PasProxyController {
         return ProxyUtil.relayGetToPayerFhir(
             url, payerFhirUrl, PAS_SCOPES,
             b2bTokenService, securityProperties, logger);
-    }
-
-    private void validateRequestedProviderTarget(
-            String requestedProviderFhirBase,
-            HttpSession session) {
-        if (requestedProviderFhirBase == null || requestedProviderFhirBase.isBlank()) {
-            return;
-        }
-
-        String normalizedRequested = UrlMatchUtil.normalizeUrl(requestedProviderFhirBase);
-        if (matchesKnownProvider(normalizedRequested, session)) {
-            return;
-        }
-
-        outboundTargetValidator.validate(normalizedRequested);
-    }
-
-    private boolean matchesKnownProvider(String targetUrl, HttpSession session) {
-        if (UrlMatchUtil.matchesBaseUrl(targetUrl, serverProperties.getLocalServerAddress())) {
-            return true;
-        }
-
-        for (String trustedProviderUrl : serverProperties.getTrustedProviderUrls()) {
-            if (UrlMatchUtil.matchesBaseUrl(targetUrl, trustedProviderUrl)) {
-                return true;
-            }
-        }
-
-        if (session != null) {
-            String sessionServer = (String) session.getAttribute(SpaAuthController.SESSION_SERVER_URL);
-            if (sessionServer != null
-                    && UrlMatchUtil.matchesBaseUrl(targetUrl, UrlMatchUtil.normalizeUrl(sessionServer))) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
 }

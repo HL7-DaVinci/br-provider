@@ -6,11 +6,13 @@ import {
 } from "@tanstack/react-query";
 import type {
   Bundle,
+  OperationOutcome,
   ParametersParameter,
   Questionnaire,
   QuestionnaireResponse,
 } from "fhir/r4";
 import { fhirProxyUrl } from "@/lib/api";
+import { extractPackageBundle } from "@/lib/dtr-ingestion";
 import { loggedFetch } from "@/lib/logged-fetch";
 import { useFhirServer } from "./use-fhir-server";
 
@@ -25,7 +27,7 @@ interface QuestionnairePackageParams {
 }
 
 interface QuestionnairePackageResult {
-  bundle: Bundle;
+  bundle: Bundle | null;
   questionnaire: Questionnaire | null;
   questionnaireResponse: QuestionnaireResponse | null;
   contentServerUrl: string | null;
@@ -61,13 +63,20 @@ async function fetchQuestionnairePackage(
 
   const data = await response.json();
   const { contentServerUrl, terminologyServerUrl } = deriveServerUrls(data);
+  // Payers may return Parameters wrapping the bundle; $populate consumers
+  // expect a bare Bundle with populated .entry.
+  const bundle = extractPackageBundle(data, params.questionnaire?.[0]);
   return {
-    bundle: data as Bundle,
-    questionnaire: findResourceInResponse<Questionnaire>(data, "Questionnaire"),
-    questionnaireResponse: findResourceInResponse<QuestionnaireResponse>(
-      data,
-      "QuestionnaireResponse",
-    ),
+    bundle,
+    questionnaire: bundle
+      ? findResourceInBundle<Questionnaire>(bundle, "Questionnaire")
+      : null,
+    questionnaireResponse: bundle
+      ? findResourceInBundle<QuestionnaireResponse>(
+          bundle,
+          "QuestionnaireResponse",
+        )
+      : null,
     contentServerUrl,
     terminologyServerUrl,
   };
@@ -116,6 +125,7 @@ export function useQuestionnairePackage(params: QuestionnairePackageParams) {
 
 export interface QuestionnairePackageEntry {
   canonical: string;
+  bundle: Bundle | null;
   questionnaire: Questionnaire | null;
   questionnaireResponse: QuestionnaireResponse | null;
   contentServerUrl: string | null;
@@ -157,6 +167,7 @@ export function useQuestionnairePackages(
     const q = queries[idx];
     return {
       canonical,
+      bundle: q?.data?.bundle ?? null,
       questionnaire: q?.data?.questionnaire ?? null,
       questionnaireResponse: q?.data?.questionnaireResponse ?? null,
       contentServerUrl: q?.data?.contentServerUrl ?? null,
@@ -207,65 +218,134 @@ export function useSaveQuestionnaireResponse(providerFhirUrl?: string) {
   });
 }
 
+export interface PopulateResult {
+  response: QuestionnaireResponse | null;
+  issues: OperationOutcome | null;
+}
+
 /**
- * Pre-populates a QuestionnaireResponse via server-side Questionnaire/$populate.
- * The BFF builds FHIR Endpoint resources for contentEndpoint/terminologyEndpoint
- * so HAPI CR resolves Libraries and ValueSets from their origin servers.
+ * Posts an SDC 4.0 $populate Parameters body to the provider's in-process
+ * populate endpoint. Everything the engine needs from the payer (Q + Libraries
+ * + ValueSets) ships inline as a `packagebundle` parameter — the controller
+ * builds an InMemoryFhirRepository over it and routes through ProxyRepository
+ * (content/terminology = in-memory; data = local provider FHIR).
+ *
+ * Body shape:
+ *   subject       = Reference("Patient/<id>")
+ *   questionnaire = embedded Questionnaire resource
+ *   context       = one Parameters.parameter per launchContext (name + content)
+ *   packagebundle = embedded Bundle (the inner packagebundle from
+ *                   $questionnaire-package — Q, Libraries, ValueSets, draft QR)
+ *
+ * Returns both the populated QR and any issues OperationOutcome.
  */
 export function useProviderPopulate(params: {
-  payerFhirUrl: string;
-  contentServerUrl?: string | null;
-  terminologyServerUrl?: string | null;
-  questionnaire: Questionnaire | null;
-  patientId?: string;
+  populateUrl?: string;
+  questionnaire?: Questionnaire;
+  packageBundle?: Bundle;
+  subject?: string;
+  contexts?: Record<string, string[]>;
+  providerFhirUrl?: string;
 }) {
-  const contentUrl = params.contentServerUrl ?? params.payerFhirUrl;
-  const terminologyUrl = params.terminologyServerUrl ?? contentUrl;
-
+  const url = params.populateUrl ?? "/api/dtr/populate";
+  const questionnaireKey = params.questionnaire
+    ? `${params.questionnaire.url ?? ""}|${params.questionnaire.version ?? ""}`
+    : undefined;
+  const packageBundleKey = params.packageBundle?.id ?? null;
   return useQuery({
     queryKey: [
       "dtr",
       "provider-populate",
-      params.questionnaire?.url,
-      params.patientId,
+      url,
+      questionnaireKey,
+      packageBundleKey,
+      params.subject,
+      params.contexts,
+      params.providerFhirUrl,
     ],
-    queryFn: async (): Promise<QuestionnaireResponse | null> => {
-      const fhirParams = {
+    enabled: Boolean(
+      params.questionnaire && params.packageBundle && params.subject,
+    ),
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+    queryFn: async (): Promise<PopulateResult> => {
+      const contextEntries = Object.entries(params.contexts ?? {})
+        .filter(([, refs]) => refs.length > 0)
+        .map(([name, refs]) => ({
+          name: "context",
+          part: [
+            { name: "name", valueString: name },
+            ...refs.map((ref) => ({
+              name: "content",
+              valueReference: { reference: ref },
+            })),
+          ],
+        }));
+      const body = {
         resourceType: "Parameters",
         parameter: [
+          { name: "subject", valueReference: { reference: params.subject } },
           { name: "questionnaire", resource: params.questionnaire },
-          { name: "patientId", valueString: params.patientId },
-          { name: "contentServerUrl", valueString: contentUrl },
-          { name: "terminologyServerUrl", valueString: terminologyUrl },
+          { name: "packagebundle", resource: params.packageBundle },
+          ...contextEntries,
         ],
       };
 
-      const response = await loggedFetch(
-        "/api/dtr/populate",
+      const res = await loggedFetch(
+        url,
         {
           method: "POST",
           headers: { "Content-Type": "application/fhir+json" },
-          body: JSON.stringify(fhirParams),
+          body: JSON.stringify(body),
           credentials: "same-origin",
         },
-        { payerUrl: params.payerFhirUrl, operationName: "$populate" },
+        { payerUrl: "", operationName: "$populate" },
       );
+      const data = await res.json().catch(() => null);
 
-      if (!response.ok) {
-        const err = await response.text().catch(() => "");
-        console.warn(`Provider populate failed (${response.status}):`, err);
-        return null;
+      if (!res.ok) {
+        const failureOutcome =
+          data?.resourceType === "OperationOutcome"
+            ? (data as OperationOutcome)
+            : null;
+        if (failureOutcome) {
+          console.error(
+            "[$populate] failure OperationOutcome:",
+            failureOutcome,
+          );
+        } else {
+          console.error(
+            "[$populate] non-2xx with no OperationOutcome",
+            res.status,
+            data,
+          );
+        }
+        return { response: null, issues: failureOutcome };
       }
 
-      const data = await response.json();
-      return data?.resourceType === "QuestionnaireResponse"
-        ? (data as QuestionnaireResponse)
-        : null;
+      if (data?.resourceType === "Parameters") {
+        const responseParam = (data.parameter ?? []).find(
+          (p: { name?: string }) => p.name === "response",
+        );
+        const issuesParam = (data.parameter ?? []).find(
+          (p: { name?: string }) => p.name === "issues",
+        );
+        const issues =
+          (issuesParam?.resource as OperationOutcome | undefined) ?? null;
+        if (issues?.issue?.length) {
+          console.warn("[$populate] issues:", issues);
+        }
+        return {
+          response: (responseParam?.resource as QuestionnaireResponse) ?? null,
+          issues,
+        };
+      }
+      // Tolerate non-conformant servers that return a bare QR.
+      if (data?.resourceType === "QuestionnaireResponse") {
+        return { response: data as QuestionnaireResponse, issues: null };
+      }
+      return { response: null, issues: null };
     },
-    enabled:
-      !!params.questionnaire && !!params.patientId && !!params.payerFhirUrl,
-    retry: false,
-    staleTime: 5 * 60 * 1000,
   });
 }
 
@@ -409,36 +489,6 @@ async function fetchProviderResource(
 }
 
 // -- Response parsing --
-
-/**
- * Finds the first resource of the given type from a $questionnaire-package
- * response. Handles both the DTR spec format (Parameters with packagebundle
- * entries) and direct Bundle responses.
- */
-function findResourceInResponse<T>(
-  data: unknown,
-  resourceType: string,
-): T | null {
-  const obj = data as Record<string, unknown>;
-
-  if (obj.resourceType === "Parameters" && Array.isArray(obj.parameter)) {
-    for (const param of obj.parameter as ParametersParameter[]) {
-      if (param.name === "packagebundle" && param.resource) {
-        const found = findResourceInBundle<T>(
-          param.resource as Bundle,
-          resourceType,
-        );
-        if (found) return found;
-      }
-    }
-  }
-
-  if (obj.resourceType === "Bundle") {
-    return findResourceInBundle<T>(obj as unknown as Bundle, resourceType);
-  }
-
-  return null;
-}
 
 /**
  * Finds the first resource of the given type in a bundle,

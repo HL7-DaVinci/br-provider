@@ -109,10 +109,6 @@ describe("checkSession", () => {
       "spa_userinfo",
       JSON.stringify({ name: "Test User" }),
     );
-    sessionStorage.setItem(
-      "spa_session_server",
-      "https://custom.fhir.org/fhir",
-    );
 
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -120,15 +116,12 @@ describe("checkSession", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const { checkSession, getSessionServerUrl, getUserInfo } = await import(
-      "./auth"
-    );
+    const { checkSession, getUserInfo } = await import("./auth");
 
     const result = await checkSession();
 
     expect(result.authenticated).toBe(false);
     expect(getUserInfo()).toBeNull();
-    expect(getSessionServerUrl()).toBeNull();
   });
 });
 

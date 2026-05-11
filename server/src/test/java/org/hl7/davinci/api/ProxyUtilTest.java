@@ -24,25 +24,6 @@ class ProxyUtilTest {
     }
 
     @Test
-    void getActiveProviderFhirBase_prefersRequestedProviderHeader() {
-        ServerProperties serverProperties = new ServerProperties("http://localhost:8080/fhir", null);
-        MockHttpServletRequest request = new MockHttpServletRequest();
-        request.getSession(true).setAttribute(
-            SpaAuthController.SESSION_SERVER_URL,
-            "https://session.example/fhir"
-        );
-        request.addHeader(
-            ProxyUtil.ACTIVE_PROVIDER_FHIR_BASE_HEADER,
-            "https://custom.example/fhir/"
-        );
-
-        assertEquals(
-            "https://custom.example/fhir",
-            ProxyUtil.getActiveProviderFhirBase(request, serverProperties)
-        );
-    }
-
-    @Test
     void getActiveProviderFhirBase_fallsBackToLocalProvider() {
         ServerProperties serverProperties = new ServerProperties("http://localhost:8080/fhir", null);
         MockHttpServletRequest request = new MockHttpServletRequest();

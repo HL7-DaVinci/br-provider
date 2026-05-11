@@ -10,7 +10,7 @@ import type {
   Resource,
 } from "fhir/r4";
 import { useCallback, useRef } from "react";
-import { ACTIVE_PROVIDER_FHIR_BASE_HEADER, fhirProxyUrl } from "@/lib/api";
+import { fhirProxyUrl } from "@/lib/api";
 import type {
   CdsCard,
   CdsHookName,
@@ -152,12 +152,7 @@ export function useCdsHooksCore(
           `/api/cds-services/${service.id}?server=${encodeURIComponent(cdsServerUrl)}`,
           {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...(serverUrl
-                ? { [ACTIVE_PROVIDER_FHIR_BASE_HEADER]: serverUrl }
-                : {}),
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(request),
             credentials: "same-origin",
           },

@@ -1,8 +1,12 @@
 package org.hl7.davinci.security;
 
 import java.net.ConnectException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import com.sun.net.httpserver.HttpServer;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
@@ -21,6 +25,7 @@ class SpaAuthControllerTest {
     private static final String TEST_CERT_PATH = "src/test/resources/test-cert.pfx";
     private static final String TEST_CERT_PASSWORD = "testpass";
     private static final String LOCAL_SERVER = "http://fhir.test/fhir";
+    private static final String SECOND_SERVER = "https://other.example.org/fhir";
 
     StubUdapClientRegistration udapClient;
     CertificateHolder certificateHolder;
@@ -33,12 +38,16 @@ class SpaAuthControllerTest {
         securityProperties = new SecurityProperties();
         securityProperties.setServerBaseUrl("http://localhost:8080");
         certificateHolder = testCertificateHolder();
-        serverProperties = new ServerProperties(LOCAL_SERVER, null);
+        var secondProvider = new ServerProperties.ProviderServer();
+        secondProvider.setName("second");
+        secondProvider.setUrl(SECOND_SERVER);
+        serverProperties = new ServerProperties(LOCAL_SERVER, java.util.List.of(secondProvider));
         udapClient = new StubUdapClientRegistration(
             securityProperties, certificateHolder, new OutboundTargetValidator(securityProperties));
         controller = new SpaAuthController(
             udapClient, certificateHolder, securityProperties, serverProperties,
-            new StubUserDetailsService());
+            new StubUserDetailsService(),
+            new OutboundTargetValidator(securityProperties));
     }
 
     @Test
@@ -278,6 +287,171 @@ class SpaAuthControllerTest {
         assertEquals(200, response.getStatusCode().value());
         assertEquals(true, response.getBody().get("authenticated"));
         assertNull(response.getBody().get("userinfo"));
+    }
+
+    @Test
+    void setActiveServer_validUrl_returnsNoContentAndStoresNormalized() {
+        var request = new MockHttpServletRequest();
+        var body = new SpaAuthController.ActiveServerRequest(LOCAL_SERVER + "/");
+
+        ResponseEntity<Void> response = controller.setActiveServer(body, request);
+
+        assertEquals(204, response.getStatusCode().value());
+        assertEquals(LOCAL_SERVER,
+            request.getSession(false).getAttribute(SpaAuthController.SESSION_SERVER_URL));
+    }
+
+    @Test
+    void setActiveServer_missingUrl_returns400() {
+        var request = new MockHttpServletRequest();
+        var body = new SpaAuthController.ActiveServerRequest(null);
+
+        ResponseEntity<Void> response = controller.setActiveServer(body, request);
+
+        assertEquals(400, response.getStatusCode().value());
+    }
+
+    @Test
+    void setActiveServer_blankUrl_returns400() {
+        var request = new MockHttpServletRequest();
+        var body = new SpaAuthController.ActiveServerRequest("   ");
+
+        ResponseEntity<Void> response = controller.setActiveServer(body, request);
+
+        assertEquals(400, response.getStatusCode().value());
+    }
+
+    @Test
+    void setActiveServer_urlChange_keepsTokenBundleScopedToOriginalServer() {
+        // Tokens are scoped to SESSION_TOKEN_SERVER_URL, so changing the
+        // active server does NOT invalidate them. This is what lets the
+        // user log in to one server and then anonymously browse another
+        // without losing their authenticated identity.
+        var request = new MockHttpServletRequest();
+        var session = request.getSession(true);
+        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "old-token", "old-id-token",
+            3600L, "old-refresh", "https://old-token-endpoint", "old-client");
+        session.setAttribute(SpaAuthController.SESSION_USERINFO, Map.of("name", "Old User"));
+
+        var body = new SpaAuthController.ActiveServerRequest(SECOND_SERVER);
+        ResponseEntity<Void> response = controller.setActiveServer(body, request);
+
+        assertEquals(204, response.getStatusCode().value());
+        assertEquals(SECOND_SERVER,
+            session.getAttribute(SpaAuthController.SESSION_SERVER_URL));
+        // Token bundle preserved, but bound to LOCAL_SERVER.
+        assertEquals("old-token",
+            session.getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN));
+        assertEquals(LOCAL_SERVER,
+            session.getAttribute(SpaAuthController.SESSION_TOKEN_SERVER_URL));
+        // getTokenForServer returns null for the new active server (URL
+        // mismatch with the auth URL) but still works for the auth URL.
+        assertNull(SpaAuthController.getTokenForServer(session, SECOND_SERVER + "/Patient"));
+        assertEquals("old-token",
+            SpaAuthController.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
+    }
+
+    @Test
+    void setActiveServer_sameUrl_keepsTokenBundle() {
+        var request = new MockHttpServletRequest();
+        var session = request.getSession(true);
+        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "kept-token", null);
+
+        var body = new SpaAuthController.ActiveServerRequest(LOCAL_SERVER);
+        ResponseEntity<Void> response = controller.setActiveServer(body, request);
+
+        assertEquals(204, response.getStatusCode().value());
+        assertEquals("kept-token",
+            session.getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN));
+    }
+
+    @Test
+    void refreshTokenIfNeeded_keepsTokenScopedToOriginalServerWhenActiveServerChanged() throws Exception {
+        AtomicReference<String> tokenRequestBody = new AtomicReference<>();
+        HttpServer tokenServer = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        tokenServer.createContext("/token", exchange -> {
+            tokenRequestBody.set(new String(
+                exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] body = """
+                {"access_token":"new-token","refresh_token":"new-refresh","expires_in":3600}
+                """.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        tokenServer.start();
+        try {
+            String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
+            var request = new MockHttpServletRequest();
+            var session = request.getSession(true);
+            SpaAuthController.storeServerToken(session, LOCAL_SERVER, "old-token", null,
+                1L, "old-refresh", tokenEndpoint, "refresh-client");
+            SpaAuthController.setActiveServer(session, SECOND_SERVER);
+
+            SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder);
+
+            assertTrue(tokenRequestBody.get().contains("refresh_token=old-refresh"));
+            assertEquals("new-token",
+                session.getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN));
+            assertEquals("new-refresh",
+                session.getAttribute(SpaAuthController.SESSION_REFRESH_TOKEN));
+            assertEquals(SECOND_SERVER,
+                session.getAttribute(SpaAuthController.SESSION_SERVER_URL));
+            assertEquals(LOCAL_SERVER,
+                session.getAttribute(SpaAuthController.SESSION_TOKEN_SERVER_URL));
+            assertNull(SpaAuthController.getTokenForServer(session, SECOND_SERVER + "/Patient"));
+            assertEquals("new-token",
+                SpaAuthController.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
+        } finally {
+            tokenServer.stop(0);
+        }
+    }
+
+    @Test
+    void setActivePayer_publicHostPassesSsrfCheck_storesNormalized() {
+        var request = new MockHttpServletRequest();
+        var body = new SpaAuthController.ActivePayerRequest(
+            "https://br-payer.davinci.hl7.org/fhir/");
+
+        ResponseEntity<Void> response = controller.setActivePayer(body, request);
+
+        assertEquals(204, response.getStatusCode().value());
+        assertEquals("https://br-payer.davinci.hl7.org/fhir",
+            request.getSession(false).getAttribute(SpaAuthController.SESSION_PAYER_FHIR_URL));
+    }
+
+    @Test
+    void setActivePayer_missingFhirUrl_returns400() {
+        var request = new MockHttpServletRequest();
+        var body = new SpaAuthController.ActivePayerRequest(null);
+
+        ResponseEntity<Void> response = controller.setActivePayer(body, request);
+
+        assertEquals(400, response.getStatusCode().value());
+    }
+
+    @Test
+    void setActivePayer_privateIp_returns400() {
+        var request = new MockHttpServletRequest();
+        var body = new SpaAuthController.ActivePayerRequest("http://10.0.0.1/fhir");
+
+        ResponseEntity<Void> response = controller.setActivePayer(body, request);
+
+        assertEquals(400, response.getStatusCode().value());
+    }
+
+    @Test
+    void setActiveServer_privateIpFailingSsrfCheck_returns400() {
+        // 10.0.0.1 is a private (site-local) IPv4 address — not in
+        // allowedLocalHosts, not a configured known provider. SSRF guard
+        // rejects it.
+        var request = new MockHttpServletRequest();
+        var body = new SpaAuthController.ActiveServerRequest("http://10.0.0.1/fhir");
+
+        ResponseEntity<Void> response = controller.setActiveServer(body, request);
+
+        assertEquals(400, response.getStatusCode().value());
     }
 
     @Test

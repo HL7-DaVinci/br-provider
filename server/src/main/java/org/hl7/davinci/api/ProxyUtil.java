@@ -23,8 +23,6 @@ import org.springframework.http.ResponseEntity;
  */
 public final class ProxyUtil {
 
-    public static final String ACTIVE_PROVIDER_FHIR_BASE_HEADER = "X-Provider-Fhir-Base";
-
     public static final List<String> DTR_SCOPES = List.of("system/*.rs");
 
     public static final List<String> PAS_SCOPES = List.of(
@@ -48,37 +46,17 @@ public final class ProxyUtil {
 
     /**
      * Resolves the active provider FHIR base URL for the current request.
-     * Uses an explicitly requested provider base when present, otherwise the
-     * authenticated session server, otherwise the built-in provider server.
+     * Reads the session's recorded server (set by the OAuth callback or by
+     * {@code POST /auth/active-server}); falls back to the built-in
+     * provider server when the session has no record.
      */
     public static String getActiveProviderFhirBase(
             HttpServletRequest request,
             ServerProperties serverProperties) {
-        String requestedProviderFhirBase = getRequestedProviderFhirBase(request);
-        if (requestedProviderFhirBase != null) {
-            return requestedProviderFhirBase;
-        }
-
         return getActiveProviderFhirBase(
             request != null ? request.getSession(false) : null,
             serverProperties
         );
-    }
-
-    /**
-     * Returns the provider FHIR base explicitly requested by the client, if any.
-     */
-    public static String getRequestedProviderFhirBase(HttpServletRequest request) {
-        if (request == null) {
-            return null;
-        }
-
-        String headerValue = request.getHeader(ACTIVE_PROVIDER_FHIR_BASE_HEADER);
-        if (headerValue == null || headerValue.isBlank()) {
-            return null;
-        }
-
-        return UrlMatchUtil.normalizeUrl(headerValue);
     }
 
     /**

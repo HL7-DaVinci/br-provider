@@ -170,19 +170,23 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       await signOut();
     }
     if (switchingServer) {
-      setServerUrl(pendingUrl);
+      await setServerUrl(pendingUrl).catch((err) => {
+        console.error("setServerUrl failed", err);
+      });
     }
     // Save payer server selection (no auth impact)
     if (switchingPayer) {
-      if (showCustomPayer) {
-        setPayerServer({
-          name: "Custom Payer",
-          cdsUrl: customPayerCdsUrl.trim().replace(/\/+$/, ""),
-          fhirUrl: customPayerFhirUrl.trim().replace(/\/+$/, ""),
+      const next = showCustomPayer
+        ? {
+            name: "Custom Payer",
+            cdsUrl: customPayerCdsUrl.trim().replace(/\/+$/, ""),
+            fhirUrl: customPayerFhirUrl.trim().replace(/\/+$/, ""),
+          }
+        : payerServers.find((s) => s.name === pendingPayer);
+      if (next) {
+        await setPayerServer(next).catch((err) => {
+          console.error("setPayerServer failed", err);
         });
-      } else {
-        const preset = payerServers.find((s) => s.name === pendingPayer);
-        if (preset) setPayerServer(preset);
       }
     }
 

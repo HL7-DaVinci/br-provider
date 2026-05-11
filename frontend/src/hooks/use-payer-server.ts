@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { PayerServer } from "@/lib/fhir-config";
 import {
   getPayerServers,
@@ -11,7 +11,40 @@ export interface UsePayerServerResult {
   payerServers: PayerServer[];
   cdsUrl: string;
   fhirUrl: string;
-  setPayerServer: (server: PayerServer) => void;
+  setPayerServer: (server: PayerServer) => Promise<void>;
+}
+
+async function pushActivePayer(fhirUrl: string): Promise<void> {
+  const res = await fetch("/auth/active-payer", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fhirUrl }),
+  });
+  if (!res.ok) {
+    throw new Error(`active-payer sync failed: ${res.status}`);
+  }
+}
+
+// Mirrors the active-server boot sync in useFhirServer: pushes the stored
+// payer fhirUrl to the BFF session once per page load so the proxy allowlist
+// recognizes it. fhirFetch awaits this via awaitActivePayerSync() to avoid
+// a race on the first request.
+let bootSyncPromise: Promise<void> | null = null;
+
+function ensureBootSync(): Promise<void> {
+  if (bootSyncPromise !== null) return bootSyncPromise;
+  const stored = getStoredPayerServer();
+  bootSyncPromise = stored.fhirUrl
+    ? pushActivePayer(stored.fhirUrl).catch((err) => {
+        console.error("active-payer boot sync failed", err);
+      })
+    : Promise.resolve();
+  return bootSyncPromise;
+}
+
+export function awaitActivePayerSync(): Promise<void> {
+  return ensureBootSync();
 }
 
 /**
@@ -52,7 +85,8 @@ const payerServerStore = {
     return serializePayerServer(getPayerServers()[0]);
   },
 
-  setPayerServer(server: PayerServer): void {
+  async setPayerServer(server: PayerServer): Promise<void> {
+    await pushActivePayer(server.fhirUrl);
     setStoredPayerServer(server);
     payerServerStore.emit();
   },
@@ -71,9 +105,17 @@ export function usePayerServer(): UsePayerServerResult {
   const payerServer = deserializePayerServer(snapshotKey);
   const payerServers = cachedPayerServers;
 
-  const setPayerServer = useCallback((server: PayerServer) => {
-    payerServerStore.setPayerServer(server);
+  // Push the stored payer fhirUrl into the BFF session once per page load
+  // so /api/fhir-proxy will trust it. The actual fetch is fired by
+  // ensureBootSync(); fhirFetch awaits the same promise.
+  useEffect(() => {
+    ensureBootSync();
   }, []);
+
+  const setPayerServer = useCallback(
+    (server: PayerServer) => payerServerStore.setPayerServer(server),
+    [],
+  );
 
   return {
     payerServer,

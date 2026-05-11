@@ -9,6 +9,7 @@ import {
 } from "react";
 import { JsonViewerDialog } from "@/components/json-viewer-dialog";
 import { Button } from "@/components/ui/button";
+import { usePractitionerRef } from "@/hooks/use-practitioner-ref";
 import {
   type AnswerSnapshot,
   applyOriginTracking,
@@ -142,6 +143,8 @@ export function LhcFormRenderer({
     };
   }, [questionnaire, prepopulated]);
 
+  const practitionerRef = usePractitionerRef();
+
   /** Extracts the current QR from LHC-Forms and applies origin tracking. */
   const extractCurrentQr = useCallback(
     (status: "in-progress" | "completed"): QuestionnaireResponse | null => {
@@ -154,13 +157,15 @@ export function LhcFormRenderer({
       ) as QuestionnaireResponse;
 
       if (originIndex?.size) {
-        qr = applyOriginTracking(qr, originIndex);
+        qr = applyOriginTracking(qr, originIndex, {
+          authorRef: practitionerRef,
+        });
       }
 
       qr.status = status;
       return qr;
     },
-    [originIndex],
+    [originIndex, practitionerRef],
   );
 
   useImperativeHandle(ref, () => ({ extractQr: extractCurrentQr }), [

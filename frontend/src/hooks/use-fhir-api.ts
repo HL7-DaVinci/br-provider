@@ -8,15 +8,11 @@ import type {
 } from "fhir/r4";
 import { useMemo } from "react";
 import { fhirProxyUrl } from "@/lib/api";
-import { getSessionServerUrl } from "@/lib/auth";
-import {
-  type FhirServer,
-  getServerByRequestUrl,
-  isTrustedServerUrl,
-  matchesRequestUrl,
-} from "@/lib/fhir-config";
+import { type FhirServer, getServerByRequestUrl } from "@/lib/fhir-config";
 import { isOperationOutcome } from "@/lib/fhir-types";
 import { networkLogStore } from "@/lib/network-log-store";
+import { awaitActiveServerSync } from "./use-fhir-server";
+import { awaitActivePayerSync } from "./use-payer-server";
 
 interface FhirError extends Error {
   status?: number;
@@ -82,20 +78,15 @@ function addNetworkLogEntry({
   });
 }
 
-/**
- * Determines whether a FHIR request should route through the BFF proxy.
- * Returns true for configured trusted servers and the custom server
- * authenticated in the current session.
- */
-function shouldUseProxy(url: string): boolean {
-  if (isTrustedServerUrl(url)) return true;
-  const sessionServer = getSessionServerUrl();
-  return sessionServer !== null && matchesRequestUrl(url, sessionServer);
-}
-
 export async function fhirFetch<T>(url: string): Promise<T> {
   const startTime = Date.now();
   const server = getServerByRequestUrl(url);
+
+  // Gate on the boot-sync of the active server and active payer URLs into
+  // the BFF session. Without this, the very first fhirFetch after a hard
+  // refresh races the POSTs to /auth/active-server and /auth/active-payer
+  // and gets 403'd by the proxy allowlist.
+  await Promise.all([awaitActiveServerSync(), awaitActivePayerSync()]);
 
   let response: Response;
   try {
@@ -103,12 +94,8 @@ export async function fhirFetch<T>(url: string): Promise<T> {
       Accept: "application/fhir+json",
     };
 
-    if (shouldUseProxy(url)) {
-      const proxyUrl = fhirProxyUrl(url);
-      response = await fetch(proxyUrl, { headers, credentials: "include" });
-    } else {
-      response = await fetch(url, { headers });
-    }
+    const proxyUrl = fhirProxyUrl(url);
+    response = await fetch(proxyUrl, { headers, credentials: "include" });
   } catch (error) {
     addNetworkLogEntry({
       startTime,

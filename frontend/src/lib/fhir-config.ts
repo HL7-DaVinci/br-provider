@@ -225,17 +225,6 @@ export function isProviderFhirRequestUrl(requestUrl: string): boolean {
   return matchesRequestUrl(requestUrl, providerFhirBaseUrl);
 }
 
-/**
- * Returns true if the request URL matches a configured (trusted) FHIR server.
- * Trusted servers route through the BFF proxy with session credentials;
- * non-trusted (custom) servers use direct browser CORS requests.
- */
-export function isTrustedServerUrl(requestUrl: string): boolean {
-  return FHIR_SERVERS.some((server) =>
-    matchesRequestUrl(requestUrl, server.url),
-  );
-}
-
 export function getAppConfig(): AppConfig {
   return window?.APP_CONFIG ?? {};
 }

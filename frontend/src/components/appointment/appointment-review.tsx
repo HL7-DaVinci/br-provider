@@ -1,9 +1,9 @@
 import type { Appointment, Resource } from "fhir/r4";
 import {
   CalendarCheck,
-  CheckCircle,
   Code,
   ExternalLink,
+  Eye,
   Loader2,
   Pencil,
 } from "lucide-react";
@@ -20,7 +20,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useFhirServer } from "@/hooks/use-fhir-server";
 import {
-  findReusableQr,
+  aggregateOrderState,
+  getOrderSatisfactionState,
+  type OrderSatisfactionState,
   usePatientQrIndex,
 } from "@/hooks/use-patient-qr-index";
 import type {
@@ -112,47 +114,45 @@ export function AppointmentReview({
 
   const qrIndex = usePatientQrIndex(patientId);
 
+  const appointmentRef = appointment.id ? `Appointment/${appointment.id}` : "";
+
   const dtrCiStates = useMemo(() => {
     return coverageInfo.filter(hasDtrDoc).map((ci) => {
       const canonicals = ci.questionnaire ?? [];
-      const reusableByCanonical = canonicals.map((canonical) => ({
-        canonical,
-        reusable: findReusableQr(qrIndex, canonical),
-      }));
-      const unsatisfied = reusableByCanonical
-        .filter((s) => !s.reusable)
-        .map((s) => s.canonical);
-      return {
-        ci,
-        canonicals,
-        unsatisfied,
-        allSatisfied: canonicals.length > 0 && unsatisfied.length === 0,
-      };
+      const states = appointmentRef
+        ? canonicals.map((canonical) =>
+            getOrderSatisfactionState(qrIndex, canonical, appointmentRef),
+          )
+        : (canonicals.map(() => ({
+            kind: "notStarted",
+          })) as OrderSatisfactionState[]);
+      return { ci, canonicals, aggregate: aggregateOrderState(states) };
     });
-  }, [coverageInfo, qrIndex]);
+  }, [coverageInfo, qrIndex, appointmentRef]);
 
   const handleDtrLaunch = useCallback(
-    (ci: CoverageInformation, unsatisfied: string[]) => {
+    (ci: CoverageInformation, aggregate: OrderSatisfactionState) => {
       try {
         const fhirContext: string[] = [];
         if (ci.coverage) fhirContext.push(ci.coverage);
-
-        const canonicalsToFill =
-          unsatisfied.length > 0 ? unsatisfied : (ci.questionnaire ?? []);
+        if (appointmentRef) fhirContext.push(appointmentRef);
+        if (aggregate.kind === "inProgressForThisOrder") {
+          fhirContext.push(`QuestionnaireResponse/${aggregate.qr.id}`);
+        }
 
         openDtrTask({
           iss: serverUrl,
           patientId,
           fhirContext: fhirContext.join(","),
           coverageAssertionId: ci.coverageAssertionId,
-          questionnaire: serializeQuestionnaireSearch(canonicalsToFill),
+          questionnaire: serializeQuestionnaireSearch(ci.questionnaire ?? []),
         });
       } catch (err) {
         console.error("DTR launch failed:", err);
         toast.error("Failed to launch documentation");
       }
     },
-    [patientId, serverUrl, openDtrTask],
+    [patientId, serverUrl, openDtrTask, appointmentRef],
   );
 
   return (
@@ -271,29 +271,27 @@ export function AppointmentReview({
               The payer requires additional documentation for this appointment.
               Completing it now can speed up prior authorization.
             </p>
-            {dtrCiStates.map(({ ci, unsatisfied, allSatisfied }) =>
-              allSatisfied ? (
+            {dtrCiStates.map(({ ci, aggregate }) => {
+              const key = ci.coverageAssertionId ?? "dtr";
+              const isCompleted = aggregate.kind === "completedForThisOrder";
+              const ActionIcon = isCompleted ? Eye : ExternalLink;
+              const label = isCompleted
+                ? "View Documentation"
+                : aggregate.kind === "inProgressForThisOrder"
+                  ? "Resume Documentation"
+                  : "Complete Documentation";
+              return (
                 <Button
-                  key={ci.coverageAssertionId ?? "dtr-done"}
+                  key={key}
                   variant="outline"
                   size="sm"
-                  disabled
+                  onClick={() => handleDtrLaunch(ci, aggregate)}
                 >
-                  <CheckCircle className="mr-2 h-4 w-4" />
-                  Documentation provided
+                  <ActionIcon className="mr-2 h-4 w-4" />
+                  {label}
                 </Button>
-              ) : (
-                <Button
-                  key={ci.coverageAssertionId ?? "dtr"}
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleDtrLaunch(ci, unsatisfied)}
-                >
-                  <ExternalLink className="mr-2 h-4 w-4" />
-                  Complete Documentation
-                </Button>
-              ),
-            )}
+              );
+            })}
           </CardContent>
         </Card>
       )}
