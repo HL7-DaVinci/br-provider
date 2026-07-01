@@ -1,6 +1,12 @@
 export interface FhirServer {
   name: string;
   url: string;
+  /**
+   * Whether requests to this server must carry auth, and therefore route through the BFF proxy
+   * for token injection. Defaults to true. Set false for open servers so the SPA's conformant
+   * requests are sent directly, bypassing the proxy.
+   */
+  requiresAuth?: boolean;
 }
 
 export interface CdsServer {
@@ -17,6 +23,12 @@ export interface PayerServer {
   name: string;
   cdsUrl: string;
   fhirUrl: string;
+  /**
+   * Whether requests to this payer must carry B2B auth, and therefore route through the BFF
+   * proxy. Defaults to true. Set false for open payer servers so conformant requests are sent
+   * directly, bypassing the proxy.
+   */
+  requiresAuth?: boolean;
 }
 
 interface AppConfig {
@@ -24,6 +36,8 @@ interface AppConfig {
   cdsServers?: CdsServer[];
   payerServers?: PayerServer[];
   providerServerUrl?: string;
+  /** Provider rest-hook URL the payer posts PAS notifications to; defaults to the provider origin. */
+  pasNotificationUrl?: string;
   authEnabled?: boolean;
 }
 
@@ -227,4 +241,17 @@ export function isProviderFhirRequestUrl(requestUrl: string): boolean {
 
 export function getAppConfig(): AppConfig {
   return window?.APP_CONFIG ?? {};
+}
+
+/**
+ * Provider rest-hook URL the payer posts PAS notifications to: the `pasNotificationUrl` config if
+ * set, otherwise derived from the active provider FHIR base.
+ */
+export function getPasNotificationUrl(providerFhirBaseUrl: string): string {
+  const configured = getAppConfig().pasNotificationUrl;
+  if (configured) {
+    return normalizeServerUrl(configured);
+  }
+  const origin = normalizeServerUrl(providerFhirBaseUrl).replace(/\/fhir$/, "");
+  return `${origin}/api/pas/notification`;
 }

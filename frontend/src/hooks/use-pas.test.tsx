@@ -64,7 +64,7 @@ function buildTask(id: string, overrides: Partial<Task> = {}): Task {
     input: [
       {
         type: {
-          coding: [{ code: "questionnaires-needed" }],
+          coding: [{ code: "questionnaire-context" }],
         },
         valueCanonical: `http://example.org/Questionnaire/${id}`,
       },
@@ -118,6 +118,40 @@ describe("usePas", () => {
     );
   });
 
+  it("matches the requested ClaimResponse by tracking identifier", () => {
+    const claimResponse: ClaimResponse = {
+      ...buildClaimResponse("1826", "2026-06-05T10:00:00Z"),
+      identifier: [
+        {
+          system: "http://example.org/PATIENT_EVENT_TRACE_NUMBER",
+          value: "trace-abc",
+        },
+      ],
+    };
+
+    const response = {
+      resourceType: "Parameters",
+      parameter: [
+        {
+          name: "responseBundle",
+          resource: {
+            resourceType: "Bundle",
+            type: "collection",
+            entry: [{ resource: claimResponse }],
+          },
+        },
+      ],
+    } satisfies {
+      resourceType: "Parameters";
+      parameter: Array<{ name: string; resource: Bundle }>;
+    };
+
+    // The provider copy is keyed by the tracking identifier, so rehydration passes that value.
+    expect(extractClaimResponseFromInquiry(response, "trace-abc")).toEqual(
+      claimResponse,
+    );
+  });
+
   it("rehydrates PAS documentation tasks by claim and order context", async () => {
     fhirFetchMock.mockResolvedValue({
       resourceType: "Bundle",
@@ -165,5 +199,53 @@ describe("usePas", () => {
       "http://provider.example/fhir/Task?patient=pat-1&_sort=-_lastUpdated&_count=50",
     );
     expect(result.current.data?.map((task) => task.id)).toEqual(["task-match"]);
+  });
+
+  it("rehydrates PAS documentation tasks by claim tracking identifier", async () => {
+    fhirFetchMock.mockResolvedValue({
+      resourceType: "Bundle",
+      type: "searchset",
+      entry: [
+        {
+          resource: buildTask("task-tracked", {
+            reasonReference: {
+              type: "ClaimResponse",
+              identifier: { system: "http://example.org/acn", value: "ACN-9" },
+            },
+          }),
+        },
+        {
+          resource: buildTask("task-other-tracking", {
+            reasonReference: {
+              type: "ClaimResponse",
+              identifier: {
+                system: "http://example.org/acn",
+                value: "ACN-OTHER",
+              },
+            },
+          }),
+        },
+      ],
+    } satisfies Bundle<Task>);
+
+    const { result } = renderHook(
+      () =>
+        usePasDocumentationTasks({
+          patientId: "pat-1",
+          providerFhirUrl: "http://provider.example/fhir",
+          claimTrackingId: "ACN-9",
+        }),
+      {
+        wrapper: createWrapper(),
+      },
+    );
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+
+    expect(result.current.data?.map((task) => task.id)).toEqual([
+      "task-tracked",
+    ]);
   });
 });

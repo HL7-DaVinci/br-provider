@@ -5,8 +5,34 @@ import org.hl7.davinci.security.SpaAuthController;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ProxyUtilTest {
+
+    @Test
+    void payerScopesForOp_defaultsToReadWhenMissingOrBlank() {
+        assertEquals(ProxyUtil.FHIR_READ_SCOPES, ProxyUtil.payerScopesForOp(null));
+        assertEquals(ProxyUtil.FHIR_READ_SCOPES, ProxyUtil.payerScopesForOp(""));
+        assertEquals(ProxyUtil.FHIR_READ_SCOPES, ProxyUtil.payerScopesForOp("  "));
+        assertEquals(ProxyUtil.FHIR_READ_SCOPES, ProxyUtil.payerScopesForOp("read"));
+    }
+
+    @Test
+    void payerScopesForOp_resolvesLeastPrivilegePerOperation() {
+        assertEquals(ProxyUtil.PAS_SCOPES, ProxyUtil.payerScopesForOp("pas-submit"));
+        assertEquals(ProxyUtil.DTR_SCOPES, ProxyUtil.payerScopesForOp("dtr"));
+        assertEquals(ProxyUtil.SUBMIT_ATTACHMENT_SCOPES,
+            ProxyUtil.payerScopesForOp("submit-attachment"));
+        assertEquals(ProxyUtil.SUBSCRIPTION_SCOPES, ProxyUtil.payerScopesForOp("subscription"));
+    }
+
+    @Test
+    void payerScopesForOp_rejectsUnknownKey() {
+        assertThrows(IllegalArgumentException.class,
+            () -> ProxyUtil.payerScopesForOp("system/*.*"));
+        assertThrows(IllegalArgumentException.class,
+            () -> ProxyUtil.payerScopesForOp("delete-everything"));
+    }
 
     @Test
     void getActiveProviderFhirBase_usesSessionServerWhenPresent() {

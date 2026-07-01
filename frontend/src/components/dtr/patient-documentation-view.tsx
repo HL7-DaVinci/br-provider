@@ -23,7 +23,7 @@ import {
 } from "@/hooks/use-clinical-api";
 import { useFhirServer } from "@/hooks/use-fhir-server";
 import {
-  extractTaskQuestionnaireUrls,
+  extractTaskQuestionnaireContexts,
   usePatientDocumentationTasks,
 } from "@/hooks/use-pas";
 import {
@@ -31,6 +31,7 @@ import {
   formatQuestionnaireName,
 } from "@/lib/clinical-formatters";
 import { parseCoverageInfoFromResource } from "@/lib/coverage-extensions";
+import { QR_CONTEXT_EXT_URL } from "@/lib/dtr-qr-extensions";
 import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
 
 export function PatientDocumentationView({ patientId }: { patientId: string }) {
@@ -70,6 +71,31 @@ export function PatientDocumentationView({ patientId }: { patientId: string }) {
           r?.resourceType === "QuestionnaireResponse",
       ) ?? [];
 
+  // A doc Task drops off "Forms to Complete" once it is terminal or its order has a finalized response.
+  const finalizedOrderRefs = new Set(
+    finalized.flatMap((qr) =>
+      (qr.extension ?? [])
+        .filter((e) => e.url === QR_CONTEXT_EXT_URL)
+        .map((e) => e.valueReference?.reference)
+        .filter((r): r is string => !!r),
+    ),
+  );
+  const openTasks = tasks.filter((task) => {
+    if (
+      [
+        "completed",
+        "cancelled",
+        "failed",
+        "rejected",
+        "entered-in-error",
+      ].includes(task.status ?? "")
+    ) {
+      return false;
+    }
+    const focus = task.focus?.reference;
+    return !(focus && finalizedOrderRefs.has(focus));
+  });
+
   const isLoading =
     tasksQuery.isLoading ||
     inProgressQuery.isLoading ||
@@ -92,9 +118,9 @@ export function PatientDocumentationView({ patientId }: { patientId: string }) {
         </p>
       )}
 
-      {tasks.length > 0 && (
+      {openTasks.length > 0 && (
         <TasksSection
-          tasks={tasks}
+          tasks={openTasks}
           patientId={patientId}
           providerFhirUrl={providerFhirUrl}
           primaryCoverageRef={primaryCoverageRef}
@@ -171,15 +197,15 @@ function TaskRow({
 }) {
   const [isLaunching, setIsLaunching] = useState(false);
   const openDtrTask = useDtrTaskSheet();
-  const urls = extractTaskQuestionnaireUrls([task]);
+  const contexts = extractTaskQuestionnaireContexts([task]);
   const label =
     task.description ||
-    formatQuestionnaireName(urls[0]) ||
+    formatQuestionnaireName(contexts[0]) ||
     "Documentation Request";
   const authored = formatClinicalDate(task.authoredOn);
 
   const handleStart = useCallback(() => {
-    if (urls.length === 0 || !task.id) return;
+    if (contexts.length === 0 || !task.id) return;
     setIsLaunching(true);
     try {
       const fhirContext = [primaryCoverageRef, `Task/${task.id}`].filter(
@@ -188,7 +214,7 @@ function TaskRow({
       openDtrTask({
         iss: providerFhirUrl,
         patientId,
-        questionnaire: serializeQuestionnaireSearch(urls),
+        coverageAssertionId: contexts[0],
         fhirContext: fhirContext.join(","),
       });
     } catch (err) {
@@ -198,7 +224,7 @@ function TaskRow({
       setIsLaunching(false);
     }
   }, [
-    urls,
+    contexts,
     task.id,
     patientId,
     providerFhirUrl,
@@ -228,7 +254,7 @@ function TaskRow({
         <Button
           size="sm"
           onClick={handleStart}
-          disabled={isLaunching || urls.length === 0}
+          disabled={isLaunching || contexts.length === 0}
         >
           {isLaunching ? (
             <Loader2 className="mr-1 h-3 w-3 animate-spin" />

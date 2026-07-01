@@ -1,5 +1,5 @@
 import type { DomainResource, Extension, QuestionnaireResponse } from "fhir/r4";
-import { fhirProxyUrl } from "@/lib/api";
+import { fhirSend } from "@/lib/api";
 import {
   COVERAGE_INFO_EXT_URL,
   coverageInfoPrimaryKeyEquals,
@@ -87,18 +87,15 @@ async function writeOrder(params: {
   qrCis: Extension[];
 }): Promise<void> {
   const orderUrl = `${params.providerFhirUrl}/${params.orderRef}`;
-  const orderResponse = await fetch(fhirProxyUrl(orderUrl), {
-    credentials: "same-origin",
-  });
+  const orderResponse = await fhirSend(orderUrl);
   if (!orderResponse.ok) return;
   const order = (await orderResponse.json()) as DomainResource;
 
   const updated = applyQrCisToOrder(order, params.qrCis);
 
-  await fetch(fhirProxyUrl(orderUrl), {
+  await fhirSend(orderUrl, {
     method: "PUT",
     headers: { "Content-Type": "application/fhir+json" },
-    credentials: "same-origin",
     body: JSON.stringify(updated),
   });
 }

@@ -61,8 +61,6 @@ public class FhirProxyController {
         "set-cookie", "set-cookie2"
     );
 
-    private static final List<String> PAYER_B2B_SCOPES = ProxyUtil.FHIR_READ_SCOPES;
-
     private final SecurityProperties securityProperties;
     private final ServerProperties serverProperties;
     private final B2BTokenService b2bTokenService;
@@ -82,6 +80,7 @@ public class FhirProxyController {
     public void proxy(
             @RequestParam("url") String targetUrl,
             @RequestParam(name = "payer", required = false, defaultValue = "false") boolean payerAuth,
+            @RequestParam(name = "op", required = false, defaultValue = "read") String op,
             HttpServletRequest request,
             HttpServletResponse response) throws Exception {
 
@@ -111,59 +110,75 @@ public class FhirProxyController {
 
         HttpRequest.Builder reqBuilder = HttpRequest.newBuilder().uri(target);
 
-        // Auth strategy determined by caller intent (payer param), not URL matching.
-        // This allows a single server to serve both provider and payer roles.
-        String token;
-        if (payerAuth) {
-            String payerBaseUrl = serverProperties.getPayerFhirBaseUrl(targetUrl);
-            token = b2bTokenService.getTokenForServer(payerBaseUrl, PAYER_B2B_SCOPES);
+        try {
+            // Auth strategy determined by caller intent (payer param), not URL matching.
+            // This allows a single server to serve both provider and payer roles.
+            String token;
+            if (payerAuth) {
+                List<String> scopes;
+                try {
+                    scopes = ProxyUtil.payerScopesForOp(op);
+                } catch (IllegalArgumentException e) {
+                    response.sendError(HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
+                    return;
+                }
+                String payerBaseUrl = serverProperties.getPayerFhirBaseUrl(targetUrl);
+                token = b2bTokenService.getTokenForServer(payerBaseUrl, scopes);
+                if (token != null) {
+                    logger.debug("Payer proxy: using B2B client_credentials for {} (op={})",
+                        payerBaseUrl, op);
+                }
+            } else {
+                SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder);
+                token = SpaAuthController.getTokenForServer(session, targetUrl);
+            }
             if (token != null) {
-                logger.debug("Payer proxy: using B2B client_credentials for {}", payerBaseUrl);
+                reqBuilder.header("Authorization", "Bearer " + token);
             }
-        } else {
-            SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder);
-            token = SpaAuthController.getTokenForServer(session, targetUrl);
-        }
-        if (token != null) {
-            reqBuilder.header("Authorization", "Bearer " + token);
-        }
 
-        // Forward allowed headers from the SPA request transparently
-        for (String headerName : FORWARDED_HEADERS) {
-            String value = request.getHeader(headerName);
-            if (value != null) {
-                reqBuilder.header(headerName, value);
-            }
-        }
-        if (request.getHeader("Accept") == null) {
-            reqBuilder.header("Accept", "application/fhir+json");
-        }
-        // Prevent the shared HttpClient from caching upstream responses
-        reqBuilder.header("Cache-Control", "no-store");
-
-        String method = request.getMethod();
-        if ("POST".equals(method) || "PUT".equals(method) || "PATCH".equals(method)) {
-            byte[] body = request.getInputStream().readAllBytes();
-            reqBuilder.method(method, HttpRequest.BodyPublishers.ofByteArray(body));
-        } else if ("DELETE".equals(method)) {
-            reqBuilder.DELETE();
-        } else {
-            reqBuilder.GET();
-        }
-
-        HttpClient client = SecurityUtil.getHttpClient(securityProperties);
-        HttpResponse<byte[]> upstream = client.send(
-            reqBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
-
-        response.setStatus(upstream.statusCode());
-        upstream.headers().map().forEach((name, values) -> {
-            if (shouldRelayResponseHeader(name)) {
-                for (String v : values) {
-                    response.addHeader(name, v);
+            // Forward allowed headers from the SPA request transparently
+            for (String headerName : FORWARDED_HEADERS) {
+                String value = request.getHeader(headerName);
+                if (value != null) {
+                    reqBuilder.header(headerName, value);
                 }
             }
-        });
-        response.getOutputStream().write(upstream.body());
+            if (request.getHeader("Accept") == null) {
+                reqBuilder.header("Accept", "application/fhir+json");
+            }
+            // Prevent the shared HttpClient from caching upstream responses
+            reqBuilder.header("Cache-Control", "no-store");
+
+            String method = request.getMethod();
+            if ("POST".equals(method) || "PUT".equals(method) || "PATCH".equals(method)) {
+                byte[] body = request.getInputStream().readAllBytes();
+                reqBuilder.method(method, HttpRequest.BodyPublishers.ofByteArray(body));
+            } else if ("DELETE".equals(method)) {
+                reqBuilder.DELETE();
+            } else {
+                reqBuilder.GET();
+            }
+
+            HttpClient client = SecurityUtil.getHttpClient(securityProperties);
+            HttpResponse<byte[]> upstream = client.send(
+                reqBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
+
+            response.setStatus(upstream.statusCode());
+            upstream.headers().map().forEach((name, values) -> {
+                if (shouldRelayResponseHeader(name)) {
+                    for (String v : values) {
+                        response.addHeader(name, v);
+                    }
+                }
+            });
+            response.getOutputStream().write(upstream.body());
+        } catch (Exception e) {
+            logger.error("FHIR proxy error relaying to {}: {}", targetUrl, e.getMessage(), e);
+            if (!response.isCommitted()) {
+                response.sendError(HttpServletResponse.SC_BAD_GATEWAY,
+                    "Upstream FHIR request failed");
+            }
+        }
     }
 
     static boolean shouldRelayResponseHeader(String headerName) {

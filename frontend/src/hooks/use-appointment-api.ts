@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Appointment, Bundle, Practitioner } from "fhir/r4";
-import { fhirProxyUrl } from "@/lib/api";
+import { fhirSend } from "@/lib/api";
 import { fhirFetch } from "./use-fhir-api";
 import { useFhirServer } from "./use-fhir-server";
 
@@ -53,10 +53,8 @@ export function useDeleteAppointment() {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      const proxyUrl = fhirProxyUrl(`${serverUrl}/Appointment/${id}`);
-      const response = await fetch(proxyUrl, {
+      const response = await fhirSend(`${serverUrl}/Appointment/${id}`, {
         method: "DELETE",
-        credentials: "include",
       });
       if (!response.ok) {
         throw new Error(`Failed to delete appointment: ${response.status}`);
@@ -74,15 +72,13 @@ export function useCreateAppointment() {
 
   return useMutation({
     mutationFn: async (appointment: Appointment) => {
-      const proxyUrl = fhirProxyUrl(`${serverUrl}/Appointment`);
-      const response = await fetch(proxyUrl, {
+      const response = await fhirSend(`${serverUrl}/Appointment`, {
         method: "POST",
         headers: {
           "Content-Type": "application/fhir+json",
           Prefer: "return=representation",
         },
         body: JSON.stringify(appointment),
-        credentials: "include",
       });
 
       if (!response.ok) {

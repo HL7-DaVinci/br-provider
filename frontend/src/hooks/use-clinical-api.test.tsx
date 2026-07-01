@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import type { Encounter } from "fhir/r4";
+import type { Encounter, QuestionnaireResponse } from "fhir/r4";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -270,7 +270,30 @@ describe("useOrderQuestionnaireResponses", () => {
     vi.restoreAllMocks();
   });
 
-  it("queries QuestionnaireResponse by DTR qr-context, not based-on or per-id", async () => {
+  const QR_CONTEXT_EXT_URL =
+    "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/qr-context";
+  const qrWithContext = (
+    id: string,
+    orderRef: string,
+  ): QuestionnaireResponse => ({
+    resourceType: "QuestionnaireResponse",
+    id,
+    status: "completed",
+    extension: [
+      { url: QR_CONTEXT_EXT_URL, valueReference: { reference: orderRef } },
+    ],
+  });
+  const qrWithBasedOn = (
+    id: string,
+    orderRef: string,
+  ): QuestionnaireResponse => ({
+    resourceType: "QuestionnaireResponse",
+    id,
+    status: "completed",
+    basedOn: [{ reference: orderRef }],
+  });
+
+  it("queries by patient and links to the order client-side (qr-context or based-on)", async () => {
     const queryClient = createQueryClient();
     const wrapper = createWrapper(queryClient);
 
@@ -281,25 +304,39 @@ describe("useOrderQuestionnaireResponses", () => {
       json: async () => ({
         resourceType: "Bundle",
         type: "searchset",
-        entry: [],
+        entry: [
+          { resource: qrWithContext("qr-ctx", "ServiceRequest/sr-1") },
+          { resource: qrWithContext("qr-other", "ServiceRequest/sr-2") },
+          { resource: qrWithBasedOn("qr-based", "ServiceRequest/sr-1") },
+          {
+            resource: {
+              resourceType: "QuestionnaireResponse",
+              id: "qr-none",
+              status: "completed",
+            },
+          },
+        ],
       }),
     });
     vi.stubGlobal("fetch", fetchSpy);
 
-    renderHook(
+    const { result } = renderHook(
       () => useOrderQuestionnaireResponses("ServiceRequest/sr-1", "pat-1"),
       { wrapper },
     );
 
-    await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalled();
-    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     const fhirUrl = decodeFhirProxyUrl(String(fetchSpy.mock.calls[0][0]));
-    expect(fhirUrl).toContain("context=ServiceRequest%2Fsr-1");
     expect(fhirUrl).toContain("patient=pat-1");
+    expect(fhirUrl).not.toContain("context=");
     expect(fhirUrl).not.toContain("based-on");
     expect(fhirUrl).not.toMatch(/QuestionnaireResponse\/[^?]/);
+
+    expect(result.current.data?.entry?.map((e) => e.resource?.id)).toEqual([
+      "qr-ctx",
+      "qr-based",
+    ]);
   });
 
   it("works uniformly for non-ServiceRequest order types (Appointment)", async () => {
@@ -313,23 +350,27 @@ describe("useOrderQuestionnaireResponses", () => {
       json: async () => ({
         resourceType: "Bundle",
         type: "searchset",
-        entry: [],
+        entry: [
+          { resource: qrWithContext("qr-appt", "Appointment/appt-9") },
+          { resource: qrWithContext("qr-other", "ServiceRequest/sr-1") },
+        ],
       }),
     });
     vi.stubGlobal("fetch", fetchSpy);
 
-    renderHook(
+    const { result } = renderHook(
       () => useOrderQuestionnaireResponses("Appointment/appt-9", "pat-1"),
       { wrapper },
     );
 
-    await waitFor(() => {
-      expect(fetchSpy).toHaveBeenCalled();
-    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
     const fhirUrl = decodeFhirProxyUrl(String(fetchSpy.mock.calls[0][0]));
-    expect(fhirUrl).toContain("context=Appointment%2Fappt-9");
-    expect(fhirUrl).not.toContain("based-on");
+    expect(fhirUrl).toContain("patient=pat-1");
+    expect(fhirUrl).not.toContain("context=");
+    expect(result.current.data?.entry?.map((e) => e.resource?.id)).toEqual([
+      "qr-appt",
+    ]);
   });
 
   it("does not fire when orderRef is undefined", () => {

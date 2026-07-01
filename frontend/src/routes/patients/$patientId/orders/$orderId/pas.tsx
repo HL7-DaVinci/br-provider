@@ -1,6 +1,7 @@
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import type {
+  Bundle,
   ClaimResponse,
   Coverage,
   Extension,
@@ -18,39 +19,38 @@ import {
   Send,
   XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { useSubmitAttachment } from "@/hooks/use-cdex";
 import {
   invalidateOrderQueries,
   useCoverage,
+  useOrderPaStatus,
   useOrderQuestionnaireResponses,
   usePatient,
 } from "@/hooks/use-clinical-api";
 import { fhirFetch } from "@/hooks/use-fhir-api";
 import { useFhirServer } from "@/hooks/use-fhir-server";
 import {
-  extractTaskQuestionnaireUrls,
+  extractTaskQuestionnaireContexts,
+  fetchPasInquiry,
   type PasSubmitResult,
+  persistClaimResponseToProvider,
+  useCompleteDocumentationTask,
+  useEnsurePasSubscription,
   usePasDocumentationTasks,
-  usePasInquiry,
   usePasSubmit,
-  usePasUpdate,
+  usePersistDocumentationTasks,
 } from "@/hooks/use-pas";
 import { usePayerServer } from "@/hooks/use-payer-server";
-import { fhirProxyUrl } from "@/lib/api";
 import {
   formatClinicalDate,
   formatPatientName,
 } from "@/lib/clinical-formatters";
-import {
-  COVERAGE_INFO_EXT_URL,
-  parseExtensionFields,
-} from "@/lib/coverage-extensions";
-import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
 import { isTerminalQrStatus } from "@/lib/qr-status";
 
 interface PasSearch {
@@ -72,6 +72,14 @@ export const Route = createFileRoute(
   }),
 });
 
+const TERMINAL_TASK_STATUSES = [
+  "completed",
+  "cancelled",
+  "failed",
+  "rejected",
+  "entered-in-error",
+];
+
 function PasPage() {
   const { patientId, orderId } = Route.useParams();
   const { coverageId, claimResponseId, qrIds, orderType } = Route.useSearch();
@@ -89,10 +97,29 @@ function PasPage() {
   const { data: existingClaimResponse } = useQuery({
     queryKey: ["fhir", "ClaimResponse", claimResponseId, providerFhirUrl],
     queryFn: async (): Promise<ClaimResponse | null> => {
+      if (!claimResponseId) return null;
+      // Prefer the ClaimResponse persisted on the provider (no payer round-trip, no $inquire).
       try {
-        return await fhirFetch<ClaimResponse>(
-          `${providerFhirUrl}/ClaimResponse/${claimResponseId}`,
+        const bundle = await fhirFetch<Bundle<ClaimResponse>>(
+          `${providerFhirUrl}/ClaimResponse?identifier=${encodeURIComponent(
+            claimResponseId,
+          )}&_sort=-_lastUpdated`,
         );
+        const persisted = bundle.entry?.[0]?.resource;
+        if (persisted) return persisted;
+      } catch {
+        // fall through to a payer inquiry
+      }
+      try {
+        return await fetchPasInquiry({
+          claimResponseId,
+          payerFhirUrl,
+          patientId,
+          orderId,
+          orderType: orderType ?? "ServiceRequest",
+          coverageId,
+          providerFhirUrl,
+        });
       } catch {
         return null;
       }
@@ -132,7 +159,10 @@ function PasPage() {
   });
 
   const pasSubmit = usePasSubmit();
-  const pasUpdate = usePasUpdate();
+  const submitAttachment = useSubmitAttachment();
+  const persistDocTasks = usePersistDocumentationTasks();
+  const completeDocTask = useCompleteDocumentationTask();
+  const ensureSubscription = useEnsurePasSubscription();
 
   // After submission, track the ClaimResponse and any documentation request Tasks
   const [claimResponse, setClaimResponse] = useState<ClaimResponse | null>(
@@ -141,22 +171,17 @@ function PasPage() {
   const [docTasks, setDocTasks] = useState<Task[]>([]);
   const activeClaimResponse = claimResponse ?? existingClaimResponse ?? null;
 
-  const pasInquiry = usePasInquiry(
-    activeClaimResponse?.id
-      ? {
-          claimResponseId: activeClaimResponse.id,
-          payerFhirUrl,
-          patientId,
-          orderId,
-          orderType: resolvedOrderType,
-          coverageId: resolvedCoverageId,
-          providerFhirUrl,
-        }
-      : undefined,
+  // Learn the final decision from our own persisted ClaimResponse (fed by the PAS subscription
+  // notification), not by polling the payer's Claim/$inquire (PAS spec-9: SHOULD NOT while waiting).
+  const trackingId = activeClaimResponse?.identifier?.[0]?.value;
+  const paStatus = useOrderPaStatus(
+    trackingId,
+    providerFhirUrl,
+    !!activeClaimResponse,
   );
 
-  const latestResponse =
-    (pasInquiry.data as ClaimResponse | undefined) ?? activeClaimResponse;
+  const latestResponse: ClaimResponse | null =
+    paStatus.data ?? activeClaimResponse;
   const isPended =
     latestResponse?.outcome === "queued" ||
     latestResponse?.outcome === "partial";
@@ -165,16 +190,6 @@ function PasPage() {
     "",
   );
 
-  const prevInquiryOutcome = useRef(activeClaimResponse?.outcome);
-  useEffect(() => {
-    if (!pasInquiry.data) return;
-    const newOutcome = (pasInquiry.data as ClaimResponse).outcome;
-    if (newOutcome !== prevInquiryOutcome.current) {
-      prevInquiryOutcome.current = newOutcome;
-      invalidateClaimResponseList();
-    }
-  }, [invalidateClaimResponseList, pasInquiry.data]);
-
   const rehydratedDocTasks = usePasDocumentationTasks(
     docTasks.length === 0 && latestResponse?.id && providerFhirUrl
       ? {
@@ -182,90 +197,49 @@ function PasPage() {
           providerFhirUrl,
           claimId: priorClaimId,
           claimResponseId: latestResponse.id,
+          claimTrackingId: latestResponse.identifier?.[0]?.value,
           orderRef,
         }
       : undefined,
   );
   const documentationTasks =
     docTasks.length > 0 ? docTasks : (rehydratedDocTasks.data ?? []);
-  const taskQuestionnaireUrls =
-    extractTaskQuestionnaireUrls(documentationTasks);
+  const taskQuestionnaireContexts =
+    extractTaskQuestionnaireContexts(documentationTasks);
 
-  // Detect new QRs completed after DTR launch (for PAS update flow)
-  const { data: orderQrBundle } = useOrderQuestionnaireResponses(
-    isPended && taskQuestionnaireUrls.length > 0 ? orderRef : undefined,
-    isPended && taskQuestionnaireUrls.length > 0 ? patientId : undefined,
+  // An outstanding documentation request is an open (non-terminal) documentation Task. The submit is
+  // driven by this request plus completed documentation, independent of the claim's current decision:
+  // the payer asked for documents, so they are sent when ready whether the claim is still pended,
+  // approved, or denied. A completed Task means its attachment was already sent, which keeps the
+  // auto-submit idempotent across navigation.
+  const openDocTask = documentationTasks.find(
+    (task) => !TERMINAL_TASK_STATUSES.includes(task.status ?? ""),
   );
+  const hasOpenDocRequest =
+    !!openDocTask && taskQuestionnaireContexts.length > 0;
+
+  // Detect documentation completed in response to the request (newer than the request), to send to the
+  // payer via $submit-attachment. The "newer than" anchor is the Task's authoredOn so it survives the
+  // claim being resolved, since a resolved ClaimResponse may carry a later created date.
+  const { data: orderQrBundle } = useOrderQuestionnaireResponses(
+    hasOpenDocRequest ? orderRef : undefined,
+    hasOpenDocRequest ? patientId : undefined,
+  );
+  const docRequestAnchor =
+    openDocTask?.authoredOn ?? activeClaimResponse?.created;
   const newCompletedQrs = (orderQrBundle?.entry ?? [])
     .filter((e) => isTerminalQrStatus(e.resource?.status))
     .map((e) => e.resource as QuestionnaireResponse)
     .filter((qr) => {
-      if (!activeClaimResponse?.created) return true;
+      if (!docRequestAnchor) return true;
       const qrDate = qr.authored ? new Date(qr.authored) : null;
-      const crDate = new Date(activeClaimResponse.created);
-      return qrDate ? qrDate > crDate : true;
+      return qrDate ? qrDate >= new Date(docRequestAnchor) : true;
     });
+  const newCompletedQrIds = newCompletedQrs
+    .map((qr) => qr.id)
+    .filter((id): id is string => !!id);
 
   const [isLaunchingDtr, setIsLaunchingDtr] = useState(false);
-
-  const persistPaResultToOrder = useCallback(
-    async (cr: ClaimResponse) => {
-      invalidateClaimResponseList();
-      if (!cr.preAuthRef || cr.outcome !== "complete") return;
-      if (!resolvedCoverageId) return;
-
-      const orderUrl = `${providerFhirUrl}/${resolvedOrderType}/${orderId}`;
-      const orderRes = await fetch(fhirProxyUrl(orderUrl), {
-        credentials: "same-origin",
-      });
-      if (!orderRes.ok) return;
-      const order = await orderRes.json();
-
-      for (const ext of order.extension ?? []) {
-        if (ext.url !== COVERAGE_INFO_EXT_URL) continue;
-        const parsed = parseExtensionFields(ext.extension ?? []);
-        if (parsed.coverage !== `Coverage/${resolvedCoverageId}`) continue;
-
-        const subExts: Extension[] = ext.extension ?? [];
-        const satIdx = subExts.findIndex(
-          (s: Extension) => s.url === "satisfied-pa-id",
-        );
-        if (satIdx >= 0) {
-          subExts[satIdx].valueString = cr.preAuthRef;
-        } else {
-          subExts.push({
-            url: "satisfied-pa-id",
-            valueString: cr.preAuthRef,
-          });
-        }
-
-        const paIdx = subExts.findIndex(
-          (s: Extension) => s.url === "pa-needed",
-        );
-        if (paIdx >= 0) {
-          subExts[paIdx].valueCode = "satisfied";
-        }
-        ext.extension = subExts;
-      }
-
-      await fetch(fhirProxyUrl(orderUrl), {
-        method: "PUT",
-        headers: { "Content-Type": "application/fhir+json" },
-        credentials: "same-origin",
-        body: JSON.stringify(order),
-      });
-
-      invalidateOrderQueries(queryClient);
-    },
-    [
-      invalidateClaimResponseList,
-      providerFhirUrl,
-      resolvedOrderType,
-      orderId,
-      resolvedCoverageId,
-      queryClient,
-    ],
-  );
 
   function handleSubmit() {
     if (!resolvedCoverageId) return;
@@ -284,14 +258,36 @@ function PasPage() {
         onSuccess: (result: PasSubmitResult) => {
           setClaimResponse(result.claimResponse);
           setDocTasks(result.documentationTasks);
-          void persistPaResultToOrder(result.claimResponse);
+          // Persist the ClaimResponse + Task(s) so PA status survives navigation and the inbound
+          // subscription notification can correlate the resolution by tracking id.
+          void (async () => {
+            try {
+              await persistClaimResponseToProvider(
+                providerFhirUrl,
+                result.claimResponse,
+              );
+            } catch {
+              // best-effort: the server backfills the ClaimResponse on resolution
+            }
+            invalidateOrderQueries(queryClient);
+          })();
+          if (result.documentationTasks.length > 0) {
+            persistDocTasks.mutate(result.documentationTasks);
+          }
+          // Pended PA: subscribe to the payer for the final-decision notification (PAS SHALL).
+          if (
+            result.claimResponse.outcome === "queued" ||
+            result.claimResponse.outcome === "partial"
+          ) {
+            ensureSubscription.mutate(payerFhirUrl);
+          }
         },
       },
     );
   }
 
   const handleDtrLaunch = useCallback(() => {
-    if (!taskQuestionnaireUrls.length) return;
+    if (!taskQuestionnaireContexts.length) return;
     setIsLaunchingDtr(true);
     try {
       const fhirContext = [
@@ -303,7 +299,7 @@ function PasPage() {
         iss: providerFhirUrl,
         patientId,
         fhirContext: fhirContext.join(","),
-        questionnaire: serializeQuestionnaireSearch(taskQuestionnaireUrls),
+        coverageAssertionId: taskQuestionnaireContexts[0],
       });
     } catch (err) {
       console.error("DTR launch from PAS failed:", err);
@@ -311,7 +307,7 @@ function PasPage() {
       setIsLaunchingDtr(false);
     }
   }, [
-    taskQuestionnaireUrls,
+    taskQuestionnaireContexts,
     resolvedCoverageId,
     resolvedOrderType,
     orderId,
@@ -320,32 +316,68 @@ function PasPage() {
     openDtrTask,
   ]);
 
-  function handlePasUpdate() {
-    if (!resolvedCoverageId || !priorClaimId) return;
-    const newQrIds = newCompletedQrs
-      .map((qr) => qr.id)
-      .filter((id): id is string => !!id);
+  // Solicited additional documentation: the payer requested documents via the documentation Task, so
+  // the conformant response is CDex $submit-attachment (which associates the documents with the prior
+  // auth by tracking id), not a Claim/$submit resubmission. This fulfills the request regardless of the
+  // claim's current decision.
+  const handleSubmitAttachment = useCallback(() => {
+    if (!openDocTask || newCompletedQrIds.length === 0) return;
 
-    pasUpdate.mutate(
+    submitAttachment.mutate(
       {
-        patientId,
-        orderId,
-        orderType: resolvedOrderType,
-        coverageId: resolvedCoverageId,
-        questionnaireResponseIds: [...questionnaireResponseIds, ...newQrIds],
+        task: openDocTask,
         payerFhirUrl,
         providerFhirUrl,
-        priorClaimId,
+        questionnaireResponseIds: newCompletedQrIds,
       },
       {
-        onSuccess: (result: PasSubmitResult) => {
-          setClaimResponse(result.claimResponse);
-          setDocTasks(result.documentationTasks);
-          void persistPaResultToOrder(result.claimResponse);
+        onSuccess: () => {
+          invalidateClaimResponseList();
+          void paStatus.refetch();
+          completeDocTask.mutate({
+            task: openDocTask,
+            questionnaireResponseIds: newCompletedQrIds,
+          });
+          // Reflect the completed Task in local state so the outstanding-request UI clears immediately.
+          setDocTasks((prev) =>
+            prev.map((t) =>
+              t.id === openDocTask.id ? { ...t, status: "completed" } : t,
+            ),
+          );
         },
       },
     );
-  }
+  }, [
+    openDocTask,
+    newCompletedQrIds,
+    submitAttachment,
+    payerFhirUrl,
+    providerFhirUrl,
+    invalidateClaimResponseList,
+    paStatus,
+    completeDocTask,
+  ]);
+
+  // Auto-submit the completed questionnaire to the payer as soon as it is detected, fulfilling the
+  // request without a manual step. Fires once per set of completed QRs and only while an open
+  // documentation Task remains, so it never resubmits an attachment that was already sent.
+  const newCompletedSig = newCompletedQrIds.slice().sort().join(",");
+  const [autoSubmittedSig, setAutoSubmittedSig] = useState<string | null>(null);
+  useEffect(() => {
+    if (!openDocTask || newCompletedQrIds.length === 0) return;
+    if (submitAttachment.isPending || newCompletedSig === autoSubmittedSig) {
+      return;
+    }
+    setAutoSubmittedSig(newCompletedSig);
+    handleSubmitAttachment();
+  }, [
+    openDocTask,
+    newCompletedQrIds.length,
+    newCompletedSig,
+    autoSubmittedSig,
+    submitAttachment.isPending,
+    handleSubmitAttachment,
+  ]);
 
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-6">
@@ -515,83 +547,116 @@ function PasPage() {
         <>
           <PasResponseDisplay
             claimResponse={latestResponse}
-            isPolling={isPended && pasInquiry.isFetching}
+            isPolling={isPended && paStatus.isFetching}
           />
 
-          {/* Additional Documentation Request (from PAS Task resources) */}
-          {isPended && taskQuestionnaireUrls.length > 0 && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-amber-500" />
-                  Additional Documentation Required
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-sm text-muted-foreground">
-                  The payer has requested additional documentation before this
-                  authorization can be approved. Complete the required
-                  questionnaire(s) using DTR.
-                </p>
-                <ul className="space-y-1">
-                  {taskQuestionnaireUrls.map((url) => (
-                    <li
-                      key={url}
-                      className="text-xs font-mono text-muted-foreground"
-                    >
-                      {url}
-                    </li>
-                  ))}
-                </ul>
-                <Button onClick={handleDtrLaunch} disabled={isLaunchingDtr}>
-                  {isLaunchingDtr ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <FileText className="h-4 w-4 mr-2" />
+          {/* Documentation request (from PAS Task resources). Shown while a request is outstanding or a
+              submission is in flight; the submit is driven by the request, not the claim's decision. */}
+          {taskQuestionnaireContexts.length > 0 &&
+            (openDocTask ||
+              submitAttachment.isPending ||
+              submitAttachment.isSuccess ||
+              submitAttachment.isError) && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-amber-500" />
+                    Additional Documentation Requested
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {openDocTask && (
+                    <>
+                      <p className="text-sm text-muted-foreground">
+                        The payer requested additional documentation for this
+                        order. Complete the required questionnaire(s) using DTR;
+                        completed documentation is submitted to the payer
+                        automatically.
+                      </p>
+                      <ul className="space-y-1">
+                        {taskQuestionnaireContexts.map((url) => (
+                          <li
+                            key={url}
+                            className="text-xs font-mono text-muted-foreground"
+                          >
+                            {url}
+                          </li>
+                        ))}
+                      </ul>
+                      <Button
+                        onClick={handleDtrLaunch}
+                        disabled={isLaunchingDtr}
+                      >
+                        {isLaunchingDtr ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <FileText className="h-4 w-4 mr-2" />
+                        )}
+                        {isLaunchingDtr
+                          ? "Launching..."
+                          : "Complete Additional Documentation"}
+                      </Button>
+                    </>
                   )}
-                  {isLaunchingDtr
-                    ? "Launching..."
-                    : "Complete Additional Documentation"}
-                </Button>
 
-                {/* PAS Update section -- shown when new QRs exist after DTR */}
-                {newCompletedQrs.length > 0 && priorClaimId && (
-                  <div className="space-y-2 pt-2 border-t">
-                    <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                      <span>
-                        {newCompletedQrs.length} new document
-                        {newCompletedQrs.length !== 1 ? "s" : ""} completed
-                      </span>
-                    </div>
-                    <Button
-                      onClick={handlePasUpdate}
-                      disabled={pasUpdate.isPending}
-                    >
-                      {pasUpdate.isPending ? (
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      ) : (
-                        <Send className="h-4 w-4 mr-2" />
-                      )}
-                      {pasUpdate.isPending
-                        ? "Submitting Update..."
-                        : "Submit PAS Update"}
-                    </Button>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
+                  {(newCompletedQrs.length > 0 ||
+                    submitAttachment.isPending ||
+                    submitAttachment.isSuccess) &&
+                    documentationTasks.length > 0 && (
+                      <div className="space-y-2 pt-2 border-t">
+                        {submitAttachment.isPending ? (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            <span>
+                              Submitting completed documentation to the payer...
+                            </span>
+                          </div>
+                        ) : submitAttachment.isError ? (
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                              <AlertCircle className="h-3.5 w-3.5" />
+                              <span>Attachment submission failed.</span>
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={handleSubmitAttachment}
+                              disabled={!openDocTask}
+                            >
+                              <Send className="h-4 w-4 mr-2" />
+                              Retry Submission
+                            </Button>
+                          </div>
+                        ) : submitAttachment.isSuccess ? (
+                          <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            <span>Documentation submitted to the payer.</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            <span>
+                              {newCompletedQrs.length} document
+                              {newCompletedQrs.length !== 1 ? "s" : ""}{" "}
+                              completed; submitting to the payer...
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                </CardContent>
+              </Card>
+            )}
         </>
       )}
 
       {/* Error Display */}
-      {(pasSubmit.isError || pasUpdate.isError) && (
+      {(pasSubmit.isError || submitAttachment.isError) && (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/30">
           <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
             <AlertCircle className="h-4 w-4 shrink-0" />
             <p className="text-sm">
-              {(pasSubmit.error ?? pasUpdate.error)?.message}
+              {(pasSubmit.error ?? submitAttachment.error)?.message}
             </p>
           </div>
         </div>

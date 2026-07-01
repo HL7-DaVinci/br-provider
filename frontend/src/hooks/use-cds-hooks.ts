@@ -10,7 +10,7 @@ import type {
   Resource,
 } from "fhir/r4";
 import { useCallback, useRef } from "react";
-import { fhirProxyUrl } from "@/lib/api";
+import { fhirSend } from "@/lib/api";
 import type {
   CdsCard,
   CdsHookName,
@@ -323,13 +323,12 @@ async function resolvePrefetch(
       if (query.includes("{{")) return { key, data: undefined };
 
       const url = query.startsWith("http") ? query : `${serverUrl}/${query}`;
-      const proxyUrl = fhirProxyUrl(url);
 
       try {
         const data = await qc.fetchQuery({
           queryKey: ["cds-prefetch", url],
           queryFn: async () => {
-            const res = await fetch(proxyUrl, { credentials: "include" });
+            const res = await fhirSend(url);
             if (!res.ok) return undefined;
             return res.json();
           },

@@ -6,6 +6,7 @@ import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
 import { Button } from "@/components/ui/button";
 import {
   useEncounterOrders,
+  useOrderPaStatusMap,
   useOrderQuestionnaireResponses,
 } from "@/hooks/use-clinical-api";
 import { useFhirServer } from "@/hooks/use-fhir-server";
@@ -170,6 +171,8 @@ export function PaAction({
   const needsDoc = coverageInfo.some(hasDtrDoc);
   const needsAuth = coverageInfo.some((ci) => ci.paNeeded === "auth-needed");
 
+  const paStatusMap = useOrderPaStatusMap(patientId);
+
   const { data: existingQrBundle } = useOrderQuestionnaireResponses(
     needsDoc ? orderRef : undefined,
     needsDoc ? patientId : undefined,
@@ -182,6 +185,10 @@ export function PaAction({
   const qrIdsForPas = completedQrIds;
 
   if (!needsAuth || !orderId) return null;
+
+  // A PA already exists for this order (pended or decided); the status column links to it, so
+  // suppress the "Submit PA" action to avoid re-submitting on top of the existing authorization.
+  if (paStatusMap.has(`${order.resourceType}/${orderId}`)) return null;
 
   const coverageRef = coverageInfo.find((ci) => ci.coverage)?.coverage;
   const coverageId = coverageRef?.replace(/^Coverage\//, "") ?? "";

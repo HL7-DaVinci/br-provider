@@ -1,6 +1,11 @@
 import { useAuth } from "@/hooks/use-auth";
+import { getUserInfo } from "@/lib/auth";
 
-const PRACTITIONER_REF_RE = /^.*\/(Practitioner(?:Role)?\/[^/?#]+).*$/;
+const PRACTITIONER_REF_RE = /(Practitioner(?:Role)?\/[^/?#]+)/;
+
+function refFromFhirUser(fhirUser: string | undefined): string | undefined {
+  return fhirUser?.match(PRACTITIONER_REF_RE)?.[1];
+}
 
 /**
  * Returns the launching user's resource as a relative reference
@@ -10,8 +15,10 @@ const PRACTITIONER_REF_RE = /^.*\/(Practitioner(?:Role)?\/[^/?#]+).*$/;
  * PractitionerRole.
  */
 export function usePractitionerRef(): string | undefined {
-  const { fhirUser } = useAuth();
-  if (!fhirUser) return undefined;
-  const match = fhirUser.match(PRACTITIONER_REF_RE);
-  return match?.[1];
+  return refFromFhirUser(useAuth().fhirUser);
+}
+
+/** Non-hook accessor for the launching user's Practitioner/PractitionerRole reference. */
+export function getStoredPractitionerRef(): string | undefined {
+  return refFromFhirUser(getUserInfo()?.fhirUser);
 }

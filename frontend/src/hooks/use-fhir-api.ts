@@ -7,7 +7,7 @@ import type {
   Parameters,
 } from "fhir/r4";
 import { useMemo } from "react";
-import { fhirProxyUrl } from "@/lib/api";
+import { fhirSend } from "@/lib/api";
 import { type FhirServer, getServerByRequestUrl } from "@/lib/fhir-config";
 import { isOperationOutcome } from "@/lib/fhir-types";
 import { networkLogStore } from "@/lib/network-log-store";
@@ -94,8 +94,7 @@ export async function fhirFetch<T>(url: string): Promise<T> {
       Accept: "application/fhir+json",
     };
 
-    const proxyUrl = fhirProxyUrl(url);
-    response = await fetch(proxyUrl, { headers, credentials: "include" });
+    response = await fhirSend(url, { headers });
   } catch (error) {
     addNetworkLogEntry({
       startTime,
@@ -223,11 +222,11 @@ export function usePayerStatus(fhirUrl: string) {
     queryKey: ["payer", "status", fhirUrl],
     queryFn: async () => {
       const start = Date.now();
-      const proxyUrl = fhirProxyUrl(`${fhirUrl}/metadata`, { payer: true });
-      const response = await fetch(proxyUrl, {
-        headers: { Accept: "application/fhir+json" },
-        credentials: "include",
-      });
+      const response = await fhirSend(
+        `${fhirUrl}/metadata`,
+        { headers: { Accept: "application/fhir+json" } },
+        { payer: true },
+      );
       if (!response.ok) {
         throw new Error(`Payer server returned ${response.status}`);
       }

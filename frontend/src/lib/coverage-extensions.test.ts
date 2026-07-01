@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   coverageInfoPrimaryKeyEquals,
   findOrdersSharingCanonicals,
+  parseCoverageInfoFromResource,
 } from "./coverage-extensions";
 import type { OrderEntry } from "./order-types";
 
@@ -141,5 +142,29 @@ describe("coverageInfoPrimaryKeyEquals", () => {
 
   it("does not match when both sides are missing both halves of the key", () => {
     expect(coverageInfoPrimaryKeyEquals({}, {})).toBe(false);
+  });
+});
+
+describe("CoverageInformation parsing", () => {
+  it("parses coverage-information fields and ignores any pa-status block", () => {
+    const order: ServiceRequest = {
+      resourceType: "ServiceRequest",
+      status: "active",
+      intent: "order",
+      subject: { reference: "Patient/p1" },
+      extension: [
+        {
+          url: COVERAGE_INFO_EXT_URL,
+          extension: [
+            { url: "coverage", valueReference: { reference: "Coverage/c1" } },
+            { url: "pa-needed", valueCode: "auth-needed" },
+          ],
+        },
+      ],
+    };
+
+    const [ci] = parseCoverageInfoFromResource(order);
+    expect(ci.coverage).toBe("Coverage/c1");
+    expect(ci.paNeeded).toBe("auth-needed");
   });
 });

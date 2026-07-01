@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import type { Extension, Questionnaire, QuestionnaireResponse } from "fhir/r4";
+import type { Questionnaire, QuestionnaireResponse } from "fhir/r4";
 import {
   AlertCircle,
   ArrowLeft,
@@ -35,6 +35,7 @@ import {
 } from "@/hooks/use-questionnaire";
 import { propagateCoverageInfo } from "@/lib/coverage-propagation";
 import { broadcastDtrCompletion } from "@/lib/dtr-completion";
+import { upsertQrDtrExtensions } from "@/lib/dtr-qr-extensions";
 import { parseOrderRefs, parseQuestionnaireSearch } from "@/lib/dtr-search";
 import { normalizeServerUrl } from "@/lib/fhir-config";
 import {
@@ -47,9 +48,6 @@ import { cn } from "@/lib/utils";
 
 const ADAPTIVE_EXT_URL =
   "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-questionnaireAdaptive";
-
-const QR_CONTEXT_EXT_URL =
-  "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/qr-context";
 
 export interface DtrTaskContext {
   iss: string;
@@ -72,20 +70,6 @@ interface DtrWorkspaceProps {
 
 function isAdaptiveQuestionnaire(q: Questionnaire): boolean {
   return q.extension?.some((e) => e.url === ADAPTIVE_EXT_URL) ?? false;
-}
-
-function upsertQrContextExtensions(
-  extensions: Extension[],
-  orderRefs: string[],
-): Extension[] {
-  const filtered = extensions.filter((e) => e.url !== QR_CONTEXT_EXT_URL);
-  for (const ref of orderRefs) {
-    filtered.push({
-      url: QR_CONTEXT_EXT_URL,
-      valueReference: { reference: ref },
-    });
-  }
-  return filtered;
 }
 
 export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
@@ -471,10 +455,11 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
         response.id = savedResponseId;
       }
 
-      if (allOrderRefs.length > 0) {
-        response.extension = upsertQrContextExtensions(
+      if (allOrderRefs.length > 0 || coverageRef) {
+        response.extension = upsertQrDtrExtensions(
           response.extension ?? [],
           allOrderRefs,
+          coverageRef,
         );
 
         const serviceRequestRefs = allOrderRefs.filter((ref) =>
@@ -540,6 +525,7 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       saveResponse,
       savedResponseId,
       allOrderRefs,
+      coverageRef,
       activeExistingQr,
       mergedQr,
       propagateCoverage,

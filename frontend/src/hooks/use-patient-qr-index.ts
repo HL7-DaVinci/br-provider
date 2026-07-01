@@ -130,8 +130,8 @@ export function getOrderSatisfactionState(
 
 /**
  * Reduces per-canonical satisfaction states to a single state for a multi-
- * questionnaire order's UI affordance. Any notStarted wins, then 
- * inProgressForThisOrder, otherwise completedForThisOrder when every 
+ * questionnaire order's UI affordance. Any notStarted wins, then
+ * inProgressForThisOrder, otherwise completedForThisOrder when every
  * canonical is satisfied.
  */
 export function aggregateOrderState(

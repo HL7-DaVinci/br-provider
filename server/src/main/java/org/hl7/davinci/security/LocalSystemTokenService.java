@@ -16,8 +16,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * Mints short-lived locally-signed access tokens for server-internal callers
- * (DtrPopulateController, PasProxyController, etc.) that need to invoke this
- * server's own FHIR endpoints over HTTP without piggybacking on a user session.
+ * that need to invoke this server's own FHIR endpoints over HTTP without
+ * piggybacking on a user session.
  *
  * Tokens are signed by {@link CertificateHolder}'s key, which is the same key
  * advertised in this server's JWKS, so {@link TokenValidator} accepts them

@@ -1,3 +1,4 @@
+import { credentialsFor } from "./api";
 import { networkLogStore } from "./network-log-store";
 import { getPayerByUrl } from "./payer-config";
 
@@ -46,7 +47,12 @@ export async function loggedFetch(
 
   let response: Response;
   try {
-    response = await fetch(input, init);
+    // Credentials follow the transport: include for the same-origin BFF, omit for a direct
+    // bypass call to an open server (absolute URL) so it works with wildcard CORS.
+    response = await fetch(input, {
+      ...init,
+      credentials: credentialsFor(url),
+    });
   } catch (error) {
     networkLogStore.addEntry({
       ...baseEntry,

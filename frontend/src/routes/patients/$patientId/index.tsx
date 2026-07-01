@@ -1,5 +1,4 @@
 import { createFileRoute, Link, useParams } from "@tanstack/react-router";
-import type { Claim, ClaimResponse } from "fhir/r4";
 import {
   AlertCircle,
   CheckCircle2,
@@ -11,14 +10,17 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useClaimResponses, usePatient } from "@/hooks/use-clinical-api";
+import {
+  type OrderPaStatus,
+  useOrderPaStatusMap,
+  usePatient,
+} from "@/hooks/use-clinical-api";
 import {
   calculateAge,
   formatClinicalDate,
   formatPatientName,
   getPrimaryIdentifier,
 } from "@/lib/clinical-formatters";
-import { resolvePasOrderLink } from "@/lib/pas-utils";
 
 export const Route = createFileRoute("/patients/$patientId/")({
   component: PatientSummary,
@@ -27,8 +29,7 @@ export const Route = createFileRoute("/patients/$patientId/")({
 function PatientSummary() {
   const { patientId } = useParams({ from: "/patients/$patientId/" });
   const { data: patient, isLoading } = usePatient(patientId);
-  const { data: claimBundle, isLoading: claimsLoading } =
-    useClaimResponses(patientId);
+  const paStatusMap = useOrderPaStatusMap(patientId);
 
   if (isLoading || !patient) {
     return (
@@ -59,28 +60,12 @@ function PatientSummary() {
         .join(", ")
     : undefined;
 
-  const resources =
-    claimBundle?.entry?.flatMap((entry) =>
-      entry.resource ? [entry.resource] : [],
-    ) ?? [];
-
-  const claimResponses = resources.filter(
-    (resource): resource is ClaimResponse =>
-      resource.resourceType === "ClaimResponse",
+  const paStatuses = Array.from(paStatusMap.values());
+  const pendingStatuses = paStatuses.filter(
+    (s) => s.outcome === "queued" || s.outcome === "partial",
   );
-  const claimsById = new Map(
-    resources
-      .filter(
-        (resource): resource is Claim => resource.resourceType === "Claim",
-      )
-      .flatMap((claim) => (claim.id ? [[claim.id, claim] as const] : [])),
-  );
-
-  const pendingClaims = claimResponses.filter(
-    (cr) => cr.outcome === "queued" || cr.outcome === "partial",
-  );
-  const resolvedClaims = claimResponses.filter(
-    (cr) => cr.outcome !== "queued" && cr.outcome !== "partial",
+  const resolvedStatuses = paStatuses.filter(
+    (s) => s.outcome !== "queued" && s.outcome !== "partial",
   );
 
   return (
@@ -160,42 +145,35 @@ function PatientSummary() {
           <CardTitle className="text-sm">Prior Authorization Status</CardTitle>
         </CardHeader>
         <CardContent>
-          {claimsLoading ? (
-            <div className="animate-pulse space-y-2">
-              <div className="h-4 bg-muted rounded w-3/4" />
-              <div className="h-4 bg-muted rounded w-1/2" />
-            </div>
-          ) : claimResponses.length === 0 ? (
+          {paStatuses.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No prior authorization requests for this patient.
             </p>
           ) : (
             <div className="space-y-4">
-              {pendingClaims.length > 0 && (
+              {pendingStatuses.length > 0 && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                     Pending
                   </h4>
-                  {pendingClaims.map((cr) => (
-                    <ClaimResponseRow
-                      key={cr.id}
-                      claim={cr}
-                      claimsById={claimsById}
+                  {pendingStatuses.map((status) => (
+                    <PaStatusRow
+                      key={`${status.orderType}/${status.orderId}`}
+                      status={status}
                       patientId={patientId}
                     />
                   ))}
                 </div>
               )}
-              {resolvedClaims.length > 0 && (
+              {resolvedStatuses.length > 0 && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                     Resolved
                   </h4>
-                  {resolvedClaims.map((cr) => (
-                    <ClaimResponseRow
-                      key={cr.id}
-                      claim={cr}
-                      claimsById={claimsById}
+                  {resolvedStatuses.map((status) => (
+                    <PaStatusRow
+                      key={`${status.orderType}/${status.orderId}`}
+                      status={status}
                       patientId={patientId}
                     />
                   ))}
@@ -233,22 +211,16 @@ const OUTCOME_CONFIG: Record<
   partial: { icon: Clock, variant: "secondary", label: "Partial" },
 };
 
-function ClaimResponseRow({
-  claim,
-  claimsById,
+function PaStatusRow({
+  status,
   patientId,
 }: {
-  claim: ClaimResponse;
-  claimsById: ReadonlyMap<string, Claim>;
+  status: OrderPaStatus;
   patientId: string;
 }) {
-  const outcome = claim.outcome ?? "queued";
-  const config = OUTCOME_CONFIG[outcome] ?? OUTCOME_CONFIG.queued;
+  const config = OUTCOME_CONFIG[status.outcome] ?? OUTCOME_CONFIG.queued;
   const Icon = config.icon;
-
-  const preAuthRef = claim.preAuthRef;
-  const created = formatClinicalDate(claim.created);
-  const pasLink = resolvePasOrderLink(claim, claimsById);
+  const created = formatClinicalDate(status.created);
 
   return (
     <div className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm">
@@ -258,9 +230,9 @@ function ClaimResponseRow({
           <Badge variant={config.variant} className="text-xs">
             {config.label}
           </Badge>
-          {preAuthRef && (
+          {status.preAuthRef && (
             <span className="text-xs text-muted-foreground font-mono truncate">
-              PA# {preAuthRef}
+              PA# {status.preAuthRef}
             </span>
           )}
         </div>
@@ -268,20 +240,18 @@ function ClaimResponseRow({
           <div className="text-xs text-muted-foreground mt-0.5">{created}</div>
         )}
       </div>
-      {pasLink && (
-        <Link
-          to="/patients/$patientId/orders/$orderId/pas"
-          params={{ patientId, orderId: pasLink.orderId }}
-          search={{
-            orderType: pasLink.orderType,
-            coverageId: pasLink.coverageId,
-            claimResponseId: claim.id,
-          }}
-          className="text-muted-foreground hover:text-foreground"
-        >
-          <ExternalLink className="h-3.5 w-3.5" />
-        </Link>
-      )}
+      <Link
+        to="/patients/$patientId/orders/$orderId/pas"
+        params={{ patientId, orderId: status.orderId }}
+        search={{
+          orderType: status.orderType,
+          coverageId: status.coverageId,
+          claimResponseId: status.claimResponseId,
+        }}
+        className="text-muted-foreground hover:text-foreground"
+      >
+        <ExternalLink className="h-3.5 w-3.5" />
+      </Link>
     </div>
   );
 }

@@ -1,7 +1,37 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
-import type { Bundle, ClaimResponse, Task } from "fhir/r4";
+import {
+  type QueryClient,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import type {
+  Bundle,
+  ClaimResponse,
+  Coverage,
+  FhirResource,
+  Organization,
+  Patient,
+  Practitioner,
+  QuestionnaireResponse,
+  Task,
+} from "fhir/r4";
+import { fhirProxyUrl, fhirSend } from "@/lib/api";
+import { getPasNotificationUrl } from "@/lib/fhir-config";
+import { extractFhirError } from "@/lib/fhir-types";
 import { loggedFetch } from "@/lib/logged-fetch";
+import {
+  buildPasInquiryBundle,
+  buildPasRequestBundle,
+  buildPasUpdateBundle,
+  type PasInquiryResources,
+  type PasSubmitResources,
+  PROVIDER_ORG_IDENTIFIER,
+} from "@/lib/pas-bundle-builder";
+import { buildPasSubscription } from "@/lib/pas-subscription-builder";
+import { ensurePasTasks } from "@/lib/pas-task-builder";
 import { fhirFetch } from "./use-fhir-api";
+import { useFhirServer } from "./use-fhir-server";
+import { getStoredPractitionerRef } from "./use-practitioner-ref";
 
 export interface PasSubmitParams {
   patientId: string;
@@ -20,30 +50,96 @@ export interface PasSubmitResult {
   documentationTasks: Task[];
 }
 
+async function readPractitionerFromOrder(
+  base: string,
+  order: FhirResource,
+): Promise<Practitioner> {
+  const orderRef = (order as { requester?: { reference?: string } }).requester
+    ?.reference;
+  const ref = orderRef?.startsWith("Practitioner/")
+    ? orderRef
+    : getStoredPractitionerRef();
+  if (ref?.startsWith("Practitioner/")) {
+    return fhirFetch<Practitioner>(`${base}/${ref}`);
+  }
+  return { resourceType: "Practitioner", id: "unknown" };
+}
+
+async function readInsurerFromCoverage(
+  base: string,
+  coverage: Coverage,
+): Promise<Organization> {
+  const ref = coverage.payor?.[0]?.reference;
+  if (ref?.startsWith("Organization/")) {
+    return fhirFetch<Organization>(`${base}/${ref}`);
+  }
+  return { resourceType: "Organization", id: "unknown" };
+}
+
+/** Reads the provider resources a PAS Claim/$submit Bundle references. */
+async function readPasSubmitResources(
+  params: PasSubmitParams,
+): Promise<PasSubmitResources> {
+  const base = params.providerFhirUrl;
+  const [patient, order, coverage] = await Promise.all([
+    fhirFetch<Patient>(`${base}/Patient/${params.patientId}`),
+    fhirFetch<FhirResource>(`${base}/${params.orderType}/${params.orderId}`),
+    fhirFetch<Coverage>(`${base}/Coverage/${params.coverageId}`),
+  ]);
+  const [practitioner, insurer, questionnaireResponses] = await Promise.all([
+    readPractitionerFromOrder(base, order),
+    readInsurerFromCoverage(base, coverage),
+    Promise.all(
+      params.questionnaireResponseIds.map((id) =>
+        fhirFetch<QuestionnaireResponse>(`${base}/QuestionnaireResponse/${id}`),
+      ),
+    ),
+  ]);
+  return {
+    patient,
+    practitioner,
+    insurer,
+    coverage,
+    order,
+    orderType: params.orderType,
+    questionnaireResponses,
+  };
+}
+
 /**
- * Mutation hook for submitting a prior authorization request via the PAS proxy.
+ * Mutation hook for submitting a prior authorization request.
  * Sends patient/order/coverage context to the backend, which assembles the PAS
  * bundle and relays it to the payer's Claim/$submit endpoint.
  */
 export function usePasSubmit() {
   return useMutation({
     mutationFn: async (params: PasSubmitParams): Promise<PasSubmitResult> => {
+      const bundle = buildPasRequestBundle(
+        await readPasSubmitResources(params),
+      );
       const response = await loggedFetch(
-        "/api/pas/submit",
+        fhirProxyUrl(`${params.payerFhirUrl}/Claim/$submit`, {
+          payer: true,
+          op: "pas-submit",
+        }),
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(params),
-          credentials: "same-origin",
+          headers: { "Content-Type": "application/fhir+json" },
+          body: JSON.stringify(bundle),
         },
         { payerUrl: params.payerFhirUrl, operationName: "Claim/$submit" },
       );
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? `PAS submit failed: ${response.status}`);
+        throw new Error(
+          extractFhirError(body) ?? `PAS submit failed: ${response.status}`,
+        );
       }
-      const body = await response.json();
-      return extractPasResult(body);
+      return extractPasResult(
+        await response.json(),
+        params.payerFhirUrl,
+        `${params.orderType}/${params.orderId}`,
+      );
     },
   });
 }
@@ -59,13 +155,20 @@ export interface PasUpdateParams extends PasSubmitParams {
 export function usePasUpdate() {
   return useMutation({
     mutationFn: async (params: PasUpdateParams): Promise<PasSubmitResult> => {
+      const bundle = buildPasUpdateBundle(
+        await readPasSubmitResources(params),
+        params.priorClaimId,
+        params.payerFhirUrl,
+      );
       const response = await loggedFetch(
-        "/api/pas/update",
+        fhirProxyUrl(`${params.payerFhirUrl}/Claim/$submit`, {
+          payer: true,
+          op: "pas-submit",
+        }),
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(params),
-          credentials: "same-origin",
+          headers: { "Content-Type": "application/fhir+json" },
+          body: JSON.stringify(bundle),
         },
         {
           payerUrl: params.payerFhirUrl,
@@ -74,32 +177,187 @@ export function usePasUpdate() {
       );
       if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body?.error ?? `PAS update failed: ${response.status}`);
+        throw new Error(
+          extractFhirError(body) ?? `PAS update failed: ${response.status}`,
+        );
       }
-      const body = await response.json();
-      return extractPasResult(body);
+      return extractPasResult(
+        await response.json(),
+        params.payerFhirUrl,
+        `${params.orderType}/${params.orderId}`,
+      );
+    },
+  });
+}
+
+async function putTaskToProvider(serverUrl: string, task: Task): Promise<Task> {
+  const response = await fhirSend(`${serverUrl}/Task/${task.id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/fhir+json" },
+    body: JSON.stringify(task),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to persist Task/${task.id}: ${response.status}`);
+  }
+  return (await response.json()) as Task;
+}
+
+/**
+ * Persists a ClaimResponse to the active provider FHIR server, upserting by its tracking identifier so
+ * resubmitting a given response is idempotent. Lets the UI read PA status from the stored ClaimResponse
+ * without re-querying the payer.
+ */
+export async function persistClaimResponseToProvider(
+  serverUrl: string,
+  claimResponse: ClaimResponse,
+): Promise<void> {
+  const trackingId = claimResponse.identifier?.[0]?.value;
+  if (!trackingId) return;
+  const response = await fhirSend(
+    `${serverUrl}/ClaimResponse?identifier=${encodeURIComponent(trackingId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/fhir+json" },
+      // Conditional update by identifier (drop id); drop request, which references the payer's Claim
+      // and would fail referential integrity on the provider store.
+      body: JSON.stringify({
+        ...claimResponse,
+        id: undefined,
+        request: undefined,
+      }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to persist ClaimResponse: ${response.status}`);
+  }
+}
+
+function invalidateDocumentationTaskQueries(queryClient: QueryClient): void {
+  queryClient.invalidateQueries({ queryKey: ["fhir", "Task"] });
+  queryClient.invalidateQueries({
+    queryKey: ["pas", "patient-documentation-tasks"],
+  });
+  queryClient.invalidateQueries({ queryKey: ["pas", "documentation-tasks"] });
+}
+
+/**
+ * Persists provider-built PAS documentation Tasks to the active provider FHIR server.
+ */
+export function usePersistDocumentationTasks() {
+  const { serverUrl } = useFhirServer();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (tasks: Task[]): Promise<Task[]> => {
+      const persisted: Task[] = [];
+      for (const task of tasks) {
+        if (!task.id) continue;
+        persisted.push(await putTaskToProvider(serverUrl, task));
+      }
+      return persisted;
+    },
+    onSuccess: () => invalidateDocumentationTaskQueries(queryClient),
+  });
+}
+
+export interface CompleteDocumentationTaskParams {
+  task: Task;
+  questionnaireResponseIds: string[];
+}
+
+/**
+ * Marks a persisted documentation Task as completed and records the submitted
+ * QuestionnaireResponse(s) in Task.output. Called after a successful $submit-attachment so the
+ * provider's own Task reflects that the requested documentation was sent.
+ */
+export function useCompleteDocumentationTask() {
+  const { serverUrl } = useFhirServer();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      task,
+      questionnaireResponseIds,
+    }: CompleteDocumentationTaskParams): Promise<Task | null> => {
+      if (!task.id) return null;
+      const completed: Task = {
+        ...task,
+        status: "completed",
+        output: [
+          ...(task.output ?? []),
+          ...questionnaireResponseIds.map((id) => ({
+            type: { text: "Submitted attachment" },
+            valueReference: { reference: `QuestionnaireResponse/${id}` },
+          })),
+        ],
+      };
+      return putTaskToProvider(serverUrl, completed);
+    },
+    onSuccess: () => invalidateDocumentationTaskQueries(queryClient),
+  });
+}
+
+/**
+ * Creates a PAS rest-hook Subscription on the payer so it notifies the provider when a pended prior
+ * authorization is finalized. Best-effort: a failure here does not block the PA flow.
+ */
+export function useEnsurePasSubscription() {
+  const { serverUrl } = useFhirServer();
+  return useMutation({
+    mutationFn: async (payerFhirUrl: string): Promise<void> => {
+      const subscription = buildPasSubscription({
+        orgIdentifier: PROVIDER_ORG_IDENTIFIER,
+        notificationUrl: getPasNotificationUrl(serverUrl),
+      });
+      const response = await loggedFetch(
+        fhirProxyUrl(`${payerFhirUrl}/Subscription`, {
+          payer: true,
+          op: "subscription",
+        }),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/fhir+json" },
+          body: JSON.stringify(subscription),
+        },
+        { payerUrl: payerFhirUrl, operationName: "Subscription create" },
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(
+          extractFhirError(body) ?? `PAS subscribe failed: ${response.status}`,
+        );
+      }
     },
   });
 }
 
 const TASK_CODE_QUESTIONNAIRE_REQUEST = "attachment-request-questionnaire";
 
-/** Extract the ClaimResponse and documentation Tasks from a PAS response Bundle. */
-function extractPasResult(data: unknown): PasSubmitResult {
+/** Whether a Task is a PAS documentation request (code attachment-request-questionnaire). */
+function isDocumentationTask(task: Task): boolean {
+  return !!task.code?.coding?.some(
+    (c) => c.code === TASK_CODE_QUESTIONNAIRE_REQUEST,
+  );
+}
+
+/** Extract the ClaimResponse and build documentation Tasks from a PAS response Bundle. */
+function extractPasResult(
+  data: unknown,
+  payerFhirUrl: string,
+  orderRef: string,
+): PasSubmitResult {
   const bundle = data as Bundle;
   if (bundle.resourceType === "Bundle" && bundle.entry?.length) {
     const cr = bundle.entry.find(
       (e) => e.resource?.resourceType === "ClaimResponse",
     )?.resource as ClaimResponse | undefined;
 
-    const tasks = bundle.entry
-      .filter((e) => e.resource?.resourceType === "Task")
-      .map((e) => e.resource as Task)
-      .filter((t) =>
-        t.code?.coding?.some((c) => c.code === TASK_CODE_QUESTIONNAIRE_REQUEST),
-      );
-
-    if (cr) return { claimResponse: cr, documentationTasks: tasks };
+    if (cr) {
+      return {
+        claimResponse: cr,
+        documentationTasks: ensurePasTasks(bundle, payerFhirUrl, orderRef),
+      };
+    }
   }
   // If the server already unwrapped it, use as-is
   if ((data as ClaimResponse).resourceType === "ClaimResponse") {
@@ -123,40 +381,21 @@ export interface PasDocumentationTaskParams {
   providerFhirUrl: string;
   claimId?: string;
   claimResponseId?: string;
+  claimTrackingId?: string;
   orderRef?: string;
 }
 
 /**
- * Query hook that polls the payer for an updated ClaimResponse status.
- * When patientId + coverageId are provided, the backend uses a proper
- * Claim/$inquire operation per the PAS IG. Otherwise falls back to
- * GET /ClaimResponse/{id}.
+ * Polls the payer for an updated ClaimResponse. With full context (patient + coverage + provider)
+ * it issues a Claim/$inquire query-by-example; otherwise it reads the ClaimResponse directly.
  */
 export function usePasInquiry(params: PasInquiryParams | undefined) {
   return useQuery({
     queryKey: ["pas", "inquiry", params?.claimResponseId],
     queryFn: async () => {
-      const response = await loggedFetch(
-        "/api/pas/inquiry",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(params),
-          credentials: "same-origin",
-        },
-        {
-          payerUrl: params?.payerFhirUrl ?? "",
-          operationName: "Claim/$inquire",
-        },
-      );
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(
-          body?.error ?? `PAS inquiry failed: ${response.status}`,
-        );
-      }
-      const data = await response.json();
-      return extractClaimResponseFromInquiry(data, params?.claimResponseId);
+      if (!params) throw new Error("inquiry params are required");
+      const data = await runPasInquiry(params);
+      return extractClaimResponseFromInquiry(data, params.claimResponseId);
     },
     enabled: !!params?.claimResponseId,
     refetchInterval: (query) => {
@@ -171,6 +410,93 @@ export function usePasInquiry(params: PasInquiryParams | undefined) {
       return params?.claimResponseId ? 30_000 : false;
     },
   });
+}
+
+/** Runs a one-shot PAS inquiry and returns the resolved ClaimResponse. */
+export async function fetchPasInquiry(
+  params: PasInquiryParams,
+): Promise<ClaimResponse> {
+  return extractClaimResponseFromInquiry(
+    await runPasInquiry(params),
+    params.claimResponseId,
+  );
+}
+
+async function runPasInquiry(params: PasInquiryParams): Promise<unknown> {
+  if (params.patientId && params.coverageId && params.providerFhirUrl) {
+    const bundle = buildPasInquiryBundle(
+      await readPasInquiryResources(
+        params.providerFhirUrl,
+        params.patientId,
+        params.coverageId,
+        params.orderId,
+        params.orderType,
+      ),
+    );
+    return relayInquiry(
+      fhirProxyUrl(`${params.payerFhirUrl}/Claim/$inquire`, {
+        payer: true,
+        op: "pas-submit",
+      }),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/fhir+json" },
+        body: JSON.stringify(bundle),
+      },
+      params.payerFhirUrl,
+      "Claim/$inquire",
+    );
+  }
+  return relayInquiry(
+    fhirProxyUrl(
+      `${params.payerFhirUrl}/ClaimResponse/${params.claimResponseId}`,
+      { payer: true, op: "read" },
+    ),
+    { method: "GET" },
+    params.payerFhirUrl,
+    "ClaimResponse read",
+  );
+}
+
+async function relayInquiry(
+  url: string,
+  init: RequestInit,
+  payerUrl: string,
+  operationName: string,
+): Promise<unknown> {
+  const response = await loggedFetch(url, init, { payerUrl, operationName });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(
+      extractFhirError(body) ?? `PAS inquiry failed: ${response.status}`,
+    );
+  }
+  return response.json();
+}
+
+async function readPasInquiryResources(
+  base: string,
+  patientId: string,
+  coverageId: string,
+  orderId?: string,
+  orderType?: string,
+): Promise<PasInquiryResources> {
+  const [patient, coverage] = await Promise.all([
+    fhirFetch<Patient>(`${base}/Patient/${patientId}`),
+    fhirFetch<Coverage>(`${base}/Coverage/${coverageId}`),
+  ]);
+  const insurer = await readInsurerFromCoverage(base, coverage);
+  let practitioner: Practitioner = {
+    resourceType: "Practitioner",
+    id: "unknown",
+  };
+  if (orderId && orderType) {
+    const order = await fhirFetch<FhirResource>(
+      `${base}/${orderType}/${orderId}`,
+    );
+    practitioner = await readPractitionerFromOrder(base, order);
+  }
+  return { patient, practitioner, insurer, coverage };
 }
 
 /**
@@ -206,11 +532,7 @@ export function usePatientDocumentationTasks(
           .filter(
             (resource): resource is Task => resource?.resourceType === "Task",
           )
-          .filter((task) =>
-            task.code?.coding?.some(
-              (c) => c.code === TASK_CODE_QUESTIONNAIRE_REQUEST,
-            ),
-          );
+          .filter(isDocumentationTask);
       } catch {
         return [];
       }
@@ -236,6 +558,7 @@ export function usePasDocumentationTasks(
       params?.patientId,
       params?.claimId,
       params?.claimResponseId,
+      params?.claimTrackingId,
       params?.orderRef,
     ],
     queryFn: async () => {
@@ -260,6 +583,7 @@ export function usePasDocumentationTasks(
         return filterPasDocumentationTasks(tasks, {
           claimId: params.claimId,
           claimResponseId: params.claimResponseId,
+          claimTrackingId: params.claimTrackingId,
           orderRef: params.orderRef,
         });
       } catch {
@@ -270,7 +594,10 @@ export function usePasDocumentationTasks(
     enabled:
       !!params?.patientId &&
       !!params?.providerFhirUrl &&
-      (!!params?.claimId || !!params?.claimResponseId || !!params?.orderRef),
+      (!!params?.claimId ||
+        !!params?.claimResponseId ||
+        !!params?.claimTrackingId ||
+        !!params?.orderRef),
     staleTime: 30 * 1000,
     retry: 1,
   });
@@ -317,7 +644,7 @@ export function extractClaimResponseFromInquiry(
   throw new Error("No ClaimResponse found in inquiry response");
 }
 
-export function extractTaskQuestionnaireUrls(tasks: Task[]): string[] {
+export function extractTaskQuestionnaireContexts(tasks: Task[]): string[] {
   return [
     ...new Set(
       tasks.flatMap(
@@ -326,10 +653,10 @@ export function extractTaskQuestionnaireUrls(tasks: Task[]): string[] {
             ?.filter((input) =>
               input.type?.coding?.some(
                 (coding) =>
-                  coding.code === TASK_INPUT_CODE_QUESTIONNAIRES_NEEDED,
+                  coding.code === TASK_INPUT_CODE_QUESTIONNAIRE_CONTEXT,
               ),
             )
-            .map((input) => (input.valueCanonical ?? input.valueUrl) as string)
+            .map((input) => input.valueString as string)
             .filter(Boolean) ?? [],
       ),
     ),
@@ -341,18 +668,18 @@ export function filterPasDocumentationTasks(
   criteria: {
     claimId?: string;
     claimResponseId?: string;
+    claimTrackingId?: string;
     orderRef?: string;
   },
 ): Task[] {
   const hasCriteria =
-    !!criteria.claimId || !!criteria.claimResponseId || !!criteria.orderRef;
+    !!criteria.claimId ||
+    !!criteria.claimResponseId ||
+    !!criteria.claimTrackingId ||
+    !!criteria.orderRef;
 
   return tasks.filter((task) => {
-    if (
-      !task.code?.coding?.some(
-        (coding) => coding.code === TASK_CODE_QUESTIONNAIRE_REQUEST,
-      )
-    ) {
+    if (!isDocumentationTask(task)) {
       return false;
     }
 
@@ -368,8 +695,12 @@ export function filterPasDocumentationTasks(
         referenceMatches(
           task.reasonReference?.reference,
           `ClaimResponse/${criteria.claimResponseId}`,
-        ));
-    const hasClaimLink = !!task.reasonReference?.reference;
+        )) ||
+      (criteria.claimTrackingId &&
+        task.reasonReference?.identifier?.value === criteria.claimTrackingId);
+    const hasClaimLink =
+      !!task.reasonReference?.reference ||
+      !!task.reasonReference?.identifier?.value;
 
     const orderMatches =
       (criteria.orderRef &&
@@ -382,7 +713,9 @@ export function filterPasDocumentationTasks(
     const hasOrderLink = !!task.focus?.reference || !!task.basedOn?.length;
 
     if (
-      (criteria.claimId || criteria.claimResponseId) &&
+      (criteria.claimId ||
+        criteria.claimResponseId ||
+        criteria.claimTrackingId) &&
       hasClaimLink &&
       !claimMatches
     ) {
@@ -416,8 +749,12 @@ function selectClaimResponse(
   }
 
   if (claimResponseId) {
+    // Match on the logical id (in-memory path, payer id) or the tracking identifier
+    // (rehydrated path, where the provider copy is keyed by the identifier value).
     const match = claimResponses.find(
-      (claimResponse) => claimResponse.id === claimResponseId,
+      (claimResponse) =>
+        claimResponse.id === claimResponseId ||
+        claimResponse.identifier?.some((id) => id.value === claimResponseId),
     );
     if (match) return match;
 
@@ -458,4 +795,4 @@ function normalizeReference(reference: string | undefined): string | undefined {
   return reference.split("?")[0]?.replace(/\/+$/, "");
 }
 
-const TASK_INPUT_CODE_QUESTIONNAIRES_NEEDED = "questionnaires-needed";
+const TASK_INPUT_CODE_QUESTIONNAIRE_CONTEXT = "questionnaire-context";

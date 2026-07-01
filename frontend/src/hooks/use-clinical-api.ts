@@ -7,7 +7,6 @@ import {
 import type {
   Bundle,
   BundleEntry,
-  Claim,
   ClaimResponse,
   Condition,
   Encounter,
@@ -15,9 +14,10 @@ import type {
   Organization,
   Patient,
   QuestionnaireResponse,
+  Task,
 } from "fhir/r4";
 import { useMemo } from "react";
-import { fhirProxyUrl } from "@/lib/api";
+import { fhirSend } from "@/lib/api";
 import {
   type buildDraftSaveTransactionBundle,
   type buildSignedOrdersTransactionBundle,
@@ -30,7 +30,6 @@ import {
   type OrderEntry,
   type OrderResource,
 } from "@/lib/order-types";
-import { resolvePasOrderLink } from "@/lib/pas-utils";
 import type { AnyQrStatus } from "@/lib/qr-status";
 import { fhirFetch } from "./use-fhir-api";
 import { useFhirServer } from "./use-fhir-server";
@@ -229,12 +228,10 @@ export function useOrderCount(patientId: string) {
           },
         ],
       };
-      const proxyUrl = fhirProxyUrl(serverUrl);
-      return fetch(proxyUrl, {
+      return fhirSend(serverUrl, {
         method: "POST",
         headers: { "Content-Type": "application/fhir+json" },
         body: JSON.stringify(batchBundle),
-        credentials: "include",
       })
         .then((response) => response.json())
         .then((bundle) => {
@@ -291,12 +288,10 @@ export function useOrders(patientId: string) {
           },
         })),
       };
-      const proxyUrl = fhirProxyUrl(serverUrl);
-      const response = await fetch(proxyUrl, {
+      const response = await fhirSend(serverUrl, {
         method: "POST",
         headers: { "Content-Type": "application/fhir+json" },
         body: JSON.stringify(batchBundle),
-        credentials: "include",
       });
       const bundle = (await response.json()) as Bundle;
       return extractOrdersFromBatchResponse(bundle);
@@ -342,15 +337,13 @@ export function useSaveOrders() {
         throw new Error("No provider FHIR server selected.");
       }
 
-      const proxyUrl = fhirProxyUrl(serverUrl);
-      const response = await fetch(proxyUrl, {
+      const response = await fhirSend(serverUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/fhir+json",
           Prefer: "return=representation",
         },
         body: JSON.stringify(bundle),
-        credentials: "include",
       });
 
       if (!response.ok) {
@@ -382,14 +375,14 @@ export function useFinishEncounter() {
         },
       };
 
-      const proxyUrl = fhirProxyUrl(`${serverUrl}/Encounter/${encounter.id}`);
-
-      const response = await fetch(proxyUrl, {
-        method: "PUT",
-        headers: { "Content-Type": "application/fhir+json" },
-        body: JSON.stringify(finished),
-        credentials: "include",
-      });
+      const response = await fhirSend(
+        `${serverUrl}/Encounter/${encounter.id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/fhir+json" },
+          body: JSON.stringify(finished),
+        },
+      );
 
       if (!response.ok) {
         throw new Error(`Failed to finish encounter: ${response.status}`);
@@ -421,13 +414,14 @@ export function useUpdateEncounter() {
 
   return useMutation({
     mutationFn: async (encounter: Encounter) => {
-      const proxyUrl = fhirProxyUrl(`${serverUrl}/Encounter/${encounter.id}`);
-      const response = await fetch(proxyUrl, {
-        method: "PUT",
-        headers: { "Content-Type": "application/fhir+json" },
-        body: JSON.stringify(encounter),
-        credentials: "include",
-      });
+      const response = await fhirSend(
+        `${serverUrl}/Encounter/${encounter.id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/fhir+json" },
+          body: JSON.stringify(encounter),
+        },
+      );
       if (!response.ok) {
         throw new Error(`Failed to update encounter: ${response.status}`);
       }
@@ -450,12 +444,10 @@ async function fetchOrderBatch(
       request: { method: "GET", url: `${type}?${queryParams}&_count=50` },
     })),
   };
-  const proxyUrl = fhirProxyUrl(serverUrl);
-  const response = await fetch(proxyUrl, {
+  const response = await fhirSend(serverUrl, {
     method: "POST",
     headers: { "Content-Type": "application/fhir+json" },
     body: JSON.stringify(batchBundle),
-    credentials: "include",
   });
   return extractOrdersFromBatchResponse((await response.json()) as Bundle);
 }
@@ -505,15 +497,13 @@ export function useSaveDraftOrders() {
       if (!serverUrl) {
         throw new Error("No provider FHIR server selected.");
       }
-      const proxyUrl = fhirProxyUrl(serverUrl);
-      const response = await fetch(proxyUrl, {
+      const response = await fhirSend(serverUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/fhir+json",
           Prefer: "return=representation",
         },
         body: JSON.stringify(bundle),
-        credentials: "include",
       });
       if (!response.ok) {
         throw new Error(`Failed to save draft orders: ${response.status}`);
@@ -537,10 +527,8 @@ export function useDeleteDraftOrder() {
       resourceType: string;
       id: string;
     }) => {
-      const proxyUrl = fhirProxyUrl(`${serverUrl}/${resourceType}/${id}`);
-      const response = await fetch(proxyUrl, {
+      const response = await fhirSend(`${serverUrl}/${resourceType}/${id}`, {
         method: "DELETE",
-        credentials: "include",
       });
       if (!response.ok) {
         throw new Error(`Failed to delete draft order: ${response.status}`);
@@ -550,26 +538,28 @@ export function useDeleteDraftOrder() {
   });
 }
 
-export function useClaimResponses(patientId: string) {
-  const { serverUrl } = useFhirServer();
+const QR_CONTEXT_EXT_URL =
+  "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/qr-context";
 
-  return useQuery({
-    queryKey: ["fhir", "ClaimResponse", patientId, serverUrl],
-    queryFn: () =>
-      fhirFetch<Bundle>(
-        `${serverUrl}/ClaimResponse?patient=${patientId}&_include=ClaimResponse:request&_sort=-_lastUpdated&_count=20`,
-      ),
-    staleTime: 5 * 60 * 1000,
-    retry: 1,
-    enabled: !!serverUrl && !!patientId,
-  });
+/** Whether a QuestionnaireResponse is linked to the order via qr-context or basedOn. */
+function qrLinkedToOrder(qr: QuestionnaireResponse, orderRef: string): boolean {
+  if (!orderRef) return false;
+  const byContext = (qr.extension ?? []).some(
+    (ext) =>
+      ext.url === QR_CONTEXT_EXT_URL &&
+      ext.valueReference?.reference === orderRef,
+  );
+  const byBasedOn = (qr.basedOn ?? []).some(
+    (ref) => ref.reference === orderRef,
+  );
+  return byContext || byBasedOn;
 }
 
 /**
- * Query QuestionnaireResponses linked to a specific order via the DTR
- * `qr-context` extension. The IG-defined SearchParameter is named `context`
- * and resolves uniformly across ServiceRequest, MedicationRequest,
- * DeviceRequest, NutritionOrder, Encounter, and Appointment.
+ * Query QuestionnaireResponses linked to a specific order. The DTR IG defines a
+ * `context` SearchParameter over the `qr-context` extension, but it is not guaranteed
+ * to be active on every server, so this queries by `patient` (always supported) and
+ * links to the order client-side via the `qr-context` extension or `basedOn`.
  *
  * https://build.fhir.org/ig/HL7/davinci-dtr/en/SearchParameter-qr-context.html
  */
@@ -588,16 +578,19 @@ export function useOrderQuestionnaireResponses(
       patientId,
       serverUrl,
     ],
-    queryFn: () => {
+    queryFn: async () => {
       const params = new URLSearchParams({
         patient: patientId ?? "",
-        context: orderRef ?? "",
         _sort: "-_lastUpdated",
-        _count: "50",
+        _count: "100",
       });
-      return fhirFetch<Bundle<QuestionnaireResponse>>(
+      const bundle = await fhirFetch<Bundle<QuestionnaireResponse>>(
         `${serverUrl}/QuestionnaireResponse?${params.toString()}`,
       );
+      const entry = (bundle.entry ?? []).filter(
+        (e) => e.resource && qrLinkedToOrder(e.resource, orderRef ?? ""),
+      );
+      return { ...bundle, entry };
     },
     staleTime: 30 * 1000,
     retry: 1,
@@ -632,11 +625,12 @@ export function useDeleteQuestionnaireResponse() {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      const proxyUrl = fhirProxyUrl(`${serverUrl}/QuestionnaireResponse/${id}`);
-      const response = await fetch(proxyUrl, {
-        method: "DELETE",
-        credentials: "include",
-      });
+      const response = await fhirSend(
+        `${serverUrl}/QuestionnaireResponse/${id}`,
+        {
+          method: "DELETE",
+        },
+      );
       if (!response.ok) {
         throw new Error(
           `Failed to delete QuestionnaireResponse: ${response.status}`,
@@ -657,10 +651,8 @@ export function useDeleteTask() {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      const proxyUrl = fhirProxyUrl(`${serverUrl}/Task/${id}`);
-      const response = await fetch(proxyUrl, {
+      const response = await fhirSend(`${serverUrl}/Task/${id}`, {
         method: "DELETE",
-        credentials: "include",
       });
       if (!response.ok) {
         throw new Error(`Failed to delete Task: ${response.status}`);
@@ -737,50 +729,132 @@ export interface OrderPaStatus {
   created?: string;
 }
 
+function useOrderClaimResponses(patientId: string) {
+  const { serverUrl } = useFhirServer();
+  return useQuery({
+    queryKey: ["fhir", "ClaimResponse", "patient", serverUrl, patientId],
+    queryFn: () =>
+      fhirFetch<Bundle<ClaimResponse>>(
+        `${serverUrl}/ClaimResponse?patient=${patientId}&_count=50`,
+      ),
+    enabled: !!serverUrl && !!patientId,
+  });
+}
+
+function useOrderPaTasks(patientId: string) {
+  const { serverUrl } = useFhirServer();
+  return useQuery({
+    queryKey: ["fhir", "Task", "pa", serverUrl, patientId],
+    queryFn: () =>
+      fhirFetch<Bundle<Task>>(
+        `${serverUrl}/Task?patient=${patientId}&_sort=-_lastUpdated&_count=50`,
+      ),
+    enabled: !!serverUrl && !!patientId,
+  });
+}
+
+function taskTimestamp(task: Task): string {
+  return task.meta?.lastUpdated ?? task.authoredOn ?? "";
+}
+
 /**
- * Returns a Map<resourceType/id, OrderPaStatus> for all orders with PA submissions.
- * Derives status from ClaimResponse data already fetched by useClaimResponses.
+ * Joins PA-tracking Tasks (Task.focus = the order) with their ClaimResponses (matched by tracking
+ * identifier) into one OrderPaStatus per order. The ClaimResponse is the source of the decision; the
+ * Task supplies only the order join. Pure, for testability.
+ */
+export function deriveOrderPaStatuses(
+  tasks: Task[],
+  claimResponses: ClaimResponse[],
+): Map<string, OrderPaStatus> {
+  const crByTracking = new Map<string, ClaimResponse>();
+  for (const cr of claimResponses) {
+    const value = cr.identifier?.[0]?.value;
+    if (value) crByTracking.set(value, cr);
+  }
+
+  const latestByOrder = new Map<string, Task>();
+  for (const task of tasks) {
+    const orderRef = task.focus?.reference;
+    if (!orderRef) continue;
+    const existing = latestByOrder.get(orderRef);
+    if (!existing || taskTimestamp(task) >= taskTimestamp(existing)) {
+      latestByOrder.set(orderRef, task);
+    }
+  }
+
+  const statusMap = new Map<string, OrderPaStatus>();
+  for (const [orderRef, task] of latestByOrder) {
+    const [orderType, orderId] = orderRef.split("/");
+    if (!orderType || !orderId) continue;
+    const trackingId =
+      task.identifier?.[0]?.value ?? task.reasonReference?.identifier?.value;
+    const cr = trackingId ? crByTracking.get(trackingId) : undefined;
+    statusMap.set(orderRef, {
+      outcome: cr?.outcome ?? "queued",
+      disposition: cr?.disposition,
+      preAuthRef: cr?.preAuthRef,
+      claimResponseId: trackingId ?? "",
+      orderId,
+      orderType,
+      coverageId: cr?.insurance?.[0]?.coverage?.reference?.replace(
+        /^Coverage\//,
+        "",
+      ),
+      created: cr?.created ?? task.authoredOn,
+    });
+  }
+  return statusMap;
+}
+
+/**
+ * Returns a Map<resourceType/id, OrderPaStatus> for all of a patient's orders that have a PA Task,
+ * joined to the persisted ClaimResponse for the decision.
  */
 export function useOrderPaStatusMap(patientId: string) {
-  const { data: claimResponseBundle } = useClaimResponses(patientId);
+  const { data: taskBundle } = useOrderPaTasks(patientId);
+  const { data: crBundle } = useOrderClaimResponses(patientId);
 
   return useMemo(() => {
-    const statusMap = new Map<string, OrderPaStatus>();
-    if (!claimResponseBundle?.entry) return statusMap;
+    const tasks = (taskBundle?.entry ?? [])
+      .map((e) => e.resource)
+      .filter((r): r is Task => r?.resourceType === "Task")
+      .filter((t) =>
+        isOrderResourceType(t.focus?.reference?.split("/")[0] ?? ""),
+      );
+    const claimResponses = (crBundle?.entry ?? [])
+      .map((e) => e.resource)
+      .filter((r): r is ClaimResponse => r?.resourceType === "ClaimResponse");
+    return deriveOrderPaStatuses(tasks, claimResponses);
+  }, [taskBundle, crBundle]);
+}
 
-    const claimsById = new Map<string, Claim>();
-    for (const entry of claimResponseBundle.entry) {
-      if (entry.resource?.resourceType === "Claim" && entry.resource.id) {
-        claimsById.set(entry.resource.id, entry.resource as Claim);
-      }
-    }
-
-    for (const entry of claimResponseBundle.entry) {
-      if (entry.resource?.resourceType !== "ClaimResponse") continue;
-      const cr = entry.resource as ClaimResponse;
-      if (!cr.id) continue;
-      const link = resolvePasOrderLink(cr, claimsById);
-      if (!link) continue;
-      const orderKey = `${link.orderType}/${link.orderId}`;
-
-      const existing = statusMap.get(orderKey);
-      if (
-        !existing ||
-        (cr.created && existing.created && cr.created > existing.created)
-      ) {
-        statusMap.set(orderKey, {
-          outcome: cr.outcome ?? "queued",
-          disposition: cr.disposition,
-          preAuthRef: cr.preAuthRef,
-          claimResponseId: cr.id,
-          orderId: link.orderId,
-          orderType: link.orderType,
-          coverageId: link.coverageId,
-          created: cr.created,
-        });
-      }
-    }
-
-    return statusMap;
-  }, [claimResponseBundle]);
+/**
+ * Polls one order's persisted ClaimResponse (updated by the PAS subscription notification), in place
+ * of payer Claim/$inquire polling which the PAS IG (spec-9) says SHOULD NOT be used while waiting.
+ * Stops once the ClaimResponse reaches a final outcome.
+ */
+export function useOrderPaStatus(
+  trackingId: string | undefined,
+  providerFhirUrl: string,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: ["pas", "order-claimresponse", providerFhirUrl, trackingId],
+    queryFn: async (): Promise<ClaimResponse | null> => {
+      const bundle = await fhirFetch<Bundle<ClaimResponse>>(
+        `${providerFhirUrl}/ClaimResponse?identifier=${encodeURIComponent(
+          trackingId ?? "",
+        )}&_sort=-_lastUpdated`,
+      );
+      return (bundle.entry?.[0]?.resource as ClaimResponse) ?? null;
+    },
+    enabled: enabled && !!trackingId && !!providerFhirUrl,
+    refetchInterval: (q) => {
+      const cr = q.state.data as ClaimResponse | null | undefined;
+      const outcome = cr?.outcome;
+      return !cr || outcome === "queued" || outcome === "partial"
+        ? 5_000
+        : false;
+    },
+  });
 }

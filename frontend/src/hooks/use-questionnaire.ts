@@ -11,8 +11,9 @@ import type {
   Questionnaire,
   QuestionnaireResponse,
 } from "fhir/r4";
-import { fhirProxyUrl } from "@/lib/api";
+import { fhirProxyUrl, fhirSend } from "@/lib/api";
 import { extractPackageBundle } from "@/lib/dtr-ingestion";
+import { extractFhirError } from "@/lib/fhir-types";
 import { loggedFetch } from "@/lib/logged-fetch";
 import { useFhirServer } from "./use-fhir-server";
 
@@ -40,12 +41,14 @@ async function fetchQuestionnairePackage(
   const body = await buildQuestionnairePackageParams(params);
 
   const response = await loggedFetch(
-    "/api/dtr/questionnaire-package",
+    fhirProxyUrl(
+      `${params.payerFhirUrl}/Questionnaire/$questionnaire-package`,
+      { payer: true, op: "dtr" },
+    ),
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ payerFhirUrl: params.payerFhirUrl, body }),
-      credentials: "same-origin",
+      headers: { "Content-Type": "application/fhir+json" },
+      body: JSON.stringify(body),
     },
     {
       payerUrl: params.payerFhirUrl,
@@ -56,7 +59,7 @@ async function fetchQuestionnairePackage(
   if (!response.ok) {
     const errorBody = await response.json().catch(() => null);
     throw new Error(
-      errorBody?.error ??
+      extractFhirError(errorBody) ??
         `Failed to fetch questionnaire package: ${response.status}`,
     );
   }
@@ -193,13 +196,10 @@ export function useSaveQuestionnaireResponse(providerFhirUrl?: string) {
       const fhirUrl = questionnaireResponse.id
         ? `${serverUrl}/QuestionnaireResponse/${questionnaireResponse.id}`
         : `${serverUrl}/QuestionnaireResponse`;
-      const proxyUrl = fhirProxyUrl(fhirUrl);
-
-      const response = await fetch(proxyUrl, {
+      const response = await fhirSend(fhirUrl, {
         method,
         headers: { "Content-Type": "application/fhir+json" },
         body: JSON.stringify(questionnaireResponse),
-        credentials: "same-origin",
       });
 
       if (!response.ok) {
@@ -372,15 +372,14 @@ export function useNextQuestion(payerFhirUrl: string) {
       };
 
       const response = await loggedFetch(
-        "/api/dtr/next-question",
+        fhirProxyUrl(`${payerFhirUrl}/Questionnaire/$next-question`, {
+          payer: true,
+          op: "dtr",
+        }),
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            payerFhirUrl,
-            questionnaireResponse: parametersRequest,
-          }),
-          credentials: "same-origin",
+          headers: { "Content-Type": "application/fhir+json" },
+          body: JSON.stringify(parametersRequest),
         },
         { payerUrl: payerFhirUrl, operationName: "$next-question" },
       );
@@ -388,7 +387,8 @@ export function useNextQuestion(payerFhirUrl: string) {
       if (!response.ok) {
         const errorBody = await response.json().catch(() => null);
         throw new Error(
-          errorBody?.error ?? `Failed to get next question: ${response.status}`,
+          extractFhirError(errorBody) ??
+            `Failed to get next question: ${response.status}`,
         );
       }
 
@@ -453,7 +453,11 @@ async function buildQuestionnairePackageParams(
   if (coverage) {
     parameterList.push({ name: "coverage", resource: coverage });
   }
-  if (order) {
+  // When a context (item trace number) resolves the questionnaire directly, the payer ignores order-based
+  // discovery, so the order resource is redundant; omit it to send a context-only request.
+  const contextResolvesQuestionnaire =
+    !!params.coverageAssertionId && (params.questionnaire?.length ?? 0) === 0;
+  if (order && !contextResolvesQuestionnaire) {
     parameterList.push({ name: "order", resource: order });
   }
 
@@ -482,8 +486,7 @@ async function fetchProviderResource(
   providerFhirUrl: string,
   ref: string,
 ): Promise<unknown | null> {
-  const url = fhirProxyUrl(`${providerFhirUrl}/${ref}`);
-  const res = await fetch(url, { credentials: "include" });
+  const res = await fhirSend(`${providerFhirUrl}/${ref}`);
   if (!res.ok) return null;
   return res.json();
 }

@@ -33,7 +33,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest();
         var response = new MockHttpServletResponse();
 
-        controller.proxy("file:///etc/passwd", false, request, response);
+        controller.proxy("file:///etc/passwd", false, "read", request, response);
 
         assertEquals(400, response.getStatus());
     }
@@ -43,7 +43,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest();
         var response = new MockHttpServletResponse();
 
-        controller.proxy("ftp://example.org/file", false, request, response);
+        controller.proxy("ftp://example.org/file", false, "read", request, response);
 
         assertEquals(400, response.getStatus());
     }
@@ -53,7 +53,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest();
         var response = new MockHttpServletResponse();
 
-        controller.proxy("not-a-url", false, request, response);
+        controller.proxy("not-a-url", false, "read", request, response);
 
         assertEquals(400, response.getStatus());
     }
@@ -65,7 +65,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
 
-        controller.proxy("https://hapi.fhir.org/baseR4/Patient", false, request, response);
+        controller.proxy("https://hapi.fhir.org/baseR4/Patient", false, "read", request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -75,7 +75,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
 
-        controller.proxy("http://169.254.169.254/latest/meta-data", false, request, response);
+        controller.proxy("http://169.254.169.254/latest/meta-data", false, "read", request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -85,7 +85,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
 
-        controller.proxy("http://localhost:6379/keys", false, request, response);
+        controller.proxy("http://localhost:6379/keys", false, "read", request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -96,7 +96,7 @@ class FhirProxyControllerTest {
         var response = new MockHttpServletResponse();
 
         // http://localhost:8080/fhir is trusted, but fhir.evil.com should not match
-        controller.proxy("http://localhost:8080/fhir.evil.com/Patient", false, request, response);
+        controller.proxy("http://localhost:8080/fhir.evil.com/Patient", false, "read", request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -109,7 +109,7 @@ class FhirProxyControllerTest {
         var response = new MockHttpServletResponse();
 
         try {
-            controller.proxy(LOCAL_SERVER + "/metadata", false, request, response);
+            controller.proxy(LOCAL_SERVER + "/metadata", false, "read", request, response);
         } catch (Exception e) {
             // Connection refused is expected; the key assertion is no 401/403
         }
@@ -126,7 +126,7 @@ class FhirProxyControllerTest {
         var response = new MockHttpServletResponse();
 
         try {
-            controller.proxy(LOCAL_SERVER + "/Patient", false, request, response);
+            controller.proxy(LOCAL_SERVER + "/Patient", false, "read", request, response);
         } catch (Exception e) {
             // Connection refused is expected
         }
@@ -148,7 +148,7 @@ class FhirProxyControllerTest {
 
         var response = new MockHttpServletResponse();
         try {
-            controller.proxy(customServer + "/Patient", false, request, response);
+            controller.proxy(customServer + "/Patient", false, "read", request, response);
         } catch (Exception e) {
             // Connection refused is expected
         }
@@ -205,7 +205,7 @@ class FhirProxyControllerTest {
         var response = new MockHttpServletResponse();
 
         try {
-            ctrl.proxy("https://external.fhir.org/fhir/Patient", false, request, response);
+            ctrl.proxy("https://external.fhir.org/fhir/Patient", false, "read", request, response);
         } catch (Exception e) {
             // Connection refused is expected
         }

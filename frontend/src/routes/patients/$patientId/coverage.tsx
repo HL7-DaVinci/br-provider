@@ -1,6 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import type { Coverage } from "fhir/r4";
+import { Code } from "lucide-react";
 import { CoverageInfo } from "@/components/coverage-info";
+import {
+  JsonViewerDialog,
+  useJsonViewer,
+} from "@/components/json-viewer-dialog";
+import { Button } from "@/components/ui/button";
 import { useCoverage, useOrganization } from "@/hooks/use-clinical-api";
 
 export const Route = createFileRoute("/patients/$patientId/coverage")({
@@ -11,6 +17,7 @@ function CoverageDetail() {
   const { patientId } = Route.useParams();
   const { data: coverageBundle, isLoading: coverageLoading } =
     useCoverage(patientId);
+  const { viewerData, openViewer, closeViewer } = useJsonViewer();
 
   const coverages: Coverage[] =
     coverageBundle?.entry
@@ -47,13 +54,37 @@ function CoverageDetail() {
         </span>
       </h2>
       {coverages.map((coverage) => (
-        <CoverageCard key={coverage.id} coverage={coverage} />
+        <CoverageCard
+          key={coverage.id}
+          coverage={coverage}
+          onViewRaw={() =>
+            openViewer(
+              coverage,
+              coverage.id ? `Coverage/${coverage.id}` : "Coverage",
+              "Raw JSON representation",
+            )
+          }
+        />
       ))}
+      {viewerData && (
+        <JsonViewerDialog
+          data={viewerData.data}
+          title={viewerData.title}
+          description={viewerData.description}
+          onClose={closeViewer}
+        />
+      )}
     </div>
   );
 }
 
-function CoverageCard({ coverage }: { coverage: Coverage }) {
+function CoverageCard({
+  coverage,
+  onViewRaw,
+}: {
+  coverage: Coverage;
+  onViewRaw: () => void;
+}) {
   const orgRef =
     Array.isArray(coverage.payor) && coverage.payor[0]?.reference
       ? coverage.payor[0].reference
@@ -63,6 +94,17 @@ function CoverageCard({ coverage }: { coverage: Coverage }) {
 
   return (
     <div className="rounded-md border p-4">
+      <div className="mb-2 flex justify-end">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={onViewRaw}
+        >
+          <Code className="h-3.5 w-3.5 mr-1" />
+          View Raw
+        </Button>
+      </div>
       <CoverageInfo
         coverage={coverage}
         coverageLoading={false}

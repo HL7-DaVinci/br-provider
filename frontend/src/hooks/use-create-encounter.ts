@@ -4,7 +4,7 @@ import type { Encounter } from "fhir/r4";
 import { useCallback, useRef, useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { useFhirServer } from "@/hooks/use-fhir-server";
-import { fhirProxyUrl } from "@/lib/api";
+import { fhirSend } from "@/lib/api";
 
 export function useCreateEncounter(patientId: string) {
   const { serverUrl } = useFhirServer();
@@ -36,11 +36,10 @@ export function useCreateEncounter(patientId: string) {
         period: { start: new Date().toISOString() },
       };
 
-      const response = await fetch(fhirProxyUrl(`${serverUrl}/Encounter`), {
+      const response = await fhirSend(`${serverUrl}/Encounter`, {
         method: "POST",
         headers: { "Content-Type": "application/fhir+json" },
         body: JSON.stringify(encounter),
-        credentials: "include",
       });
 
       if (!response.ok) {
