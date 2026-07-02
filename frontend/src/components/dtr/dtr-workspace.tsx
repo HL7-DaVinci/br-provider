@@ -35,6 +35,7 @@ import {
 } from "@/hooks/use-questionnaire";
 import { propagateCoverageInfo } from "@/lib/coverage-propagation";
 import { broadcastDtrCompletion } from "@/lib/dtr-completion";
+import { alignChoiceAnswers } from "@/lib/dtr-ingestion";
 import { upsertQrDtrExtensions } from "@/lib/dtr-qr-extensions";
 import { parseOrderRefs, parseQuestionnaireSearch } from "@/lib/dtr-search";
 import { normalizeServerUrl } from "@/lib/fhir-config";
@@ -321,13 +322,21 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
   const { mergedQr, originIndex } = useMemo(() => {
     const payerDraft = activePackage?.questionnaireResponse ?? null;
     const candidate = populateResult?.response ?? null;
+    // Populate emits bare code strings for choice items; align them to the
+    // questionnaire's answer options so LForms accepts them and the origin
+    // index serializes the same values the form will export.
+    const align = (qr: QuestionnaireResponse): QuestionnaireResponse =>
+      activePackage?.questionnaire
+        ? alignChoiceAnswers(qr, activePackage.questionnaire)
+        : qr;
     // Terminal QRs (completed/amended) render verbatim. The submitted answers
     // are authoritative and must not be blended with a fresh populate result,
     // which would overwrite user-confirmed values with stale auto values.
     if (activeExistingQr && isTerminalQrStatus(activeExistingQr.status)) {
+      const aligned = align(activeExistingQr);
       return {
-        mergedQr: activeExistingQr,
-        originIndex: buildOriginIndex(activeExistingQr),
+        mergedQr: aligned,
+        originIndex: buildOriginIndex(aligned),
       };
     }
     const base =
@@ -343,11 +352,17 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       base && candidate
         ? applyPopulateResult(base, candidate)
         : (base ?? candidate);
+    const aligned = merged ? align(merged) : null;
     return {
-      mergedQr: merged,
-      originIndex: merged ? buildOriginIndex(merged) : new Map(),
+      mergedQr: aligned,
+      originIndex: aligned ? buildOriginIndex(aligned) : new Map(),
     };
-  }, [activeExistingQr, activePackage?.questionnaireResponse, populateResult]);
+  }, [
+    activeExistingQr,
+    activePackage?.questionnaireResponse,
+    activePackage?.questionnaire,
+    populateResult,
+  ]);
 
   // mergedQr already incorporates activeExistingQr as the base when present,
   // so it's the single source of truth for what to feed LHC-Forms.

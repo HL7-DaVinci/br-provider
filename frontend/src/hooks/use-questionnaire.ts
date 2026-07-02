@@ -12,7 +12,10 @@ import type {
   QuestionnaireResponse,
 } from "fhir/r4";
 import { fhirProxyUrl, fhirSend } from "@/lib/api";
-import { extractPackageBundle } from "@/lib/dtr-ingestion";
+import {
+  extractPackageBundle,
+  inlineBundleValueSets,
+} from "@/lib/dtr-ingestion";
 import { extractFhirError } from "@/lib/fhir-types";
 import { loggedFetch } from "@/lib/logged-fetch";
 import { useFhirServer } from "./use-fhir-server";
@@ -69,11 +72,17 @@ async function fetchQuestionnairePackage(
   // Payers may return Parameters wrapping the bundle; $populate consumers
   // expect a bare Bundle with populated .entry.
   const bundle = extractPackageBundle(data, params.questionnaire?.[0]);
+  const questionnaire = bundle
+    ? findResourceInBundle<Questionnaire>(bundle, "Questionnaire")
+    : null;
   return {
     bundle,
-    questionnaire: bundle
-      ? findResourceInBundle<Questionnaire>(bundle, "Questionnaire")
-      : null,
+    // Resolve answerValueSet references against the bundle's expanded
+    // ValueSets so choice items render without a terminology server
+    questionnaire:
+      questionnaire && bundle
+        ? inlineBundleValueSets(questionnaire, bundle)
+        : questionnaire,
     questionnaireResponse: bundle
       ? findResourceInBundle<QuestionnaireResponse>(
           bundle,
@@ -438,8 +447,6 @@ function extractQrFromNextQuestionResponse(
 async function buildQuestionnairePackageParams(
   params: QuestionnairePackageParams,
 ): Promise<Record<string, unknown>> {
-  const parameterList: Record<string, unknown>[] = [];
-
   // Fetch coverage and order in parallel since they are independent
   const [coverage, order] = await Promise.all([
     params.coverageRef
@@ -450,32 +457,50 @@ async function buildQuestionnairePackageParams(
       : null,
   ]);
 
+  return {
+    resourceType: "Parameters",
+    parameter: buildPackageParameterList(coverage, order, params),
+  };
+}
+
+/**
+ * Selects the $questionnaire-package input parameters. questionnaire, context,
+ * and order are alternative questionnaire-discovery mechanisms: the payer
+ * resolves a package bundle per questionnaire found via each provided input and
+ * returns one bundle per resolved questionnaire. Sending more than one selector
+ * therefore yields redundant (and possibly mismatched) bundles, so send only
+ * the most specific selector available: an explicit questionnaire canonical
+ * wins over a context trace id, which in turn wins over order-based discovery.
+ * Coverage is always included (the operation requires it).
+ */
+export function buildPackageParameterList(
+  coverage: unknown | null,
+  order: unknown | null,
+  params: Pick<
+    QuestionnairePackageParams,
+    "questionnaire" | "coverageAssertionId"
+  >,
+): Record<string, unknown>[] {
+  const parameterList: Record<string, unknown>[] = [];
+
   if (coverage) {
     parameterList.push({ name: "coverage", resource: coverage });
   }
-  // When a context (item trace number) resolves the questionnaire directly, the payer ignores order-based
-  // discovery, so the order resource is redundant; omit it to send a context-only request.
-  const contextResolvesQuestionnaire =
-    !!params.coverageAssertionId && (params.questionnaire?.length ?? 0) === 0;
-  if (order && !contextResolvesQuestionnaire) {
-    parameterList.push({ name: "order", resource: order });
-  }
 
-  for (const canonical of params.questionnaire ?? []) {
-    parameterList.push({
-      name: "questionnaire",
-      valueCanonical: canonical,
-    });
-  }
-
-  if (params.coverageAssertionId) {
+  if ((params.questionnaire?.length ?? 0) > 0) {
+    for (const canonical of params.questionnaire ?? []) {
+      parameterList.push({ name: "questionnaire", valueCanonical: canonical });
+    }
+  } else if (params.coverageAssertionId) {
     parameterList.push({
       name: "context",
       valueString: params.coverageAssertionId,
     });
+  } else if (order) {
+    parameterList.push({ name: "order", resource: order });
   }
 
-  return { resourceType: "Parameters", parameter: parameterList };
+  return parameterList;
 }
 
 /**
