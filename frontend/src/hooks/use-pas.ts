@@ -6,9 +6,11 @@ import {
 } from "@tanstack/react-query";
 import type {
   Bundle,
+  Claim,
   ClaimResponse,
   Coverage,
   FhirResource,
+  Identifier,
   Organization,
   Patient,
   Practitioner,
@@ -22,7 +24,6 @@ import { loggedFetch } from "@/lib/logged-fetch";
 import {
   buildPasInquiryBundle,
   buildPasRequestBundle,
-  buildPasUpdateBundle,
   type PasInquiryResources,
   type PasSubmitResources,
   PROVIDER_ORG_IDENTIFIER,
@@ -62,7 +63,7 @@ async function readPractitionerFromOrder(
   if (ref?.startsWith("Practitioner/")) {
     return fhirFetch<Practitioner>(`${base}/${ref}`);
   }
-  return { resourceType: "Practitioner", id: "unknown" };
+  throw new Error("No practitioner available for PAS submission");
 }
 
 async function readInsurerFromCoverage(
@@ -73,7 +74,7 @@ async function readInsurerFromCoverage(
   if (ref?.startsWith("Organization/")) {
     return fhirFetch<Organization>(`${base}/${ref}`);
   }
-  return { resourceType: "Organization", id: "unknown" };
+  throw new Error("No insurer Organization resolvable from Coverage.payor");
 }
 
 /** Reads the provider resources a PAS Claim/$submit Bundle references. */
@@ -116,6 +117,7 @@ export function usePasSubmit() {
     mutationFn: async (params: PasSubmitParams): Promise<PasSubmitResult> => {
       const bundle = buildPasRequestBundle(
         await readPasSubmitResources(params),
+        params.providerFhirUrl,
       );
       const response = await loggedFetch(
         fhirProxyUrl(`${params.payerFhirUrl}/Claim/$submit`, {
@@ -135,56 +137,15 @@ export function usePasSubmit() {
           extractFhirError(body) ?? `PAS submit failed: ${response.status}`,
         );
       }
+      const claim = bundle.entry?.find(
+        (e) => e.resource?.resourceType === "Claim",
+      )?.resource as Claim | undefined;
       return extractPasResult(
         await response.json(),
         params.payerFhirUrl,
         `${params.orderType}/${params.orderId}`,
-      );
-    },
-  });
-}
-
-export interface PasUpdateParams extends PasSubmitParams {
-  priorClaimId: string;
-}
-
-/**
- * Mutation hook for submitting a PAS update after additional documentation.
- * Builds a Claim with related referencing the prior Claim.
- */
-export function usePasUpdate() {
-  return useMutation({
-    mutationFn: async (params: PasUpdateParams): Promise<PasSubmitResult> => {
-      const bundle = buildPasUpdateBundle(
-        await readPasSubmitResources(params),
-        params.priorClaimId,
-        params.payerFhirUrl,
-      );
-      const response = await loggedFetch(
-        fhirProxyUrl(`${params.payerFhirUrl}/Claim/$submit`, {
-          payer: true,
-          op: "pas-submit",
-        }),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/fhir+json" },
-          body: JSON.stringify(bundle),
-        },
-        {
-          payerUrl: params.payerFhirUrl,
-          operationName: "Claim/$submit (update)",
-        },
-      );
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(
-          extractFhirError(body) ?? `PAS update failed: ${response.status}`,
-        );
-      }
-      return extractPasResult(
-        await response.json(),
-        params.payerFhirUrl,
-        `${params.orderType}/${params.orderId}`,
+        `Patient/${params.patientId}`,
+        claim?.identifier?.[0],
       );
     },
   });
@@ -210,6 +171,7 @@ async function putTaskToProvider(serverUrl: string, task: Task): Promise<Task> {
 export async function persistClaimResponseToProvider(
   serverUrl: string,
   claimResponse: ClaimResponse,
+  patientRef: string,
 ): Promise<void> {
   const trackingId = claimResponse.identifier?.[0]?.value;
   if (!trackingId) return;
@@ -218,12 +180,18 @@ export async function persistClaimResponseToProvider(
     {
       method: "PUT",
       headers: { "Content-Type": "application/fhir+json" },
-      // Conditional update by identifier (drop id); drop request, which references the payer's Claim
-      // and would fail referential integrity on the provider store.
+      // Conditional update by identifier (drop id). Every reference on the payer's
+      // ClaimResponse points at payer-side resources that do not exist here: request,
+      // requestor, insurer, and communicationRequest are dropped, and patient is
+      // rewritten to this provider's Patient so local patient-scoped queries work.
       body: JSON.stringify({
         ...claimResponse,
         id: undefined,
         request: undefined,
+        requestor: undefined,
+        insurer: undefined,
+        communicationRequest: undefined,
+        patient: { reference: patientRef },
       }),
     },
   );
@@ -345,6 +313,8 @@ function extractPasResult(
   data: unknown,
   payerFhirUrl: string,
   orderRef: string,
+  patientRef: string,
+  claimIdentifier?: Identifier,
 ): PasSubmitResult {
   const bundle = data as Bundle;
   if (bundle.resourceType === "Bundle" && bundle.entry?.length) {
@@ -355,7 +325,13 @@ function extractPasResult(
     if (cr) {
       return {
         claimResponse: cr,
-        documentationTasks: ensurePasTasks(bundle, payerFhirUrl, orderRef),
+        documentationTasks: ensurePasTasks(
+          bundle,
+          payerFhirUrl,
+          orderRef,
+          patientRef,
+          claimIdentifier,
+        ),
       };
     }
   }
@@ -386,7 +362,7 @@ export interface PasDocumentationTaskParams {
 }
 
 /**
- * Polls the payer for an updated ClaimResponse. With full context (patient + coverage + provider)
+ * Queries the payer for an updated ClaimResponse. With full context (patient + coverage + provider)
  * it issues a Claim/$inquire query-by-example; otherwise it reads the ClaimResponse directly.
  */
 export function usePasInquiry(params: PasInquiryParams | undefined) {
@@ -398,17 +374,6 @@ export function usePasInquiry(params: PasInquiryParams | undefined) {
       return extractClaimResponseFromInquiry(data, params.claimResponseId);
     },
     enabled: !!params?.claimResponseId,
-    refetchInterval: (query) => {
-      const latest = query.state.data as ClaimResponse | undefined;
-      if (
-        latest &&
-        latest.outcome !== "queued" &&
-        latest.outcome !== "partial"
-      ) {
-        return false;
-      }
-      return params?.claimResponseId ? 30_000 : false;
-    },
   });
 }
 
@@ -432,6 +397,7 @@ async function runPasInquiry(params: PasInquiryParams): Promise<unknown> {
         params.orderId,
         params.orderType,
       ),
+      params.providerFhirUrl,
     );
     return relayInquiry(
       fhirProxyUrl(`${params.payerFhirUrl}/Claim/$inquire`, {
@@ -486,15 +452,14 @@ async function readPasInquiryResources(
     fhirFetch<Coverage>(`${base}/Coverage/${coverageId}`),
   ]);
   const insurer = await readInsurerFromCoverage(base, coverage);
-  let practitioner: Practitioner = {
-    resourceType: "Practitioner",
-    id: "unknown",
-  };
+  let practitioner: Practitioner | undefined;
   if (orderId && orderType) {
     const order = await fhirFetch<FhirResource>(
       `${base}/${orderType}/${orderId}`,
     );
-    practitioner = await readPractitionerFromOrder(base, order);
+    practitioner = await readPractitionerFromOrder(base, order).catch(
+      () => undefined,
+    );
   }
   return { patient, practitioner, insurer, coverage };
 }

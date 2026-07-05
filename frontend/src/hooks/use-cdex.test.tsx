@@ -48,6 +48,7 @@ const PARAMS = {
   payerFhirUrl: "http://payer.example/fhir",
   providerFhirUrl: "http://provider.example/fhir",
   questionnaireResponseIds: ["qr-1"],
+  final: true,
 };
 
 describe("useSubmitAttachment", () => {
@@ -55,7 +56,33 @@ describe("useSubmitAttachment", () => {
     vi.clearAllMocks();
     fhirFetchMock.mockImplementation(((url: string) => {
       if (url.includes("/Patient/")) {
-        return Promise.resolve({ resourceType: "Patient", id: "pat-1" });
+        return Promise.resolve({
+          resourceType: "Patient",
+          id: "pat-1",
+          identifier: [
+            {
+              type: { coding: [{ code: "MB" }] },
+              system: "http://example.org/MIN",
+              value: "MEM-1",
+            },
+          ],
+        });
+      }
+      if (url.includes("/Coverage?")) {
+        return Promise.resolve({
+          resourceType: "Bundle",
+          type: "searchset",
+          entry: [
+            {
+              resource: {
+                resourceType: "Coverage",
+                id: "cov-1",
+                status: "active",
+                subscriberId: "COV-MEM-1",
+              },
+            },
+          ],
+        });
       }
       return Promise.resolve({
         resourceType: "QuestionnaireResponse",
@@ -63,6 +90,52 @@ describe("useSubmitAttachment", () => {
         status: "completed",
       });
     }) as typeof fhirFetch);
+  });
+
+  it("uses Coverage.subscriberId as MemberId when the patient carries no MB identifier", async () => {
+    fhirFetchMock.mockImplementation(((url: string) => {
+      if (url.includes("/Patient/")) {
+        return Promise.resolve({ resourceType: "Patient", id: "pat-1" });
+      }
+      if (url.includes("/Coverage?")) {
+        return Promise.resolve({
+          resourceType: "Bundle",
+          type: "searchset",
+          entry: [
+            {
+              resource: {
+                resourceType: "Coverage",
+                id: "cov-1",
+                status: "active",
+                subscriberId: "COV-MEM-1",
+              },
+            },
+          ],
+        });
+      }
+      return Promise.resolve({
+        resourceType: "QuestionnaireResponse",
+        id: "qr-1",
+        status: "completed",
+      });
+    }) as typeof fhirFetch);
+    loggedFetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => null,
+    } as Response);
+
+    const { result } = renderHook(() => useSubmitAttachment(), {
+      wrapper: createWrapper(),
+    });
+    await result.current.mutateAsync(PARAMS);
+
+    const [, init] = loggedFetchMock.mock.calls[0];
+    const body = JSON.parse(init?.body as string);
+    const memberId = body.parameter.find(
+      (p: { name: string }) => p.name === "MemberId",
+    );
+    expect(memberId.valueIdentifier.value).toBe("COV-MEM-1");
   });
 
   it("builds the Parameters client-side and POSTs through the thin payer proxy", async () => {
@@ -127,5 +200,54 @@ describe("useSubmitAttachment", () => {
     await expect(result.current.mutateAsync(PARAMS)).rejects.toThrow(
       "AttachTo must be",
     );
+  });
+});
+
+describe("useSubmitAttachment coverage selection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("fetches the caller's coverageId instead of searching when provided", async () => {
+    loggedFetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => null,
+    } as Response);
+    fhirFetchMock.mockImplementation(((url: string) => {
+      if (url.includes("/Patient/")) {
+        return Promise.resolve({ resourceType: "Patient", id: "pat-1" });
+      }
+      if (url.endsWith("/Coverage/cov-specific")) {
+        return Promise.resolve({
+          resourceType: "Coverage",
+          id: "cov-specific",
+          status: "active",
+          subscriberId: "SPECIFIC-MEM",
+        });
+      }
+      return Promise.resolve({
+        resourceType: "QuestionnaireResponse",
+        id: "qr-1",
+        status: "completed",
+      });
+    }) as typeof fhirFetch);
+
+    const { result } = renderHook(() => useSubmitAttachment(), {
+      wrapper: createWrapper(),
+    });
+    await result.current.mutateAsync({ ...PARAMS, coverageId: "cov-specific" });
+
+    const searchCalls = fhirFetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/Coverage?"),
+    );
+    expect(searchCalls).toHaveLength(0);
+
+    const [, init] = loggedFetchMock.mock.calls[0];
+    const body = JSON.parse(init?.body as string);
+    const memberId = body.parameter.find(
+      (p: { name: string }) => p.name === "MemberId",
+    );
+    expect(memberId.valueIdentifier.value).toBe("SPECIFIC-MEM");
   });
 });

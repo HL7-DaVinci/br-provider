@@ -51,6 +51,8 @@ import {
   formatClinicalDate,
   formatPatientName,
 } from "@/lib/clinical-formatters";
+import { buildTaskFhirContext } from "@/lib/dtr-search";
+import { isPendedClaimResponse } from "@/lib/pas-pend-status";
 import { isTerminalQrStatus } from "@/lib/qr-status";
 
 interface PasSearch {
@@ -60,15 +62,21 @@ interface PasSearch {
   orderType?: string;
 }
 
+function searchString(value: unknown): string | undefined {
+  return value == null ? undefined : String(value);
+}
+
 export const Route = createFileRoute(
   "/patients/$patientId/orders/$orderId/pas",
 )({
   component: PasPage,
+  // TanStack Router coerces bare numeric query values (common for HAPI ids) to
+  // numbers in hand-typed URLs, so each value is normalized back to a string.
   validateSearch: (search: Record<string, unknown>): PasSearch => ({
-    coverageId: (search.coverageId as string) ?? undefined,
-    claimResponseId: (search.claimResponseId as string) ?? undefined,
-    qrIds: (search.qrIds as string) ?? undefined,
-    orderType: (search.orderType as string) ?? undefined,
+    coverageId: searchString(search.coverageId),
+    claimResponseId: searchString(search.claimResponseId),
+    qrIds: searchString(search.qrIds),
+    orderType: searchString(search.orderType),
   }),
 });
 
@@ -183,7 +191,7 @@ function PasPage() {
   const latestResponse: ClaimResponse | null =
     paStatus.data ?? activeClaimResponse;
   const isPended =
-    latestResponse?.outcome === "queued" ||
+    (!!latestResponse && isPendedClaimResponse(latestResponse)) ||
     latestResponse?.outcome === "partial";
   const priorClaimId = latestResponse?.request?.reference?.replace(
     /^.*Claim\//,
@@ -212,9 +220,10 @@ function PasPage() {
   // the payer asked for documents, so they are sent when ready whether the claim is still pended,
   // approved, or denied. A completed Task means its attachment was already sent, which keeps the
   // auto-submit idempotent across navigation.
-  const openDocTask = documentationTasks.find(
+  const openDocumentationTasks = documentationTasks.filter(
     (task) => !TERMINAL_TASK_STATUSES.includes(task.status ?? ""),
   );
+  const openDocTask = openDocumentationTasks[0];
   const hasOpenDocRequest =
     !!openDocTask && taskQuestionnaireContexts.length > 0;
 
@@ -265,6 +274,7 @@ function PasPage() {
               await persistClaimResponseToProvider(
                 providerFhirUrl,
                 result.claimResponse,
+                `Patient/${patientId}`,
               );
             } catch {
               // best-effort: the server backfills the ClaimResponse on resolution
@@ -276,7 +286,7 @@ function PasPage() {
           }
           // Pended PA: subscribe to the payer for the final-decision notification (PAS SHALL).
           if (
-            result.claimResponse.outcome === "queued" ||
+            isPendedClaimResponse(result.claimResponse) ||
             result.claimResponse.outcome === "partial"
           ) {
             ensureSubscription.mutate(payerFhirUrl);
@@ -290,16 +300,24 @@ function PasPage() {
     if (!taskQuestionnaireContexts.length) return;
     setIsLaunchingDtr(true);
     try {
-      const fhirContext = [
-        resolvedCoverageId ? `Coverage/${resolvedCoverageId}` : null,
+      const baseRefs = [
+        resolvedCoverageId ? `Coverage/${resolvedCoverageId}` : undefined,
         `${resolvedOrderType}/${orderId}`,
-      ].filter(Boolean);
+      ];
+      // Including the Task reference flips the workspace's isTaskLaunch
+      // detection, so the saved QR is stamped intendedUse "withpa" instead
+      // of "withorder".
+      const fhirContext = openDocTask
+        ? buildTaskFhirContext(openDocTask, baseRefs)
+        : baseRefs.filter((ref): ref is string => !!ref).join(",");
 
       openDtrTask({
         iss: providerFhirUrl,
         patientId,
-        fhirContext: fhirContext.join(","),
-        coverageAssertionId: taskQuestionnaireContexts[0],
+        fhirContext,
+        // Every questionnaire-context input is queued, not just the first,
+        // so the payer resolves and returns all outstanding questionnaires.
+        coverageAssertionId: taskQuestionnaireContexts.join(","),
       });
     } catch (err) {
       console.error("DTR launch from PAS failed:", err);
@@ -314,6 +332,7 @@ function PasPage() {
     patientId,
     providerFhirUrl,
     openDtrTask,
+    openDocTask,
   ]);
 
   // Solicited additional documentation: the payer requested documents via the documentation Task, so
@@ -328,7 +347,11 @@ function PasPage() {
         task: openDocTask,
         payerFhirUrl,
         providerFhirUrl,
+        coverageId: resolvedCoverageId,
         questionnaireResponseIds: newCompletedQrIds,
+        // This submission closes the open Task being fulfilled, so Final reflects whether any
+        // other documentation Task remains outstanding for this order.
+        final: openDocumentationTasks.length <= 1,
       },
       {
         onSuccess: () => {
@@ -349,6 +372,7 @@ function PasPage() {
     );
   }, [
     openDocTask,
+    openDocumentationTasks.length,
     newCompletedQrIds,
     submitAttachment,
     payerFhirUrl,
@@ -752,6 +776,7 @@ function PasResponseDisplay({
   isPolling: boolean;
 }) {
   const outcome = claimResponse.outcome;
+  const pended = isPendedClaimResponse(claimResponse) || outcome === "partial";
   const preAuthRef = claimResponse.preAuthRef;
   const items = extractItemDetails(claimResponse.item);
 
@@ -763,7 +788,7 @@ function PasResponseDisplay({
       <CardContent className="space-y-4">
         <div className="flex items-center gap-3">
           <span className="text-sm text-muted-foreground">Status:</span>
-          <StatusBadge outcome={outcome} />
+          <StatusBadge outcome={outcome} pended={pended} />
         </div>
 
         {preAuthRef && (
@@ -819,14 +844,14 @@ function PasResponseDisplay({
           </div>
         )}
 
-        {(outcome === "queued" || outcome === "partial") && (
+        {pended && (
           <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
             {isPolling ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
             ) : (
               <Clock className="h-3.5 w-3.5" />
             )}
-            <span>Waiting for payer review. Checking every 30 seconds.</span>
+            <span>Waiting for payer review. Refreshing automatically.</span>
           </div>
         )}
       </CardContent>
@@ -891,7 +916,21 @@ function ItemDetailCard({ item }: { item: ItemDetails }) {
   );
 }
 
-function StatusBadge({ outcome }: { outcome: ClaimResponse["outcome"] }) {
+function StatusBadge({
+  outcome,
+  pended,
+}: {
+  outcome: ClaimResponse["outcome"];
+  pended: boolean;
+}) {
+  if (pended) {
+    return (
+      <Badge className="bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-700">
+        <Clock className="h-3 w-3 mr-1" />
+        Pended
+      </Badge>
+    );
+  }
   switch (outcome) {
     case "complete":
       return (
@@ -905,14 +944,6 @@ function StatusBadge({ outcome }: { outcome: ClaimResponse["outcome"] }) {
         <Badge className="bg-red-100 text-red-800 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-700">
           <XCircle className="h-3 w-3 mr-1" />
           Denied
-        </Badge>
-      );
-    case "queued":
-    case "partial":
-      return (
-        <Badge className="bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-700">
-          <Clock className="h-3 w-3 mr-1" />
-          Pended
         </Badge>
       );
     default:

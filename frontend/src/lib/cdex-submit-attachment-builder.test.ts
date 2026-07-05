@@ -1,4 +1,10 @@
-import type { FhirResource, Parameters, Patient, Task } from "fhir/r4";
+import type {
+  Coverage,
+  FhirResource,
+  Parameters,
+  Patient,
+  Task,
+} from "fhir/r4";
 import { describe, expect, it } from "vitest";
 import {
   buildSubmitAttachmentParameters,
@@ -10,6 +16,10 @@ import {
 } from "./cdex-submit-attachment-builder";
 
 const PASTEMP = "http://hl7.org/fhir/us/davinci-pas/CodeSystem/PASTempCodes";
+const ORG_IDENTIFIER = {
+  system: "http://example.org/fhir/org-identifier",
+  value: "1122334455",
+};
 
 function task(): Task {
   return {
@@ -39,12 +49,14 @@ describe("buildSubmitAttachmentParameters", () => {
       { resourceType: "QuestionnaireResponse", status: "completed", id: "qr1" },
     ];
 
-    const params = buildSubmitAttachmentParameters(
-      task(),
-      member,
-      provider,
+    const params = buildSubmitAttachmentParameters({
+      task: task(),
+      memberId: member,
+      organizationId: ORG_IDENTIFIER,
+      providerId: provider,
       contents,
-    );
+      final: true,
+    });
 
     expect(params.resourceType).toBe("Parameters");
 
@@ -54,6 +66,9 @@ describe("buildSubmitAttachmentParameters", () => {
 
     expect(paramByName(params, "AttachTo")?.valueCode).toBe("preauthorization");
     expect(paramByName(params, "MemberId")?.valueIdentifier).toEqual(member);
+    expect(paramByName(params, "OrganizationId")?.valueIdentifier).toEqual(
+      ORG_IDENTIFIER,
+    );
     expect(paramByName(params, "ProviderId")?.valueIdentifier).toEqual(
       provider,
     );
@@ -71,16 +86,65 @@ describe("buildSubmitAttachmentParameters", () => {
       { resourceType: "QuestionnaireResponse", status: "completed", id: "qr1" },
       { resourceType: "DocumentReference", status: "current", content: [] },
     ];
-    const params = buildSubmitAttachmentParameters(
-      task(),
-      { value: "M1" },
-      { value: "123" },
+    const params = buildSubmitAttachmentParameters({
+      task: task(),
+      memberId: { value: "M1" },
+      organizationId: ORG_IDENTIFIER,
       contents,
-    );
+      final: true,
+    });
     const attachments = params.parameter?.filter(
       (p) => p.name === "Attachment",
     );
     expect(attachments).toHaveLength(2);
+  });
+
+  it("emits an Attachment.LineItem part with valueString for each line item", () => {
+    const contents: FhirResource[] = [
+      { resourceType: "QuestionnaireResponse", status: "completed", id: "qr1" },
+    ];
+    const params = buildSubmitAttachmentParameters({
+      task: task(),
+      memberId: { value: "M1" },
+      organizationId: ORG_IDENTIFIER,
+      contents,
+      lineItems: [2],
+      final: true,
+    });
+    const attachment = paramByName(params, "Attachment");
+    const lineItemPart = attachment?.part?.find((p) => p.name === "LineItem");
+    expect(lineItemPart?.valueString).toBe("2");
+  });
+
+  it("emits Final=false when the submission does not close the last open documentation Task", () => {
+    const contents: FhirResource[] = [
+      { resourceType: "QuestionnaireResponse", status: "completed", id: "qr1" },
+    ];
+    const params = buildSubmitAttachmentParameters({
+      task: task(),
+      memberId: { value: "M1" },
+      organizationId: ORG_IDENTIFIER,
+      contents,
+      final: false,
+    });
+    expect(paramByName(params, "Final")?.valueBoolean).toBe(false);
+  });
+
+  it("emits OrganizationId and omits ProviderId when no practitioner NPI is available", () => {
+    const contents: FhirResource[] = [
+      { resourceType: "QuestionnaireResponse", status: "completed", id: "qr1" },
+    ];
+    const params = buildSubmitAttachmentParameters({
+      task: task(),
+      memberId: { value: "M1" },
+      organizationId: ORG_IDENTIFIER,
+      contents,
+      final: true,
+    });
+    expect(paramByName(params, "OrganizationId")?.valueIdentifier).toEqual(
+      ORG_IDENTIFIER,
+    );
+    expect(paramByName(params, "ProviderId")).toBeUndefined();
   });
 });
 
@@ -124,7 +188,7 @@ describe("patientIdFromTask", () => {
 });
 
 describe("memberIdentifier", () => {
-  it("prefers a type=MB identifier, then the first, then the patient id", () => {
+  it("returns the type=MB identifier", () => {
     const withMb: Patient = {
       resourceType: "Patient",
       identifier: [
@@ -136,25 +200,69 @@ describe("memberIdentifier", () => {
         },
       ],
     };
-    expect(memberIdentifier(withMb, "pat-1").value).toBe("MEM-9");
+    expect(memberIdentifier(withMb).value).toBe("MEM-9");
+  });
 
-    const firstOnly: Patient = {
+  it("falls back to the Coverage's MB-typed identifier when the patient has none", () => {
+    const noMb: Patient = {
       resourceType: "Patient",
       identifier: [{ system: "http://other", value: "FIRST" }],
     };
-    expect(memberIdentifier(firstOnly, "pat-1").value).toBe("FIRST");
+    const coverage: Coverage = {
+      resourceType: "Coverage",
+      status: "active",
+      beneficiary: { reference: "Patient/pat-1" },
+      payor: [],
+      identifier: [
+        {
+          type: { coding: [{ code: "MB" }] },
+          system: "http://example.org/MIN",
+          value: "COV-MEM-1",
+        },
+      ],
+    };
+    expect(memberIdentifier(noMb, coverage).value).toBe("COV-MEM-1");
+  });
+
+  it("falls back to Coverage.subscriberId when neither carries an MB identifier", () => {
+    const noMb: Patient = { resourceType: "Patient" };
+    const coverage: Coverage = {
+      resourceType: "Coverage",
+      status: "active",
+      beneficiary: { reference: "Patient/pat-1" },
+      payor: [],
+      subscriberId: "10A3D58WH1600",
+    };
+    expect(memberIdentifier(noMb, coverage)).toEqual({
+      system: "http://example.org/MIN",
+      value: "10A3D58WH1600",
+    });
+  });
+
+  it("throws when no member identifier source exists instead of fabricating one", () => {
+    const noMb: Patient = {
+      resourceType: "Patient",
+      identifier: [{ system: "http://other", value: "FIRST" }],
+    };
+    expect(() => memberIdentifier(noMb)).toThrow(
+      "No payer member identifier available for $submit-attachment",
+    );
 
     const noIds: Patient = { resourceType: "Patient" };
-    const fallback = memberIdentifier(noIds, "pat-1");
-    expect(fallback.value).toBe("pat-1");
-    expect(fallback.system).toBe("http://example.org/MIN");
+    expect(() => memberIdentifier(noIds)).toThrow();
   });
 });
 
 describe("providerIdentifier", () => {
-  it("uses the NPI or a default placeholder", () => {
-    expect(providerIdentifier("789").value).toBe("789");
-    expect(providerIdentifier(undefined).value).toBe("0000000000");
-    expect(providerIdentifier("  ").value).toBe("0000000000");
+  it("returns an NPI identifier when a real NPI is available", () => {
+    expect(providerIdentifier("789")).toEqual({
+      system: "http://hl7.org/fhir/sid/us-npi",
+      value: "789",
+    });
+  });
+
+  it("returns undefined instead of a placeholder NPI when none is available", () => {
+    expect(providerIdentifier(undefined)).toBeUndefined();
+    expect(providerIdentifier("  ")).toBeUndefined();
   });
 });

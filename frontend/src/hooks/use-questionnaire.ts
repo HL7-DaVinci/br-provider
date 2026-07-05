@@ -13,8 +13,9 @@ import type {
 } from "fhir/r4";
 import { fhirProxyUrl, fhirSend } from "@/lib/api";
 import {
-  extractPackageBundle,
+  extractPackageBundles,
   inlineBundleValueSets,
+  selectPackageBundle,
 } from "@/lib/dtr-ingestion";
 import { extractFhirError } from "@/lib/fhir-types";
 import { loggedFetch } from "@/lib/logged-fetch";
@@ -38,9 +39,71 @@ interface QuestionnairePackageResult {
   terminologyServerUrl: string | null;
 }
 
-async function fetchQuestionnairePackage(
+interface RawQuestionnairePackage {
+  bundles: Bundle[];
+  contentServerUrl: string | null;
+  terminologyServerUrl: string | null;
+}
+
+/**
+ * The DTR $questionnaire-package `context` parameter is 0..1, so a Task
+ * carrying several questionnaire contexts requires one call per context.
+ * The questionnaire and order selectors ride the first call only (union
+ * semantics would duplicate their results on every call); packagebundles are
+ * merged and deduplicated by questionnaire canonical.
+ */
+async function fetchRawQuestionnairePackage(
   params: QuestionnairePackageParams,
-): Promise<QuestionnairePackageResult> {
+): Promise<RawQuestionnairePackage> {
+  const contextIds = (params.coverageAssertionId?.split(",") ?? [])
+    .map((id) => id.trim())
+    .filter(Boolean);
+
+  if (contextIds.length <= 1) {
+    return fetchSingleQuestionnairePackage(params);
+  }
+
+  const results = await Promise.all(
+    contextIds.map((contextId, idx) =>
+      fetchSingleQuestionnairePackage({
+        ...params,
+        coverageAssertionId: contextId,
+        questionnaire: idx === 0 ? params.questionnaire : undefined,
+        orderRef: idx === 0 ? params.orderRef : undefined,
+      }),
+    ),
+  );
+
+  const seen = new Set<string>();
+  const bundles: Bundle[] = [];
+  for (const result of results) {
+    for (const bundle of result.bundles) {
+      const questionnaire = findResourceInBundle<Questionnaire>(
+        bundle,
+        "Questionnaire",
+      );
+      const key = questionnaire
+        ? `${questionnaire.url}|${questionnaire.version ?? ""}`
+        : `unkeyed-${bundles.length}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        bundles.push(bundle);
+      }
+    }
+  }
+
+  return {
+    bundles,
+    contentServerUrl:
+      results.find((r) => r.contentServerUrl)?.contentServerUrl ?? null,
+    terminologyServerUrl:
+      results.find((r) => r.terminologyServerUrl)?.terminologyServerUrl ?? null,
+  };
+}
+
+async function fetchSingleQuestionnairePackage(
+  params: QuestionnairePackageParams,
+): Promise<RawQuestionnairePackage> {
   const body = await buildQuestionnairePackageParams(params);
 
   const response = await loggedFetch(
@@ -69,9 +132,20 @@ async function fetchQuestionnairePackage(
 
   const data = await response.json();
   const { contentServerUrl, terminologyServerUrl } = deriveServerUrls(data);
-  // Payers may return Parameters wrapping the bundle; $populate consumers
+  // Payers may return Parameters wrapping the bundle(s); $populate consumers
   // expect a bare Bundle with populated .entry.
-  const bundle = extractPackageBundle(data, params.questionnaire?.[0]);
+  return {
+    bundles: extractPackageBundles(data),
+    contentServerUrl,
+    terminologyServerUrl,
+  };
+}
+
+function toQuestionnairePackageResult(
+  bundle: Bundle | null,
+  contentServerUrl: string | null,
+  terminologyServerUrl: string | null,
+): QuestionnairePackageResult {
   const questionnaire = bundle
     ? findResourceInBundle<Questionnaire>(bundle, "Questionnaire")
     : null;
@@ -94,6 +168,51 @@ async function fetchQuestionnairePackage(
   };
 }
 
+/**
+ * Fetches every questionnaire package returned by a single
+ * `$questionnaire-package` call. When the caller requested a specific
+ * canonical, only that (selected) bundle is returned. When no canonical was
+ * requested - a context- or order-driven launch, where the set of
+ * questionnaires isn't known ahead of time - every packagebundle in the
+ * response is returned so the caller can surface all of them.
+ */
+async function fetchQuestionnairePackageEntries(
+  params: QuestionnairePackageParams,
+): Promise<QuestionnairePackageResult[]> {
+  const { bundles, contentServerUrl, terminologyServerUrl } =
+    await fetchRawQuestionnairePackage(params);
+
+  const requestedCanonical = params.questionnaire?.[0];
+  if (requestedCanonical) {
+    const bundle = selectPackageBundle(bundles, requestedCanonical);
+    return [
+      toQuestionnairePackageResult(
+        bundle,
+        contentServerUrl,
+        terminologyServerUrl,
+      ),
+    ];
+  }
+
+  if (bundles.length === 0) {
+    return [
+      toQuestionnairePackageResult(
+        null,
+        contentServerUrl,
+        terminologyServerUrl,
+      ),
+    ];
+  }
+
+  return bundles.map((bundle) =>
+    toQuestionnairePackageResult(
+      bundle,
+      contentServerUrl,
+      terminologyServerUrl,
+    ),
+  );
+}
+
 function questionnairePackageQueryKey(
   params: QuestionnairePackageParams,
 ): unknown[] {
@@ -112,27 +231,8 @@ function questionnairePackageQueryKey(
 function isPackageEnabled(params: QuestionnairePackageParams): boolean {
   if (params.enabled === false) return false;
   return (
-    !!params.payerFhirUrl &&
-    !!params.providerFhirUrl &&
-    (!!params.coverageRef ||
-      !!params.orderRef ||
-      (params.questionnaire?.length ?? 0) > 0)
+    !!params.payerFhirUrl && !!params.providerFhirUrl && !!params.coverageRef
   );
-}
-
-/**
- * Fetches a questionnaire package from the payer via the BFF proxy.
- * Builds the FHIR Parameters per the DTR spec: the coverage and order
- * parameters require full embedded resources, not references.
- */
-export function useQuestionnairePackage(params: QuestionnairePackageParams) {
-  return useQuery({
-    queryKey: questionnairePackageQueryKey(params),
-    queryFn: () => fetchQuestionnairePackage(params),
-    enabled: isPackageEnabled(params),
-    staleTime: 5 * 60 * 1000,
-    retry: 1,
-  });
 }
 
 export interface QuestionnairePackageEntry {
@@ -145,6 +245,49 @@ export interface QuestionnairePackageEntry {
   isLoading: boolean;
   isError: boolean;
   error: unknown;
+}
+
+/**
+ * Fetches a questionnaire package from the payer via the BFF proxy with a
+ * single `$questionnaire-package` call, exposing every packagebundle the
+ * payer returned as a separate entry. Used for context- and order-driven
+ * launches (including Task launches with multiple `questionnaire-context`
+ * inputs, queued as multiple `context` parameters on the same request) where
+ * the set of questionnaires isn't known ahead of time; when `params.questionnaire`
+ * names a specific canonical, returns that single matched entry instead.
+ */
+export function useQuestionnairePackageEntries(
+  params: QuestionnairePackageParams,
+): QuestionnairePackageEntry[] {
+  const query = useQuery({
+    queryKey: questionnairePackageQueryKey(params),
+    queryFn: () => fetchQuestionnairePackageEntries(params),
+    enabled: isPackageEnabled(params),
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+
+  const results = query.data ?? [
+    {
+      bundle: null,
+      questionnaire: null,
+      questionnaireResponse: null,
+      contentServerUrl: null,
+      terminologyServerUrl: null,
+    },
+  ];
+
+  return results.map((result, idx) => ({
+    canonical: result.questionnaire?.url ?? params.questionnaire?.[idx] ?? "",
+    bundle: result.bundle,
+    questionnaire: result.questionnaire,
+    questionnaireResponse: result.questionnaireResponse,
+    contentServerUrl: result.contentServerUrl,
+    terminologyServerUrl: result.terminologyServerUrl,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    error: query.error,
+  }));
 }
 
 /**
@@ -165,9 +308,11 @@ export function useQuestionnairePackages(
         ...rest,
         questionnaire: [canonical],
       };
+      // Same query key as useQuestionnairePackageEntries, so the cached value
+      // must keep the same shape (the full entries array); this query reads [0].
       return {
         queryKey: questionnairePackageQueryKey(params),
-        queryFn: () => fetchQuestionnairePackage(params),
+        queryFn: () => fetchQuestionnairePackageEntries(params),
         enabled: !!canonical && isPackageEnabled(params),
         staleTime: 5 * 60 * 1000,
         retry: 1,
@@ -177,13 +322,14 @@ export function useQuestionnairePackages(
 
   return canonicals.map((canonical, idx) => {
     const q = queries[idx];
+    const result = q?.data?.[0];
     return {
       canonical,
-      bundle: q?.data?.bundle ?? null,
-      questionnaire: q?.data?.questionnaire ?? null,
-      questionnaireResponse: q?.data?.questionnaireResponse ?? null,
-      contentServerUrl: q?.data?.contentServerUrl ?? null,
-      terminologyServerUrl: q?.data?.terminologyServerUrl ?? null,
+      bundle: result?.bundle ?? null,
+      questionnaire: result?.questionnaire ?? null,
+      questionnaireResponse: result?.questionnaireResponse ?? null,
+      contentServerUrl: result?.contentServerUrl ?? null,
+      terminologyServerUrl: result?.terminologyServerUrl ?? null,
       isLoading: q?.isLoading ?? false,
       isError: q?.isError ?? false,
       error: q?.error,
@@ -457,21 +603,66 @@ async function buildQuestionnairePackageParams(
       : null,
   ]);
 
+  const coverageWithPayors = coverage
+    ? await withContainedPayorOrgs(coverage, (ref) =>
+        fetchProviderResource(params.providerFhirUrl, ref),
+      )
+    : null;
+
   return {
     resourceType: "Parameters",
-    parameter: buildPackageParameterList(coverage, order, params),
+    parameter: buildPackageParameterList(coverageWithPayors, order, params),
   };
 }
 
 /**
- * Selects the $questionnaire-package input parameters. questionnaire, context,
- * and order are alternative questionnaire-discovery mechanisms: the payer
- * resolves a package bundle per questionnaire found via each provided input and
- * returns one bundle per resolved questionnaire. Sending more than one selector
- * therefore yields redundant (and possibly mismatched) bundles, so send only
- * the most specific selector available: an explicit questionnaire canonical
- * wins over a context trace id, which in turn wins over order-based discovery.
- * Coverage is always included (the operation requires it).
+ * Rewrites the Coverage's payor Organization references as contained
+ * resources. Payor references point at this provider's server, so the payer
+ * receiving the Coverage cannot resolve them; containing the Organizations
+ * lets the payer read the payor identifiers it needs for PlanDefinition
+ * matching without assuming provider resource ids mean anything on its side.
+ */
+export async function withContainedPayorOrgs(
+  coverage: unknown,
+  fetchResource: (ref: string) => Promise<unknown | null>,
+): Promise<unknown> {
+  const cov = coverage as {
+    payor?: { reference?: string }[];
+    contained?: unknown[];
+  };
+  if (!cov.payor?.length) return coverage;
+
+  const contained = [...(cov.contained ?? [])];
+  let anyContained = false;
+
+  const payor = await Promise.all(
+    cov.payor.map(async (ref, index) => {
+      if (!ref.reference?.startsWith("Organization/")) return ref;
+      const org = (await fetchResource(ref.reference)) as {
+        id?: string;
+      } | null;
+      if (!org) return ref;
+      const localId = `payor-org-${org.id ?? index}`;
+      contained.push({ ...org, id: localId });
+      anyContained = true;
+      return { ...ref, reference: `#${localId}` };
+    }),
+  );
+
+  if (!anyContained) return coverage;
+  return { ...cov, contained, payor };
+}
+
+/**
+ * Assembles the $questionnaire-package input parameters. questionnaire,
+ * context, and order are alternative questionnaire-discovery mechanisms, but
+ * per the operation's union semantics (spec-107/126) they are not mutually
+ * exclusive: the payer resolves the union of questionnaires found via every
+ * selector provided. Coverage is required (1..1); when it cannot be resolved
+ * this throws rather than silently omitting it, since the operation would
+ * otherwise fail server-side anyway. The context parameter is 0..1, so at
+ * most one context id is emitted; callers with several contexts fan out to
+ * one call per context (see fetchRawQuestionnairePackage).
  */
 export function buildPackageParameterList(
   coverage: unknown | null,
@@ -481,22 +672,29 @@ export function buildPackageParameterList(
     "questionnaire" | "coverageAssertionId"
   >,
 ): Record<string, unknown>[] {
-  const parameterList: Record<string, unknown>[] = [];
-
-  if (coverage) {
-    parameterList.push({ name: "coverage", resource: coverage });
+  if (!coverage) {
+    throw new Error(
+      "Cannot build $questionnaire-package parameters: coverage is required (1..1) but could not be resolved.",
+    );
   }
 
-  if ((params.questionnaire?.length ?? 0) > 0) {
-    for (const canonical of params.questionnaire ?? []) {
-      parameterList.push({ name: "questionnaire", valueCanonical: canonical });
-    }
-  } else if (params.coverageAssertionId) {
-    parameterList.push({
-      name: "context",
-      valueString: params.coverageAssertionId,
-    });
-  } else if (order) {
+  const parameterList: Record<string, unknown>[] = [
+    { name: "coverage", resource: coverage },
+  ];
+
+  for (const canonical of params.questionnaire ?? []) {
+    parameterList.push({ name: "questionnaire", valueCanonical: canonical });
+  }
+
+  const contextId = params.coverageAssertionId
+    ?.split(",")
+    .map((id) => id.trim())
+    .find(Boolean);
+  if (contextId) {
+    parameterList.push({ name: "context", valueString: contextId });
+  }
+
+  if (order) {
     parameterList.push({ name: "order", resource: order });
   }
 

@@ -26,7 +26,7 @@ describe("buildPasSubscription", () => {
     const filter = sub._criteria?.extension?.find(
       (e) => e.url === BACKPORT_FILTER_CRITERIA,
     );
-    expect(filter?.valueString).toBe("Bundle?orgIdentifier=1122334455");
+    expect(filter?.valueString).toBe("orgIdentifier=1122334455");
   });
 
   it("configures a full-resource rest-hook channel at the notification URL", () => {

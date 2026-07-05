@@ -6,7 +6,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fhirFetch } from "./use-fhir-api";
 import {
   extractClaimResponseFromInquiry,
+  extractTaskQuestionnaireContexts,
   usePasDocumentationTasks,
+  usePasSubmit,
 } from "./use-pas";
 
 vi.mock("./use-fhir-api", () => ({
@@ -246,6 +248,83 @@ describe("usePas", () => {
 
     expect(result.current.data?.map((task) => task.id)).toEqual([
       "task-tracked",
+    ]);
+  });
+
+  it("rejects a PAS submit when no practitioner is available", async () => {
+    fhirFetchMock.mockImplementation((url: string) => {
+      if (url.includes("/Patient/")) {
+        return Promise.resolve({ resourceType: "Patient", id: "pat-1" });
+      }
+      if (url.includes("/Coverage/")) {
+        return Promise.resolve({
+          resourceType: "Coverage",
+          id: "cov-1",
+          status: "active",
+        });
+      }
+      if (url.includes("/ServiceRequest/")) {
+        return Promise.resolve({
+          resourceType: "ServiceRequest",
+          id: "order-1",
+          status: "active",
+          intent: "order",
+        });
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+
+    const { result } = renderHook(() => usePasSubmit(), {
+      wrapper: createWrapper(),
+    });
+
+    result.current.mutate({
+      patientId: "pat-1",
+      orderId: "order-1",
+      orderType: "ServiceRequest",
+      coverageId: "cov-1",
+      questionnaireResponseIds: [],
+      payerFhirUrl: "http://payer.example/fhir",
+      providerFhirUrl: "http://provider.example/fhir",
+    });
+
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+
+    expect(result.current.error).toEqual(
+      new Error("No practitioner available for PAS submission"),
+    );
+  });
+});
+
+describe("extractTaskQuestionnaireContexts", () => {
+  function taskWithContexts(...contextIds: string[]): Task {
+    return {
+      resourceType: "Task",
+      id: "task-1",
+      status: "requested",
+      intent: "order",
+      input: contextIds.map((contextId) => ({
+        type: {
+          coding: [
+            {
+              system:
+                "http://hl7.org/fhir/us/davinci-pas/CodeSystem/PASTempCodes",
+              code: "questionnaire-context",
+            },
+          ],
+        },
+        valueString: contextId,
+      })),
+    };
+  }
+
+  it("yields two launchable entries from a Task with two questionnaire-context inputs", () => {
+    const task = taskWithContexts("assert-1", "assert-2");
+    expect(extractTaskQuestionnaireContexts([task])).toEqual([
+      "assert-1",
+      "assert-2",
     ]);
   });
 });

@@ -2,10 +2,12 @@ import type {
   Bundle,
   ClaimResponse,
   CommunicationRequest,
+  Extension,
   Identifier,
   Task,
 } from "fhir/r4";
 import { PROVIDER_ORG_IDENTIFIER } from "./pas-bundle-builder";
+import { isPendedClaimResponse } from "./pas-pend-status";
 
 type TaskInput = NonNullable<Task["input"]>[number];
 
@@ -14,6 +16,38 @@ interface TaskContext {
   orderRef: string;
   payerFhirUrl: string;
   trackingId?: Identifier;
+  claimIdentifier?: Identifier;
+  insurerIdentifier?: Identifier;
+}
+
+/**
+ * Task.requester.identifier maps from ClaimResponse.insurer.identifier[0]
+ * (PAS additional-information mapping): the payer requests the documentation.
+ * The insurer Organization inlined in the response bundle carries the
+ * identifier; a logical insurer reference identifier is the fallback.
+ */
+function insurerIdentifierFrom(
+  claimResponse: ClaimResponse,
+  bundle?: Bundle,
+): Identifier | undefined {
+  const insurerRef = claimResponse.insurer?.reference;
+  if (bundle && insurerRef) {
+    const idPart = insurerRef.split("/").pop();
+    const org = bundle.entry?.find(
+      (e) =>
+        e.resource?.resourceType === "Organization" &&
+        (e.fullUrl === insurerRef ||
+          (e.resource as { id?: string }).id === idPart),
+    )?.resource as { identifier?: Identifier[] } | undefined;
+    const first = org?.identifier?.[0];
+    if (first?.value) {
+      return { system: first.system, value: first.value };
+    }
+  }
+  const logical = claimResponse.insurer?.identifier;
+  return logical?.value
+    ? { system: logical.system, value: logical.value }
+    : undefined;
 }
 
 const TASK_CODE_SYSTEM =
@@ -24,15 +58,18 @@ const TASK_REASON_PRIOR_AUTH = "priorAuthorization";
 const TASK_INPUT_PAYER_URL = "payer-url";
 const TASK_INPUT_QUESTIONNAIRE_CONTEXT = "questionnaire-context";
 const TASK_INPUT_ATTACHMENTS_NEEDED = "attachments-needed";
-const SERVICE_LINE_NUMBER_EXT =
+export const SERVICE_LINE_NUMBER_EXT =
   "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/extension-serviceLineNumber";
+const CONTENT_MODIFIER_EXT =
+  "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/extension-contentModifier";
 const LOINC_SYSTEM = "http://loinc.org";
+const X12_755_SYSTEM = "https://codesystem.x12.org/005010/755";
+const LOINC_CODE_SHAPE = /^\d+-\d$/;
 const US_NPI_SYSTEM = "http://hl7.org/fhir/sid/us-npi";
 const CLAIM_RESPONSE_OUTPUT = "ClaimResponse";
 const LOINC_QUESTIONNAIRE_REQUEST = "102089-0";
 const ITEM_TRACE_NUMBER_EXT =
   "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/extension-itemTraceNumber";
-const QUESTIONNAIRE_TRACE_NUMBER_SYSTEM = "urn:trnorg:PASPAYER";
 
 function findClaimResponseInBundle(
   bundle: Bundle | undefined,
@@ -67,18 +104,35 @@ export function buildPasTasks(
   bundle: Bundle | undefined,
   payerFhirUrl: string,
   orderRef: string,
+  patientRef: string,
+  claimIdentifier?: Identifier,
 ): Task[] {
   const claimResponse = findClaimResponseInBundle(bundle);
   if (!bundle || !claimResponse) return [];
 
+  // Task.for must reference this provider's Patient; the ClaimResponse.patient
+  // reference is a payer-side id that does not resolve here.
   const context: TaskContext = {
-    patientRef: claimResponse.patient?.reference,
+    patientRef,
     orderRef,
     payerFhirUrl,
     trackingId: claimResponse.identifier?.[0],
+    claimIdentifier,
+    insurerIdentifier: insurerIdentifierFrom(claimResponse, bundle),
   };
 
   const tasks: Task[] = [];
+  // ainfo-7: one Task per request type (PWK01, LOINC, questionnaire), so inputs are collected
+  // across every CommunicationRequest and each type emitted as a single Task. The payer sends one
+  // questionnaire CommunicationRequest per canonical; their contexts are deduplicated per line.
+  const loincInputs: TaskInput[] = [];
+  const pwk01Inputs: TaskInput[] = [];
+  const questionnaireInputs: TaskInput[] = [];
+  const questionnaireContextKeys = new Set<string>();
+  let loincRequestId: string | undefined;
+  let pwk01RequestId: string | undefined;
+  let questionnaireRequestId: string | undefined;
+
   for (const ref of claimResponse.communicationRequest ?? []) {
     const request = resolveCommunicationRequest(bundle, ref.reference);
     if (!request) continue;
@@ -89,30 +143,73 @@ export function buildPasTasks(
     const isQuestionnaireRequest = payloads.some(
       (p) => p.contentString === LOINC_QUESTIONNAIRE_REQUEST,
     );
-    const attachmentCodes = payloads
-      .map((p) => p.contentString)
-      .filter((c): c is string => !!c && c !== LOINC_QUESTIONNAIRE_REQUEST);
 
     if (isQuestionnaireRequest) {
-      const contextId = questionnaireContext(claimResponse, lineNumber);
-      if (contextId) {
-        tasks.push(
-          buildTask(TASK_CODE_QUESTIONNAIRE_REQUEST, context, request.id, [
-            questionnaireContextInput(contextId, lineNumber),
-          ]),
+      const contextIds = questionnaireContexts(claimResponse, lineNumber);
+      if (contextIds.length > 0) {
+        questionnaireRequestId ??= request.id;
+        for (const contextId of contextIds) {
+          const key = `${contextId}|${lineNumber ?? ""}`;
+          if (!questionnaireContextKeys.has(key)) {
+            questionnaireContextKeys.add(key);
+            questionnaireInputs.push(
+              questionnaireContextInput(contextId, lineNumber),
+            );
+          }
+        }
+      } else {
+        console.warn(
+          "102089-0 questionnaire request has no itemTraceNumber TRN; skipping questionnaire-context Task per ainfo-3",
         );
       }
     }
-    if (attachmentCodes.length > 0) {
-      tasks.push(
-        buildTask(
-          TASK_CODE_ATTACHMENT_REQUEST,
-          context,
-          request.id,
-          attachmentCodes.map((code) => attachmentInput(code, lineNumber)),
-        ),
+
+    for (const payload of payloads) {
+      const code = payload.contentString;
+      if (!code || code === LOINC_QUESTIONNAIRE_REQUEST) continue;
+      const contentModifier = payload.extension?.find(
+        (e) => e.url === CONTENT_MODIFIER_EXT,
       );
+      const input = attachmentInput(code, lineNumber, contentModifier);
+      if (attachmentCodeSystem(code) === LOINC_SYSTEM) {
+        loincInputs.push(input);
+        loincRequestId ??= request.id;
+      } else {
+        pwk01Inputs.push(input);
+        pwk01RequestId ??= request.id;
+      }
     }
+  }
+
+  if (questionnaireInputs.length > 0) {
+    tasks.push(
+      buildTask(
+        TASK_CODE_QUESTIONNAIRE_REQUEST,
+        context,
+        questionnaireRequestId ? `task-${questionnaireRequestId}` : undefined,
+        questionnaireInputs,
+      ),
+    );
+  }
+  if (loincInputs.length > 0) {
+    tasks.push(
+      buildTask(
+        TASK_CODE_ATTACHMENT_REQUEST,
+        context,
+        loincRequestId ? `task-${loincRequestId}-loinc` : undefined,
+        loincInputs,
+      ),
+    );
+  }
+  if (pwk01Inputs.length > 0) {
+    tasks.push(
+      buildTask(
+        TASK_CODE_ATTACHMENT_REQUEST,
+        context,
+        pwk01RequestId ? `task-${pwk01RequestId}-pwk01` : undefined,
+        pwk01Inputs,
+      ),
+    );
   }
   return tasks;
 }
@@ -125,15 +222,23 @@ export function buildPaStatusTask(
   claimResponse: ClaimResponse,
   orderRef: string,
   payerFhirUrl: string,
+  patientRef: string,
+  claimIdentifier?: Identifier,
+  bundle?: Bundle,
 ): Task {
   const context: TaskContext = {
-    patientRef: claimResponse.patient?.reference,
+    patientRef,
     orderRef,
     payerFhirUrl,
     trackingId: claimResponse.identifier?.[0],
+    claimIdentifier,
+    insurerIdentifier: insurerIdentifierFrom(claimResponse, bundle),
   };
-  const task = baseTask(context, mapOutcomeToTaskStatus(claimResponse.outcome));
-  const trackingValue = context.trackingId?.value;
+  const status = isPendedClaimResponse(claimResponse)
+    ? "in-progress"
+    : mapOutcomeToTaskStatus(claimResponse.outcome);
+  const task = baseTask(context, status);
+  const trackingValue = context.trackingId?.value ?? claimIdentifier?.value;
   if (trackingValue) task.id = `pa-task-${sanitizeId(trackingValue)}`;
   return task;
 }
@@ -143,12 +248,29 @@ export function ensurePasTasks(
   bundle: Bundle | undefined,
   payerFhirUrl: string,
   orderRef: string,
+  patientRef: string,
+  claimIdentifier?: Identifier,
 ): Task[] {
-  const docTasks = buildPasTasks(bundle, payerFhirUrl, orderRef);
+  const docTasks = buildPasTasks(
+    bundle,
+    payerFhirUrl,
+    orderRef,
+    patientRef,
+    claimIdentifier,
+  );
   if (docTasks.length > 0) return docTasks;
   const claimResponse = findClaimResponseInBundle(bundle);
   return claimResponse
-    ? [buildPaStatusTask(claimResponse, orderRef, payerFhirUrl)]
+    ? [
+        buildPaStatusTask(
+          claimResponse,
+          orderRef,
+          payerFhirUrl,
+          patientRef,
+          claimIdentifier,
+          bundle,
+        ),
+      ]
     : [];
 }
 
@@ -175,16 +297,32 @@ function serviceLineNumber(request: CommunicationRequest): number | undefined {
     ?.valuePositiveInt;
 }
 
-/** The DTR context (item trace number) for a questionnaire request, matched by service line. */
-function questionnaireContext(
+/** All DTR context TRNs for a questionnaire request, from any identifier system or placement. */
+export function questionnaireContexts(
   claimResponse: ClaimResponse,
   lineNumber: number | undefined,
-): string | undefined {
-  const item = claimResponse.item?.find((i) => i.itemSequence === lineNumber);
-  return item?.extension
-    ?.filter((e) => e.url === ITEM_TRACE_NUMBER_EXT)
-    .map((e) => e.valueIdentifier)
-    .find((id) => id?.system === QUESTIONNAIRE_TRACE_NUMBER_SYSTEM)?.value;
+): string[] {
+  const trnValues = (
+    holder: { extension?: Extension[] } | undefined,
+  ): string[] =>
+    (holder?.extension ?? [])
+      .filter((e) => e.url === ITEM_TRACE_NUMBER_EXT)
+      .map((e) => e.valueIdentifier?.value)
+      .filter((v): v is string => Boolean(v));
+
+  const items = (claimResponse.item ?? []).filter(
+    (it) => lineNumber === undefined || it.itemSequence === lineNumber,
+  );
+  const headerTrns = (claimResponse.identifier ?? [])
+    .slice(1)
+    .map((id) => id.value)
+    .filter((v): v is string => Boolean(v));
+  const collected = [
+    ...items.flatMap(trnValues),
+    ...(claimResponse.addItem ?? []).flatMap(trnValues),
+    ...headerTrns,
+  ];
+  return [...new Set(collected)];
 }
 
 function questionnaireContextInput(
@@ -204,18 +342,34 @@ function questionnaireContextInput(
   );
 }
 
-function attachmentInput(code: string, lineNumber?: number): TaskInput {
-  return withLineNumber(
+function attachmentCodeSystem(code: string): string {
+  // ponytail: the payer sends a bare contentString with no coding/system today; classify by LOINC's
+  // NNNNN-N shape until the payer adopts the profile's contentModifier/system extension instead.
+  return LOINC_CODE_SHAPE.test(code) ? LOINC_SYSTEM : X12_755_SYSTEM;
+}
+
+function attachmentInput(
+  code: string,
+  lineNumber?: number,
+  contentModifier?: Extension,
+): TaskInput {
+  const input = withLineNumber(
     {
       type: {
         coding: [
           { system: TASK_CODE_SYSTEM, code: TASK_INPUT_ATTACHMENTS_NEEDED },
         ],
       },
-      valueCodeableConcept: { coding: [{ system: LOINC_SYSTEM, code }] },
+      valueCodeableConcept: {
+        coding: [{ system: attachmentCodeSystem(code), code }],
+      },
     },
     lineNumber,
   );
+  if (contentModifier) {
+    input.extension = [...(input.extension ?? []), contentModifier];
+  }
+  return input;
 }
 
 function withLineNumber(input: TaskInput, lineNumber?: number): TaskInput {
@@ -232,6 +386,12 @@ function baseTask(context: TaskContext, status: Task["status"]): Task {
     system: US_NPI_SYSTEM,
     value: PROVIDER_ORG_IDENTIFIER,
   };
+  const trackingId = context.trackingId ?? context.claimIdentifier;
+  if (!trackingId || !context.patientRef) {
+    throw new Error(
+      "Cannot build a PAS Task: no tracking identifier available from the ClaimResponse or the submitted Claim, or no provider patient reference supplied",
+    );
+  }
   const task: Task = {
     resourceType: "Task",
     status,
@@ -240,17 +400,16 @@ function baseTask(context: TaskContext, status: Task["status"]): Task {
     reasonCode: {
       coding: [{ system: TASK_CODE_SYSTEM, code: TASK_REASON_PRIOR_AUTH }],
     },
-    requester: { identifier: providerId },
+    ...(context.insurerIdentifier
+      ? { requester: { identifier: context.insurerIdentifier } }
+      : {}),
     owner: { identifier: providerId },
     focus: { reference: context.orderRef },
+    for: { reference: context.patientRef },
+    identifier: [trackingId],
+    reasonReference: { type: "Claim", identifier: trackingId },
   };
-  if (context.patientRef) task.for = { reference: context.patientRef };
   if (context.trackingId) {
-    task.identifier = [context.trackingId];
-    task.reasonReference = {
-      type: "ClaimResponse",
-      identifier: context.trackingId,
-    };
     task.output = [
       {
         type: { text: CLAIM_RESPONSE_OUTPUT },
@@ -267,7 +426,7 @@ function baseTask(context: TaskContext, status: Task["status"]): Task {
 function buildTask(
   code: string,
   context: TaskContext,
-  requestId: string | undefined,
+  id: string | undefined,
   inputs: TaskInput[],
 ): Task {
   const task = baseTask(context, "requested");
@@ -281,7 +440,7 @@ function buildTask(
     },
     ...inputs,
   ];
-  if (requestId) task.id = `task-${requestId}`;
+  if (id) task.id = id;
   return task;
 }
 

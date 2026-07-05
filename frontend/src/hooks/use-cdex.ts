@@ -1,5 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import type {
+  Bundle,
+  Coverage,
   DocumentReference,
   FhirResource,
   OperationOutcome,
@@ -11,9 +13,11 @@ import { fhirProxyUrl } from "@/lib/api";
 import {
   buildSubmitAttachmentParameters,
   memberIdentifier,
+  organizationIdentifier,
   patientIdFromTask,
   providerIdentifier,
   resolvePayerUrl,
+  taskLineItems,
 } from "@/lib/cdex-submit-attachment-builder";
 import { extractFhirError } from "@/lib/fhir-types";
 import { loggedFetch } from "@/lib/logged-fetch";
@@ -27,6 +31,14 @@ export interface SubmitAttachmentParams {
   questionnaireResponseIds?: string[];
   documentReferenceIds?: string[];
   providerNpi?: string;
+  /**
+   * The provider-side Coverage the prior authorization was submitted under.
+   * Names the exact member/payer for MemberId; without it the first active
+   * Coverage is used, which can pick the wrong plan for multi-coverage patients.
+   */
+  coverageId?: string;
+  /** Whether this submission closes the last open documentation Task for the order. */
+  final: boolean;
 }
 
 /**
@@ -78,12 +90,31 @@ export function useSubmitAttachment() {
       const patient = await fhirFetch<Patient>(
         `${providerFhirUrl}/Patient/${patientId}`,
       );
-      const parameters = buildSubmitAttachmentParameters(
+      // The member id usually lives on the Coverage (subscriberId / MB identifier)
+      // rather than as a Patient identifier. The PA's own coverage is exact;
+      // the active-coverage search is a fallback for callers without that context.
+      let coverage: Coverage | undefined;
+      if (params.coverageId) {
+        coverage = await fhirFetch<Coverage>(
+          `${providerFhirUrl}/Coverage/${params.coverageId}`,
+        );
+      } else {
+        const coverageBundle = await fhirFetch<Bundle>(
+          `${providerFhirUrl}/Coverage?beneficiary=Patient/${patientId}&status=active`,
+        );
+        coverage = coverageBundle.entry?.find(
+          (e) => e.resource?.resourceType === "Coverage",
+        )?.resource as Coverage | undefined;
+      }
+      const parameters = buildSubmitAttachmentParameters({
         task,
-        memberIdentifier(patient, patientId),
-        providerIdentifier(params.providerNpi),
+        memberId: memberIdentifier(patient, coverage),
+        organizationId: organizationIdentifier(),
+        providerId: providerIdentifier(params.providerNpi),
         contents,
-      );
+        lineItems: taskLineItems(task),
+        final: params.final,
+      });
 
       const submitBase = resolvePayerUrl(task, params.payerFhirUrl);
       const response = await loggedFetch(

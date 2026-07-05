@@ -10,28 +10,24 @@ import type {
 } from "fhir/r4";
 
 /**
- * Extracts the inner package Bundle from a `$questionnaire-package` response.
- * The DTR spec wraps each Bundle in a `Parameters.parameter[name=packagebundle]`
- * and a single response may contain multiple packagebundles (one per requested
- * questionnaire — and some payers return all order-linked questionnaires
- * regardless of which canonical was asked for). When `canonical` is provided,
- * returns the bundle whose Questionnaire entry matches it (with or without
- * the `|version` suffix). Falls back to the first packagebundle when no match
- * or no canonical is supplied. Direct Bundle responses pass through.
+ * Extracts every inner package Bundle from a `$questionnaire-package`
+ * response. The DTR spec wraps each Bundle in a
+ * `Parameters.parameter[name=packagebundle]`, and a single response may
+ * contain multiple packagebundles: one per requested questionnaire, and some
+ * payers return all order-linked questionnaires regardless of which
+ * canonical was asked for. A direct Bundle response is returned as a
+ * single-element array.
  */
-export function extractPackageBundle(
-  data: unknown,
-  canonical?: string,
-): Bundle | null {
-  if (!data || typeof data !== "object") return null;
+export function extractPackageBundles(data: unknown): Bundle[] {
+  if (!data || typeof data !== "object") return [];
   const obj = data as Record<string, unknown>;
 
   if (obj.resourceType === "Bundle") {
-    return obj as unknown as Bundle;
+    return [obj as unknown as Bundle];
   }
 
   if (obj.resourceType !== "Parameters" || !Array.isArray(obj.parameter)) {
-    return null;
+    return [];
   }
 
   const bundles: Bundle[] = [];
@@ -43,6 +39,18 @@ export function extractPackageBundle(
       bundles.push(param.resource as Bundle);
     }
   }
+  return bundles;
+}
+
+/**
+ * Selects the packagebundle whose Questionnaire entry matches `canonical`
+ * (with or without the `|version` suffix). Falls back to the first bundle
+ * when no match or no canonical is supplied.
+ */
+export function selectPackageBundle(
+  bundles: Bundle[],
+  canonical?: string,
+): Bundle | null {
   if (bundles.length === 0) return null;
   if (!canonical || bundles.length === 1) return bundles[0];
 

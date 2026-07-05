@@ -61,12 +61,8 @@ function PatientSummary() {
     : undefined;
 
   const paStatuses = Array.from(paStatusMap.values());
-  const pendingStatuses = paStatuses.filter(
-    (s) => s.outcome === "queued" || s.outcome === "partial",
-  );
-  const resolvedStatuses = paStatuses.filter(
-    (s) => s.outcome !== "queued" && s.outcome !== "partial",
-  );
+  const pendingStatuses = paStatuses.filter((s) => s.pended);
+  const resolvedStatuses = paStatuses.filter((s) => !s.pended);
 
   return (
     <div className="p-6 max-w-7xl space-y-6">
@@ -218,7 +214,9 @@ function PaStatusRow({
   status: OrderPaStatus;
   patientId: string;
 }) {
-  const config = OUTCOME_CONFIG[status.outcome] ?? OUTCOME_CONFIG.queued;
+  const config = status.pended
+    ? OUTCOME_CONFIG.queued
+    : (OUTCOME_CONFIG[status.outcome] ?? OUTCOME_CONFIG.queued);
   const Icon = config.icon;
   const created = formatClinicalDate(status.created);
 

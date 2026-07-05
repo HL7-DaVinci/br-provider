@@ -1,4 +1,5 @@
 import type {
+  Coverage,
   FhirResource,
   Identifier,
   Parameters,
@@ -6,6 +7,11 @@ import type {
   Patient,
   Task,
 } from "fhir/r4";
+import {
+  PROVIDER_ORG_IDENTIFIER,
+  PROVIDER_ORG_IDENTIFIER_SYSTEM,
+} from "./pas-bundle-builder";
+import { SERVICE_LINE_NUMBER_EXT } from "./pas-task-builder";
 
 /**
  * Client-side builder for the CDex `$submit-attachment` operation. Assembles a
@@ -16,38 +22,69 @@ import type {
  */
 
 const NPI_SYSTEM = "http://hl7.org/fhir/sid/us-npi";
-const MEMBER_SYSTEM = "http://example.org/MIN";
 const MEMBER_TYPE_CODE = "MB";
-const DEFAULT_PROVIDER_NPI = "0000000000";
+const MEMBER_IDENTIFIER_SYSTEM = "http://example.org/MIN";
 
 const PARAM_TRACKING_ID = "TrackingId";
 const PARAM_ATTACH_TO = "AttachTo";
 const PARAM_MEMBER_ID = "MemberId";
+const PARAM_ORGANIZATION_ID = "OrganizationId";
 const PARAM_PROVIDER_ID = "ProviderId";
 const PARAM_ATTACHMENT = "Attachment";
+const PARAM_ATTACHMENT_LINE_ITEM = "LineItem";
 const PARAM_ATTACHMENT_CONTENT = "Content";
 const PARAM_FINAL = "Final";
 
 const CLAIM_USE_PREAUTHORIZATION = "preauthorization";
 const INPUT_PAYER_URL = "payer-url";
 
+export interface SubmitAttachmentInput {
+  task: Task;
+  memberId: Identifier;
+  organizationId: Identifier;
+  /** Omitted when no real practitioner NPI is available; never a placeholder NPI. */
+  providerId?: Identifier;
+  contents: FhirResource[];
+  /** Claim line numbers this attachment applies to, from the Task's serviceLineNumber extension. */
+  lineItems?: number[];
+  final: boolean;
+}
+
 /** Builds the cdex-parameters-submit-attachment Parameters for the PAS (preauthorization) path. */
 export function buildSubmitAttachmentParameters(
-  task: Task,
-  memberId: Identifier,
-  providerId: Identifier,
-  contents: FhirResource[],
+  input: SubmitAttachmentInput,
 ): Parameters {
+  const {
+    task,
+    memberId,
+    organizationId,
+    providerId,
+    contents,
+    lineItems,
+    final,
+  } = input;
+
+  const lineItemParts = (lineItems ?? []).map((lineItem) => ({
+    name: PARAM_ATTACHMENT_LINE_ITEM,
+    valueString: String(lineItem),
+  }));
+
   const parameter: ParametersParameter[] = [
     { name: PARAM_TRACKING_ID, valueIdentifier: trackingIdentifier(task) },
     { name: PARAM_ATTACH_TO, valueCode: CLAIM_USE_PREAUTHORIZATION },
     { name: PARAM_MEMBER_ID, valueIdentifier: memberId },
-    { name: PARAM_PROVIDER_ID, valueIdentifier: providerId },
+    { name: PARAM_ORGANIZATION_ID, valueIdentifier: organizationId },
+    ...(providerId
+      ? [{ name: PARAM_PROVIDER_ID, valueIdentifier: providerId }]
+      : []),
     ...contents.map((content) => ({
       name: PARAM_ATTACHMENT,
-      part: [{ name: PARAM_ATTACHMENT_CONTENT, resource: content }],
+      part: [
+        ...lineItemParts,
+        { name: PARAM_ATTACHMENT_CONTENT, resource: content },
+      ],
     })),
-    { name: PARAM_FINAL, valueBoolean: true },
+    { name: PARAM_FINAL, valueBoolean: final },
   ];
 
   return { resourceType: "Parameters", parameter };
@@ -82,30 +119,60 @@ export function patientIdFromTask(task: Task): string {
 }
 
 /**
- * Resolves the MemberId identifier: prefers a type=MB identifier, then the first identifier,
- * then a placeholder derived from the patient id.
+ * Resolves the payer-issued MemberId identifier: the Patient's type=MB identifier, else the
+ * Coverage's type=MB identifier, else Coverage.subscriberId (the same member value the PAS
+ * bundle stamps). Throws rather than fabricating one when no source is available.
  */
 export function memberIdentifier(
   patient: Patient,
-  patientId: string,
+  coverage?: Coverage,
 ): Identifier {
-  const ids = patient.identifier ?? [];
-  const memberTyped = ids.find((id) =>
+  const memberTyped = (patient.identifier ?? []).find((id) =>
     hasCode(id.type?.coding, MEMBER_TYPE_CODE),
   );
   if (memberTyped) {
     return identifierFields(memberTyped);
   }
-  if (ids.length > 0) {
-    return identifierFields(ids[0]);
+
+  const coverageMember = (coverage?.identifier ?? []).find((id) =>
+    hasCode(id.type?.coding, MEMBER_TYPE_CODE),
+  );
+  if (coverageMember) {
+    return identifierFields(coverageMember);
   }
-  return { system: MEMBER_SYSTEM, value: patientId };
+
+  if (coverage?.subscriberId) {
+    return { system: MEMBER_IDENTIFIER_SYSTEM, value: coverage.subscriberId };
+  }
+
+  throw new Error(
+    "No payer member identifier available for $submit-attachment",
+  );
 }
 
-/** ProviderId identifier from an NPI, falling back to a placeholder NPI. */
-export function providerIdentifier(npi?: string): Identifier {
-  const value = npi?.trim() ? npi : DEFAULT_PROVIDER_NPI;
-  return { system: NPI_SYSTEM, value };
+/** ProviderId identifier from a real NPI; undefined when none is available (no placeholder NPI). */
+export function providerIdentifier(npi?: string): Identifier | undefined {
+  const value = npi?.trim();
+  return value ? { system: NPI_SYSTEM, value } : undefined;
+}
+
+/** OrganizationId identifier: the provider org identifier used by the PAS bundles. */
+export function organizationIdentifier(): Identifier {
+  return {
+    system: PROVIDER_ORG_IDENTIFIER_SYSTEM,
+    value: PROVIDER_ORG_IDENTIFIER,
+  };
+}
+
+/** Distinct claim line numbers from the Task's input serviceLineNumber extensions. */
+export function taskLineItems(task: Task): number[] {
+  const values = (task.input ?? []).flatMap((input) =>
+    (input.extension ?? [])
+      .filter((extension) => extension.url === SERVICE_LINE_NUMBER_EXT)
+      .map((extension) => extension.valuePositiveInt)
+      .filter((value): value is number => value != null),
+  );
+  return [...new Set(values)];
 }
 
 function identifierFields(identifier: Identifier): Identifier {

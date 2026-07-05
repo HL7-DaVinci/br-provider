@@ -31,9 +31,13 @@ interface PaStatusBadgeProps {
 }
 
 export function PaStatusBadge({ status, patientId }: PaStatusBadgeProps) {
-  const config = PA_STATUS_CONFIG[
-    status.outcome as keyof typeof PA_STATUS_CONFIG
-  ] ?? { label: status.outcome, variant: "outline" as const, className: "" };
+  const config = status.pended
+    ? PA_STATUS_CONFIG.queued
+    : (PA_STATUS_CONFIG[status.outcome as keyof typeof PA_STATUS_CONFIG] ?? {
+        label: status.outcome,
+        variant: "outline" as const,
+        className: "",
+      });
 
   return (
     <Link

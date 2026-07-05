@@ -293,7 +293,7 @@ describe("useOrderQuestionnaireResponses", () => {
     basedOn: [{ reference: orderRef }],
   });
 
-  it("queries by patient and links to the order client-side (qr-context or based-on)", async () => {
+  it("queries by patient and links to the order client-side via qr-context, ignoring basedOn", async () => {
     const queryClient = createQueryClient();
     const wrapper = createWrapper(queryClient);
 
@@ -335,7 +335,6 @@ describe("useOrderQuestionnaireResponses", () => {
 
     expect(result.current.data?.entry?.map((e) => e.resource?.id)).toEqual([
       "qr-ctx",
-      "qr-based",
     ]);
   });
 

@@ -1,6 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import type { Questionnaire, QuestionnaireResponse } from "fhir/r4";
+import type {
+  Bundle,
+  Coverage,
+  DomainResource,
+  Questionnaire,
+  QuestionnaireResponse,
+} from "fhir/r4";
 import {
   AlertCircle,
   ArrowLeft,
@@ -10,6 +16,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { AdaptiveDtrForm } from "@/components/questionnaire/adaptive-dtr-form";
 import { LhcFormRenderer } from "@/components/questionnaire/lhc-form-renderer";
 import { Button } from "@/components/ui/button";
@@ -29,14 +36,18 @@ import { usePayerServer } from "@/hooks/use-payer-server";
 import {
   type QuestionnairePackageEntry,
   useProviderPopulate,
-  useQuestionnairePackage,
+  useQuestionnairePackageEntries,
   useQuestionnairePackages,
   useSaveQuestionnaireResponse,
 } from "@/hooks/use-questionnaire";
+import { parseCoverageInfoFromResource } from "@/lib/coverage-extensions";
 import { propagateCoverageInfo } from "@/lib/coverage-propagation";
 import { broadcastDtrCompletion } from "@/lib/dtr-completion";
 import { alignChoiceAnswers } from "@/lib/dtr-ingestion";
-import { upsertQrDtrExtensions } from "@/lib/dtr-qr-extensions";
+import {
+  type IntendedUse,
+  upsertQrDtrExtensions,
+} from "@/lib/dtr-qr-extensions";
 import { parseOrderRefs, parseQuestionnaireSearch } from "@/lib/dtr-search";
 import { normalizeServerUrl } from "@/lib/fhir-config";
 import {
@@ -129,6 +140,55 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     return Array.from(new Set(refs.filter(Boolean)));
   }, [orderRef, relatedOrderRefs]);
 
+  // A Task/ fhirContext entry marks a documentation Task launch (withpa).
+  const isTaskLaunch = fhirContextRefs.some((r) => r.startsWith("Task/"));
+  const intendedUse: IntendedUse = isTaskLaunch ? "withpa" : "withorder";
+
+  const needsOrderCoverageLookup =
+    !coverageRef && !!orderRef && !!providerFhirUrl;
+  const orderCoverageQuery = useQuery({
+    queryKey: ["fhir", "order-coverage-lookup", orderRef, providerFhirUrl],
+    queryFn: () => fhirFetch<DomainResource>(`${providerFhirUrl}/${orderRef}`),
+    enabled: needsOrderCoverageLookup,
+  });
+  const orderCoverageRef = orderCoverageQuery.data
+    ? parseCoverageInfoFromResource(orderCoverageQuery.data).find(
+        (ci) => ci.coverage,
+      )?.coverage
+    : undefined;
+  const orderCoverageLookupSettled =
+    !needsOrderCoverageLookup || orderCoverageQuery.isFetched;
+
+  const needsPatientCoverageLookup =
+    !coverageRef &&
+    !orderCoverageRef &&
+    orderCoverageLookupSettled &&
+    !!context.patientId &&
+    !!providerFhirUrl;
+  const patientCoverageQuery = useQuery({
+    queryKey: [
+      "fhir",
+      "patient-active-coverage",
+      context.patientId,
+      providerFhirUrl,
+    ],
+    queryFn: () =>
+      fhirFetch<Bundle<Coverage>>(
+        `${providerFhirUrl}/Coverage?beneficiary=Patient/${context.patientId}&status=active&_count=1`,
+      ),
+    enabled: needsPatientCoverageLookup,
+  });
+  const patientActiveCoverageRef = patientCoverageQuery.data?.entry?.[0]
+    ?.resource?.id
+    ? `Coverage/${patientCoverageQuery.data.entry[0].resource.id}`
+    : undefined;
+
+  const resolvedCoverageRef =
+    coverageRef ?? orderCoverageRef ?? patientActiveCoverageRef;
+  const coverageResolutionPending =
+    (needsOrderCoverageLookup && !orderCoverageQuery.isFetched) ||
+    (needsPatientCoverageLookup && !patientCoverageQuery.isFetched);
+
   const existingQrRef = fhirContextRefs.find((ref) =>
     ref.startsWith("QuestionnaireResponse/"),
   );
@@ -157,12 +217,48 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
   // separate concern, not enforced here.
   const qrIndex = usePatientQrIndex(context.patientId ?? "");
 
-  // qrByCanonical tracks in-progress QRs for the workspace's selected
+  // Per-canonical parallel fetch, used when the launch already knows every
+  // questionnaire canonical up front (the CRD-canonicals path).
+  const isKnownMultiCanonical = questionnaireCanonicals.length > 1;
+  const canonicalEntries = useQuestionnairePackages(questionnaireCanonicals, {
+    payerFhirUrl,
+    providerFhirUrl,
+    coverageRef: resolvedCoverageRef,
+    orderRef,
+    coverageAssertionId: context.coverageAssertionId,
+  });
+
+  // Single-fetch path: used when the launch does not already know a set of
+  // canonicals - context/order-driven launches and Task launches (queued via
+  // multiple `context` parameters from coverageAssertionId). The payer may
+  // return more than one packagebundle from this single call; every one of
+  // them becomes its own entry so none are dropped.
+  const singleFetchEntries = useQuestionnairePackageEntries({
+    payerFhirUrl,
+    providerFhirUrl,
+    coverageRef: resolvedCoverageRef,
+    orderRef,
+    coverageAssertionId: context.coverageAssertionId,
+    questionnaire: questionnaireCanonicals,
+    enabled: !isKnownMultiCanonical,
+  });
+
+  const packageEntries = isKnownMultiCanonical
+    ? canonicalEntries
+    : singleFetchEntries;
+  const isMultiQ = packageEntries.length > 1;
+
+  const effectiveCanonicals = useMemo(
+    () => packageEntries.map((e) => e.canonical).filter(Boolean),
+    [packageEntries],
+  );
+
+  // qrByCanonical tracks in-progress QRs for the workspace's active
   // canonicals; it is the resume source. Completed/amended QRs show via
   // qrIndex (above) in read-only mode; Amend is the explicit path to edit.
   const qrByCanonical = useMemo(() => {
     const map = new Map<string, { inProgress: QuestionnaireResponse[] }>();
-    for (const c of questionnaireCanonicals) {
+    for (const c of effectiveCanonicals) {
       map.set(c, { inProgress: [] });
     }
     for (const entry of inProgressQrsQuery.data?.entry ?? []) {
@@ -171,7 +267,7 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       const c = qr.questionnaire;
       if (!c) continue;
       const stripped = stripCanonicalVersion(c);
-      for (const target of questionnaireCanonicals) {
+      for (const target of effectiveCanonicals) {
         if (target === c || stripCanonicalVersion(target) === stripped) {
           map.get(target)?.inProgress.push(qr);
           break;
@@ -186,65 +282,30 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       entry.inProgress.sort(byUpdatedDesc);
     }
     return map;
-  }, [questionnaireCanonicals, inProgressQrsQuery.data]);
+  }, [effectiveCanonicals, inProgressQrsQuery.data]);
 
-  const isMultiQ = questionnaireCanonicals.length > 1;
-
-  const packageEntries = useQuestionnairePackages(questionnaireCanonicals, {
-    payerFhirUrl,
-    providerFhirUrl,
-    coverageRef,
-    orderRef,
-    coverageAssertionId: context.coverageAssertionId,
-  });
-
-  const singularQuery = useQuestionnairePackage({
-    payerFhirUrl,
-    providerFhirUrl,
-    coverageRef,
-    orderRef,
-    coverageAssertionId: context.coverageAssertionId,
-    questionnaire: questionnaireCanonicals,
-    enabled: !isMultiQ,
-  });
-
-  const totalQuestionnaires = isMultiQ ? packageEntries.length : 1;
+  const totalQuestionnaires = packageEntries.length;
   const safeActiveIndex = Math.min(
     activeQuestionnaireIndex,
     Math.max(totalQuestionnaires - 1, 0),
   );
 
-  const activeEntry: QuestionnairePackageEntry | null = isMultiQ
-    ? (packageEntries[safeActiveIndex] ?? null)
+  const activeEntry: QuestionnairePackageEntry | null =
+    packageEntries[safeActiveIndex] ?? null;
+
+  const activePackage = activeEntry
+    ? {
+        bundle: activeEntry.bundle,
+        questionnaire: activeEntry.questionnaire,
+        questionnaireResponse: activeEntry.questionnaireResponse,
+        contentServerUrl: activeEntry.contentServerUrl,
+        terminologyServerUrl: activeEntry.terminologyServerUrl,
+      }
     : null;
 
-  const activePackage = isMultiQ
-    ? activeEntry
-      ? {
-          bundle: activeEntry.bundle,
-          questionnaire: activeEntry.questionnaire,
-          questionnaireResponse: activeEntry.questionnaireResponse,
-          contentServerUrl: activeEntry.contentServerUrl,
-          terminologyServerUrl: activeEntry.terminologyServerUrl,
-        }
-      : null
-    : singularQuery.data
-      ? {
-          bundle: singularQuery.data.bundle,
-          questionnaire: singularQuery.data.questionnaire,
-          questionnaireResponse: singularQuery.data.questionnaireResponse,
-          contentServerUrl: singularQuery.data.contentServerUrl,
-          terminologyServerUrl: singularQuery.data.terminologyServerUrl,
-        }
-      : null;
-
-  const isLoading = isMultiQ
-    ? (activeEntry?.isLoading ?? false)
-    : singularQuery.isLoading;
-  const isError = isMultiQ
-    ? (activeEntry?.isError ?? false)
-    : singularQuery.isError;
-  const error = isMultiQ ? activeEntry?.error : singularQuery.error;
+  const isLoading = activeEntry?.isLoading ?? false;
+  const isError = activeEntry?.isError ?? false;
+  const error = activeEntry?.error;
 
   // Build SDC context entries from launchContext extensions on the active
   // Questionnaire, plus a synthetic `patient` entry to anchor HAPI cr's
@@ -274,8 +335,8 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
   });
 
   const activeCanonical =
-    questionnaireCanonicals[safeActiveIndex] ??
-    questionnaireCanonicals[0] ??
+    packageEntries[safeActiveIndex]?.canonical ||
+    effectiveCanonicals[0] ||
     null;
 
   const activeExistingQr = useMemo(() => {
@@ -385,18 +446,25 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
 
   // On initial load (multi-Q only), jump to the first canonical that doesn't
   // already have a terminal QR. If all are terminal, stay on index 0 so the
-  // user lands somewhere meaningful.
+  // user lands somewhere meaningful. The single-fetch (context/order-driven)
+  // path doesn't know its final entry count until the fetch resolves - its
+  // isMultiQ can still flip from false to true after this effect would
+  // otherwise have fired - so it additionally waits for that fetch to
+  // settle. The known-canonicals path's entry count is stable up front, so
+  // it isn't held up by its (still in-flight) package fetches.
+  const packageEntriesLoading =
+    !isKnownMultiCanonical && packageEntries.some((e) => e.isLoading);
   useEffect(() => {
     if (activeIndexInitialized) return;
+    if (inProgressQrsQuery.isLoading || packageEntriesLoading) {
+      return;
+    }
     if (!isMultiQ) {
       setActiveIndexInitialized(true);
       return;
     }
-    if (inProgressQrsQuery.isLoading) {
-      return;
-    }
     // Land on the first canonical without an in-progress resume; otherwise index 0.
-    const firstNotResumable = questionnaireCanonicals.findIndex((c) => {
+    const firstNotResumable = effectiveCanonicals.findIndex((c) => {
       const entry = qrByCanonical.get(c);
       return !entry?.inProgress.length;
     });
@@ -406,7 +474,8 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     activeIndexInitialized,
     isMultiQ,
     inProgressQrsQuery.isLoading,
-    questionnaireCanonicals,
+    packageEntriesLoading,
+    effectiveCanonicals,
     qrByCanonical,
   ]);
 
@@ -470,22 +539,20 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
         response.id = savedResponseId;
       }
 
-      if (allOrderRefs.length > 0 || coverageRef) {
-        response.extension = upsertQrDtrExtensions(
-          response.extension ?? [],
-          allOrderRefs,
-          coverageRef,
+      if (!resolvedCoverageRef) {
+        toast.error(
+          coverageResolutionPending
+            ? "Still resolving this patient's coverage. Please try saving again in a moment."
+            : "Cannot save: no coverage could be resolved for this questionnaire response.",
         );
-
-        const serviceRequestRefs = allOrderRefs.filter((ref) =>
-          ref.startsWith("ServiceRequest/"),
-        );
-        if (serviceRequestRefs.length > 0) {
-          response.basedOn = serviceRequestRefs.map((ref) => ({
-            reference: ref,
-          }));
-        }
+        return;
       }
+
+      upsertQrDtrExtensions(response, {
+        orderRefs: allOrderRefs,
+        coverageRef: resolvedCoverageRef,
+        intendedUse,
+      });
 
       const sourceQr = activeExistingQr ?? mergedQr;
       if (sourceQr?.extension) {
@@ -540,7 +607,9 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       saveResponse,
       savedResponseId,
       allOrderRefs,
-      coverageRef,
+      resolvedCoverageRef,
+      coverageResolutionPending,
+      intendedUse,
       activeExistingQr,
       mergedQr,
       propagateCoverage,
@@ -656,12 +725,13 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
 
       {isMultiQ && (
         <div className="mb-4 shrink-0 flex flex-wrap gap-1 border-b border-border">
-          {questionnaireCanonicals.map((canonical, idx) => {
-            const entry = packageEntries[idx];
+          {packageEntries.map((entry, idx) => {
+            const canonical = entry.canonical;
             const qrEntry = qrByCanonical.get(canonical);
-            const orderState = orderRef
-              ? getOrderSatisfactionState(qrIndex, canonical, orderRef)
-              : { kind: "notStarted" as const };
+            const orderState =
+              orderRef && canonical
+                ? getOrderSatisfactionState(qrIndex, canonical, orderRef)
+                : { kind: "notStarted" as const };
             const tabState =
               orderState.kind === "completedForThisOrder"
                 ? "completed"
@@ -670,13 +740,15 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
                   ? "in-progress"
                   : "pending";
             const title =
-              entry?.questionnaire?.title ??
-              entry?.questionnaire?.name ??
-              friendlyCanonicalName(canonical);
+              entry.questionnaire?.title ??
+              entry.questionnaire?.name ??
+              (canonical
+                ? friendlyCanonicalName(canonical)
+                : `Questionnaire ${idx + 1}`);
             const isActive = idx === safeActiveIndex;
             return (
               <button
-                key={canonical}
+                key={canonical || idx}
                 type="button"
                 onClick={() => setActiveQuestionnaireIndex(idx)}
                 className={cn(

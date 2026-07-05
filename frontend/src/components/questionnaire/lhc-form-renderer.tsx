@@ -156,11 +156,9 @@ export function LhcFormRenderer({
         containerRef.current,
       ) as QuestionnaireResponse;
 
-      if (originIndex?.size) {
-        qr = applyOriginTracking(qr, originIndex, {
-          authorRef: practitionerRef,
-        });
-      }
+      qr = applyOriginTracking(qr, originIndex ?? new Map(), {
+        authorRef: practitionerRef,
+      });
 
       qr.status = status;
       return qr;

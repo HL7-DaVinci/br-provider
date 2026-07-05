@@ -1,58 +1,153 @@
-import type { Extension } from "fhir/r4";
+import type { Extension, QuestionnaireResponse } from "fhir/r4";
 import { describe, expect, it } from "vitest";
 import {
-  QR_CONTEXT_EXT_URL,
+  INTENDED_USE_EXT_URL,
   QR_COVERAGE_EXT_URL,
   upsertQrDtrExtensions,
 } from "./dtr-qr-extensions";
 
+function emptyQr(): QuestionnaireResponse {
+  return { resourceType: "QuestionnaireResponse", status: "in-progress" };
+}
+
+function findExt(
+  qr: QuestionnaireResponse,
+  url: string,
+): Extension | undefined {
+  return qr.extension?.find((e) => e.url === url);
+}
+
+function qrWithIntendedUse(code: string): QuestionnaireResponse {
+  return {
+    resourceType: "QuestionnaireResponse",
+    status: "in-progress",
+    extension: [
+      {
+        url: INTENDED_USE_EXT_URL,
+        valueCodeableConcept: {
+          coding: [
+            {
+              system:
+                "http://hl7.org/fhir/us/davinci-crd/CodeSystem/coverage-information-codes",
+              code,
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
 describe("upsertQrDtrExtensions", () => {
-  it("adds a qr-context per order and the required qr-coverage", () => {
-    const out = upsertQrDtrExtensions(
-      [],
-      ["ServiceRequest/sr-1"],
-      "Coverage/cov-1",
+  it("always writes qr-coverage", () => {
+    const qr = emptyQr();
+    upsertQrDtrExtensions(qr, {
+      orderRefs: [],
+      coverageRef: "Coverage/c1",
+      intendedUse: "withorder",
+    });
+    expect(findExt(qr, QR_COVERAGE_EXT_URL)?.valueReference?.reference).toBe(
+      "Coverage/c1",
     );
-    expect(
-      out
-        .filter((e) => e.url === QR_CONTEXT_EXT_URL)
-        .map((e) => e.valueReference?.reference),
-    ).toEqual(["ServiceRequest/sr-1"]);
-    expect(
-      out.find((e) => e.url === QR_COVERAGE_EXT_URL)?.valueReference?.reference,
-    ).toBe("Coverage/cov-1");
   });
 
-  it("omits qr-coverage when no coverage is known", () => {
-    const out = upsertQrDtrExtensions([], ["ServiceRequest/sr-1"]);
-    expect(out.some((e) => e.url === QR_COVERAGE_EXT_URL)).toBe(false);
+  it("writes intendedUse withpa for task-launched questionnaires", () => {
+    const qr = emptyQr();
+    upsertQrDtrExtensions(qr, {
+      orderRefs: ["ServiceRequest/sr1"],
+      coverageRef: "Coverage/c1",
+      intendedUse: "withpa",
+    });
+    const concept = findExt(qr, INTENDED_USE_EXT_URL)?.valueCodeableConcept;
+    expect(concept?.coding?.[0]).toMatchObject({
+      system:
+        "http://hl7.org/fhir/us/davinci-crd/CodeSystem/coverage-information-codes",
+      code: "withpa",
+    });
+  });
+
+  it("leaves an agreeing payer draft intendedUse untouched", () => {
+    const qr = qrWithIntendedUse("withpa");
+    const ext = qr.extension?.find((e) => e.url === INTENDED_USE_EXT_URL);
+    if (ext?.valueCodeableConcept) ext.valueCodeableConcept.text = "payer text";
+    upsertQrDtrExtensions(qr, {
+      orderRefs: [],
+      coverageRef: "Coverage/c1",
+      intendedUse: "withpa",
+    });
+    const concept = findExt(qr, INTENDED_USE_EXT_URL)?.valueCodeableConcept;
+    expect(concept?.coding?.[0]?.code).toBe("withpa");
+    expect(concept?.text).toBe("payer text");
+  });
+
+  it("corrects a payer draft intendedUse that disagrees with the launch provenance", () => {
+    const qr = qrWithIntendedUse("withorder");
+    upsertQrDtrExtensions(qr, {
+      orderRefs: [],
+      coverageRef: "Coverage/c1",
+      intendedUse: "withpa",
+    });
+    const concept = findExt(qr, INTENDED_USE_EXT_URL)?.valueCodeableConcept;
+    expect(concept?.coding?.[0]?.code).toBe("withpa");
+  });
+
+  it("adds a qr-context per order and the required qr-coverage", () => {
+    const qr = emptyQr();
+    upsertQrDtrExtensions(qr, {
+      orderRefs: ["ServiceRequest/sr-1"],
+      coverageRef: "Coverage/cov-1",
+      intendedUse: "withorder",
+    });
+    expect(
+      (qr.extension ?? [])
+        .filter(
+          (e) =>
+            e.url ===
+            "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/qr-context",
+        )
+        .map((e) => e.valueReference?.reference),
+    ).toEqual(["ServiceRequest/sr-1"]);
+    expect(findExt(qr, QR_COVERAGE_EXT_URL)?.valueReference?.reference).toBe(
+      "Coverage/cov-1",
+    );
   });
 
   it("replaces existing qr-context/qr-coverage without duplicating, preserving others", () => {
-    const existing: Extension[] = [
-      {
-        url: QR_CONTEXT_EXT_URL,
-        valueReference: { reference: "ServiceRequest/old" },
-      },
-      {
-        url: QR_COVERAGE_EXT_URL,
-        valueReference: { reference: "Coverage/old" },
-      },
-      { url: "http://example.org/other", valueString: "keep" },
-    ];
-    const out = upsertQrDtrExtensions(
-      existing,
-      ["DeviceRequest/dr-1"],
+    const qr: QuestionnaireResponse = {
+      resourceType: "QuestionnaireResponse",
+      status: "in-progress",
+      extension: [
+        {
+          url: "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/qr-context",
+          valueReference: { reference: "ServiceRequest/old" },
+        },
+        {
+          url: QR_COVERAGE_EXT_URL,
+          valueReference: { reference: "Coverage/old" },
+        },
+        { url: "http://example.org/other", valueString: "keep" },
+      ],
+    };
+    upsertQrDtrExtensions(qr, {
+      orderRefs: ["DeviceRequest/dr-1"],
+      coverageRef: "Coverage/cov-2",
+      intendedUse: "withorder",
+    });
+    const contextExts = (qr.extension ?? []).filter(
+      (e) =>
+        e.url ===
+        "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/qr-context",
+    );
+    expect(contextExts).toHaveLength(1);
+    expect(contextExts[0].valueReference?.reference).toBe("DeviceRequest/dr-1");
+    expect(
+      (qr.extension ?? []).filter((e) => e.url === QR_COVERAGE_EXT_URL),
+    ).toHaveLength(1);
+    expect(findExt(qr, QR_COVERAGE_EXT_URL)?.valueReference?.reference).toBe(
       "Coverage/cov-2",
     );
-    expect(out.filter((e) => e.url === QR_CONTEXT_EXT_URL)).toHaveLength(1);
     expect(
-      out.find((e) => e.url === QR_CONTEXT_EXT_URL)?.valueReference?.reference,
-    ).toBe("DeviceRequest/dr-1");
-    expect(out.filter((e) => e.url === QR_COVERAGE_EXT_URL)).toHaveLength(1);
-    expect(
-      out.find((e) => e.url === QR_COVERAGE_EXT_URL)?.valueReference?.reference,
-    ).toBe("Coverage/cov-2");
-    expect(out.some((e) => e.url === "http://example.org/other")).toBe(true);
+      (qr.extension ?? []).some((e) => e.url === "http://example.org/other"),
+    ).toBe(true);
   });
 });

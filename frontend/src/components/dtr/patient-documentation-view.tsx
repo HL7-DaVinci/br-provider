@@ -32,7 +32,10 @@ import {
 } from "@/lib/clinical-formatters";
 import { parseCoverageInfoFromResource } from "@/lib/coverage-extensions";
 import { QR_CONTEXT_EXT_URL } from "@/lib/dtr-qr-extensions";
-import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
+import {
+  buildTaskFhirContext,
+  serializeQuestionnaireSearch,
+} from "@/lib/dtr-search";
 
 export function PatientDocumentationView({ patientId }: { patientId: string }) {
   const { serverUrl: providerFhirUrl } = useFhirServer();
@@ -208,14 +211,13 @@ function TaskRow({
     if (contexts.length === 0 || !task.id) return;
     setIsLaunching(true);
     try {
-      const fhirContext = [primaryCoverageRef, `Task/${task.id}`].filter(
-        (x): x is string => !!x,
-      );
       openDtrTask({
         iss: providerFhirUrl,
         patientId,
-        coverageAssertionId: contexts[0],
-        fhirContext: fhirContext.join(","),
+        // Every questionnaire-context input is queued, not just the first,
+        // so the payer resolves and returns all of this Task's questionnaires.
+        coverageAssertionId: contexts.join(","),
+        fhirContext: buildTaskFhirContext(task, [primaryCoverageRef]),
       });
     } catch (err) {
       console.error("DTR launch failed:", err);
@@ -225,7 +227,7 @@ function TaskRow({
     }
   }, [
     contexts,
-    task.id,
+    task,
     patientId,
     providerFhirUrl,
     primaryCoverageRef,

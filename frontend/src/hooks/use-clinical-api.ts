@@ -30,6 +30,7 @@ import {
   type OrderEntry,
   type OrderResource,
 } from "@/lib/order-types";
+import { isPendedClaimResponse } from "@/lib/pas-pend-status";
 import type { AnyQrStatus } from "@/lib/qr-status";
 import { fhirFetch } from "./use-fhir-api";
 import { useFhirServer } from "./use-fhir-server";
@@ -541,25 +542,21 @@ export function useDeleteDraftOrder() {
 const QR_CONTEXT_EXT_URL =
   "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/qr-context";
 
-/** Whether a QuestionnaireResponse is linked to the order via qr-context or basedOn. */
+/** Whether a QuestionnaireResponse is linked to the order via qr-context. */
 function qrLinkedToOrder(qr: QuestionnaireResponse, orderRef: string): boolean {
   if (!orderRef) return false;
-  const byContext = (qr.extension ?? []).some(
+  return (qr.extension ?? []).some(
     (ext) =>
       ext.url === QR_CONTEXT_EXT_URL &&
       ext.valueReference?.reference === orderRef,
   );
-  const byBasedOn = (qr.basedOn ?? []).some(
-    (ref) => ref.reference === orderRef,
-  );
-  return byContext || byBasedOn;
 }
 
 /**
  * Query QuestionnaireResponses linked to a specific order. The DTR IG defines a
  * `context` SearchParameter over the `qr-context` extension, but it is not guaranteed
  * to be active on every server, so this queries by `patient` (always supported) and
- * links to the order client-side via the `qr-context` extension or `basedOn`.
+ * links to the order client-side via the `qr-context` extension.
  *
  * https://build.fhir.org/ig/HL7/davinci-dtr/en/SearchParameter-qr-context.html
  */
@@ -720,6 +717,7 @@ export function useEncounters(patientId: string) {
 
 export interface OrderPaStatus {
   outcome: string;
+  pended: boolean;
   disposition?: string;
   preAuthRef?: string;
   claimResponseId: string;
@@ -791,6 +789,7 @@ export function deriveOrderPaStatuses(
     const cr = trackingId ? crByTracking.get(trackingId) : undefined;
     statusMap.set(orderRef, {
       outcome: cr?.outcome ?? "queued",
+      pended: cr ? isPendedClaimResponse(cr) || cr.outcome === "partial" : true,
       disposition: cr?.disposition,
       preAuthRef: cr?.preAuthRef,
       claimResponseId: trackingId ?? "",
@@ -851,8 +850,7 @@ export function useOrderPaStatus(
     enabled: enabled && !!trackingId && !!providerFhirUrl,
     refetchInterval: (q) => {
       const cr = q.state.data as ClaimResponse | null | undefined;
-      const outcome = cr?.outcome;
-      return !cr || outcome === "queued" || outcome === "partial"
+      return !cr || isPendedClaimResponse(cr) || cr.outcome === "partial"
         ? 5_000
         : false;
     },
