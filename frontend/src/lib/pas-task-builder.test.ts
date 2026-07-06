@@ -176,6 +176,39 @@ describe("buildPasTasks", () => {
     expect(task.owner?.identifier?.value).not.toBe("00777");
   });
 
+  it("sets Task.owner to the launching practitioner when the fhirUser claim identifies one", () => {
+    sessionStorage.setItem(
+      "spa_userinfo",
+      JSON.stringify({ fhirUser: "Practitioner/prac-9" }),
+    );
+    try {
+      const task = buildPasTasks(
+        pendedBundle(QUESTIONNAIRE_PAYLOAD),
+        PAYER,
+        ORDER_REF,
+        PATIENT_REF,
+      )[0];
+      expect(task.owner?.reference).toBe("Practitioner/prac-9");
+      expect(task.owner?.identifier).toBeUndefined();
+    } finally {
+      sessionStorage.clear();
+    }
+  });
+
+  it("falls back to the organization NPI owner without a practitioner fhirUser", () => {
+    const task = buildPasTasks(
+      pendedBundle(QUESTIONNAIRE_PAYLOAD),
+      PAYER,
+      ORDER_REF,
+      PATIENT_REF,
+    )[0];
+    expect(task.owner?.reference).toBeUndefined();
+    expect(task.owner?.identifier?.system).toBe(
+      "http://hl7.org/fhir/sid/us-npi",
+    );
+    expect(task.owner?.identifier?.value).toBeTruthy();
+  });
+
   it("aggregates multiple questionnaire CommunicationRequests into one Task with deduplicated contexts", () => {
     const bundle = pendedBundle(QUESTIONNAIRE_PAYLOAD);
     bundle.entry?.push({

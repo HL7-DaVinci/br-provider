@@ -11,7 +11,10 @@ import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { DeleteConfirmButton } from "@/components/delete-confirm-button";
 import { CompletedQrViewer } from "@/components/dtr/completed-qr-viewer";
-import { useDtrTaskSheet } from "@/components/dtr/use-dtr-task-sheet";
+import {
+  useDtrTaskSheet,
+  useLaunchDtrForTask,
+} from "@/components/dtr/use-dtr-task-sheet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,10 +35,7 @@ import {
 } from "@/lib/clinical-formatters";
 import { parseCoverageInfoFromResource } from "@/lib/coverage-extensions";
 import { QR_CONTEXT_EXT_URL } from "@/lib/dtr-qr-extensions";
-import {
-  buildTaskFhirContext,
-  serializeQuestionnaireSearch,
-} from "@/lib/dtr-search";
+import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
 
 export function PatientDocumentationView({ patientId }: { patientId: string }) {
   const { serverUrl: providerFhirUrl } = useFhirServer();
@@ -199,7 +199,7 @@ function TaskRow({
   primaryCoverageRef?: string;
 }) {
   const [isLaunching, setIsLaunching] = useState(false);
-  const openDtrTask = useDtrTaskSheet();
+  const launchDtrForTask = useLaunchDtrForTask();
   const contexts = extractTaskQuestionnaireContexts([task]);
   const label =
     task.description ||
@@ -211,13 +211,10 @@ function TaskRow({
     if (contexts.length === 0 || !task.id) return;
     setIsLaunching(true);
     try {
-      openDtrTask({
+      launchDtrForTask(task, {
         iss: providerFhirUrl,
         patientId,
-        // Every questionnaire-context input is queued, not just the first,
-        // so the payer resolves and returns all of this Task's questionnaires.
-        coverageAssertionId: contexts.join(","),
-        fhirContext: buildTaskFhirContext(task, [primaryCoverageRef]),
+        coverageRef: primaryCoverageRef,
       });
     } catch (err) {
       console.error("DTR launch failed:", err);
@@ -226,12 +223,12 @@ function TaskRow({
       setIsLaunching(false);
     }
   }, [
-    contexts,
+    contexts.length,
     task,
     patientId,
     providerFhirUrl,
     primaryCoverageRef,
-    openDtrTask,
+    launchDtrForTask,
   ]);
 
   const deleteTask = useDeleteTask();

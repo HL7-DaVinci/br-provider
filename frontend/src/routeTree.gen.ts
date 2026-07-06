@@ -16,6 +16,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as PractitionerIndexRouteImport } from './routes/practitioner/index'
 import { Route as PatientIndexRouteImport } from './routes/patient/index'
 import { Route as DtrIndexRouteImport } from './routes/dtr/index'
+import { Route as PractitionerTasksRouteImport } from './routes/practitioner/tasks'
 import { Route as PatientsPatientIdRouteImport } from './routes/patients/$patientId'
 import { Route as PatientDocumentationRouteImport } from './routes/patient/documentation'
 import { Route as PatientCoverageRouteImport } from './routes/patient/coverage'
@@ -68,6 +69,11 @@ const PatientIndexRoute = PatientIndexRouteImport.update({
 const DtrIndexRoute = DtrIndexRouteImport.update({
   id: '/dtr/',
   path: '/dtr/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PractitionerTasksRoute = PractitionerTasksRouteImport.update({
+  id: '/practitioner/tasks',
+  path: '/practitioner/tasks',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PatientsPatientIdRoute = PatientsPatientIdRouteImport.update({
@@ -181,6 +187,7 @@ export interface FileRoutesByFullPath {
   '/patient/coverage': typeof PatientCoverageRoute
   '/patient/documentation': typeof PatientDocumentationRoute
   '/patients/$patientId': typeof PatientsPatientIdRouteWithChildren
+  '/practitioner/tasks': typeof PractitionerTasksRoute
   '/dtr/': typeof DtrIndexRoute
   '/patient/': typeof PatientIndexRoute
   '/practitioner/': typeof PractitionerIndexRoute
@@ -206,6 +213,7 @@ export interface FileRoutesByTo {
   '/dtr/launch': typeof DtrLaunchRoute
   '/patient/coverage': typeof PatientCoverageRoute
   '/patient/documentation': typeof PatientDocumentationRoute
+  '/practitioner/tasks': typeof PractitionerTasksRoute
   '/dtr': typeof DtrIndexRoute
   '/patient': typeof PatientIndexRoute
   '/practitioner': typeof PractitionerIndexRoute
@@ -232,6 +240,7 @@ export interface FileRoutesById {
   '/patient/coverage': typeof PatientCoverageRoute
   '/patient/documentation': typeof PatientDocumentationRoute
   '/patients/$patientId': typeof PatientsPatientIdRouteWithChildren
+  '/practitioner/tasks': typeof PractitionerTasksRoute
   '/dtr/': typeof DtrIndexRoute
   '/patient/': typeof PatientIndexRoute
   '/practitioner/': typeof PractitionerIndexRoute
@@ -261,6 +270,7 @@ export interface FileRouteTypes {
     | '/patient/coverage'
     | '/patient/documentation'
     | '/patients/$patientId'
+    | '/practitioner/tasks'
     | '/dtr/'
     | '/patient/'
     | '/practitioner/'
@@ -286,6 +296,7 @@ export interface FileRouteTypes {
     | '/dtr/launch'
     | '/patient/coverage'
     | '/patient/documentation'
+    | '/practitioner/tasks'
     | '/dtr'
     | '/patient'
     | '/practitioner'
@@ -311,6 +322,7 @@ export interface FileRouteTypes {
     | '/patient/coverage'
     | '/patient/documentation'
     | '/patients/$patientId'
+    | '/practitioner/tasks'
     | '/dtr/'
     | '/patient/'
     | '/practitioner/'
@@ -337,6 +349,7 @@ export interface RootRouteChildren {
   PatientRoute: typeof PatientRouteWithChildren
   DtrLaunchRoute: typeof DtrLaunchRoute
   PatientsPatientIdRoute: typeof PatientsPatientIdRouteWithChildren
+  PractitionerTasksRoute: typeof PractitionerTasksRoute
   DtrIndexRoute: typeof DtrIndexRoute
   PractitionerIndexRoute: typeof PractitionerIndexRoute
 }
@@ -390,6 +403,13 @@ declare module '@tanstack/react-router' {
       path: '/dtr'
       fullPath: '/dtr/'
       preLoaderRoute: typeof DtrIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/practitioner/tasks': {
+      id: '/practitioner/tasks'
+      path: '/practitioner/tasks'
+      fullPath: '/practitioner/tasks'
+      preLoaderRoute: typeof PractitionerTasksRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/patients/$patientId': {
@@ -606,6 +626,7 @@ const rootRouteChildren: RootRouteChildren = {
   PatientRoute: PatientRouteWithChildren,
   DtrLaunchRoute: DtrLaunchRoute,
   PatientsPatientIdRoute: PatientsPatientIdRouteWithChildren,
+  PractitionerTasksRoute: PractitionerTasksRoute,
   DtrIndexRoute: DtrIndexRoute,
   PractitionerIndexRoute: PractitionerIndexRoute,
 }

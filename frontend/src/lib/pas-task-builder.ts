@@ -6,6 +6,7 @@ import type {
   Identifier,
   Task,
 } from "fhir/r4";
+import { getStoredPractitionerRef } from "@/hooks/use-practitioner-ref";
 import { PROVIDER_ORG_IDENTIFIER } from "./pas-bundle-builder";
 import { isPendedClaimResponse } from "./pas-pend-status";
 
@@ -386,6 +387,7 @@ function baseTask(context: TaskContext, status: Task["status"]): Task {
     system: US_NPI_SYSTEM,
     value: PROVIDER_ORG_IDENTIFIER,
   };
+  const practitionerRef = getStoredPractitionerRef();
   const trackingId = context.trackingId ?? context.claimIdentifier;
   if (!trackingId || !context.patientRef) {
     throw new Error(
@@ -403,7 +405,12 @@ function baseTask(context: TaskContext, status: Task["status"]): Task {
     ...(context.insurerIdentifier
       ? { requester: { identifier: context.insurerIdentifier } }
       : {}),
-    owner: { identifier: providerId },
+    // CDex assigns Task.owner to the provider being asked to act; the launching
+    // practitioner is used when the SMART fhirUser claim identifies one, with
+    // the organization NPI as the fallback for non-SMART launches.
+    owner: practitionerRef
+      ? { reference: practitionerRef }
+      : { identifier: providerId },
     focus: { reference: context.orderRef },
     for: { reference: context.patientRef },
     identifier: [trackingId],

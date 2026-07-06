@@ -184,11 +184,32 @@ export function PaAction({
     .filter((id): id is string => !!id);
   const qrIdsForPas = completedQrIds;
 
-  if (!needsAuth || !orderId) return null;
+  if (!orderId) return null;
 
-  // A PA already exists for this order (pended or decided); the status column links to it, so
-  // suppress the "Submit PA" action to avoid re-submitting on top of the existing authorization.
-  if (paStatusMap.has(`${order.resourceType}/${orderId}`)) return null;
+  // A PA already exists for this order (pended or decided): link to the PAS view of the
+  // prior submission instead of the "Submit PA" action, so it cannot be re-submitted on
+  // top of the existing authorization.
+  const existingPa = paStatusMap.get(`${order.resourceType}/${orderId}`);
+  if (existingPa) {
+    return (
+      <Link
+        to="/patients/$patientId/orders/$orderId/pas"
+        params={{ patientId, orderId }}
+        search={{
+          orderType: order.resourceType,
+          coverageId: existingPa.coverageId,
+          claimResponseId: existingPa.claimResponseId || undefined,
+        }}
+      >
+        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs">
+          <Eye className="h-3 w-3 mr-1" />
+          View PA
+        </Button>
+      </Link>
+    );
+  }
+
+  if (!needsAuth) return null;
 
   const coverageRef = coverageInfo.find((ci) => ci.coverage)?.coverage;
   const coverageId = coverageRef?.replace(/^Coverage\//, "") ?? "";

@@ -9,7 +9,7 @@ import {
 } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 
-import { Bell, LogIn, LogOut, Settings, Wrench } from "lucide-react";
+import { Activity, LogIn, LogOut, Settings, Wrench } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import {
   DevToolsDrawer,
@@ -129,29 +129,54 @@ function RootComponent() {
           style={{ overflow: "hidden" }}
         >
           <header className="flex h-12 shrink-0 items-center justify-between gap-4 border-b px-4 bg-brand">
-            {/* Left: logo */}
-            <img
-              src="/header-logo.png"
-              alt="Logo"
-              className="h-11 object-contain"
-            />
+            {/* Left: logo + practitioner navigation */}
+            <div className="flex h-full items-center gap-3">
+              <Link to="/" className="flex items-center gap-2.5">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-foreground/15 text-brand-foreground">
+                  <Activity className="h-4 w-4" strokeWidth={2.5} />
+                </div>
+                <span className="leading-none">
+                  <span className="block text-sm font-semibold tracking-tight text-brand-foreground">
+                    Da Vinci BR Provider
+                  </span>
+                </span>
+              </Link>
+              {isPractitionerSide && (
+                <>
+                  <div className="h-5 w-px bg-brand-foreground/20" />
+                  <nav className="flex h-full items-stretch">
+                    <Link
+                      to="/practitioner"
+                      activeOptions={{ exact: true }}
+                      className={`relative flex items-center px-3 text-[13px] font-medium tracking-wide text-brand-foreground/60 transition-colors hover:text-brand-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-t-full after:bg-transparent after:transition-colors ${
+                        pathname.startsWith("/patients/")
+                          ? "text-brand-foreground after:bg-brand-foreground/90"
+                          : ""
+                      }`}
+                      activeProps={{
+                        className:
+                          "text-brand-foreground after:bg-brand-foreground/90",
+                      }}
+                    >
+                      Patients
+                    </Link>
+                    <Link
+                      to="/practitioner/tasks"
+                      className="relative flex items-center px-3 text-[13px] font-medium tracking-wide text-brand-foreground/60 transition-colors hover:text-brand-foreground after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-t-full after:bg-transparent after:transition-colors"
+                      activeProps={{
+                        className:
+                          "text-brand-foreground after:bg-brand-foreground/90",
+                      }}
+                    >
+                      Tasks
+                    </Link>
+                  </nav>
+                </>
+              )}
+            </div>
 
             {/* Right: utilities + user */}
             <div className="flex items-center gap-1">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-brand-foreground/70 hover:text-brand-foreground hover:bg-brand-foreground/10"
-                    aria-label="Notifications"
-                  >
-                    <Bell className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">Notifications</TooltipContent>
-              </Tooltip>
-
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button

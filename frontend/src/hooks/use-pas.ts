@@ -206,6 +206,7 @@ function invalidateDocumentationTaskQueries(queryClient: QueryClient): void {
     queryKey: ["pas", "patient-documentation-tasks"],
   });
   queryClient.invalidateQueries({ queryKey: ["pas", "documentation-tasks"] });
+  queryClient.invalidateQueries({ queryKey: ["pas", "all-tasks"] });
 }
 
 /**
@@ -504,6 +505,31 @@ export function usePatientDocumentationTasks(
     },
     enabled: !!patientId && !!providerFhirUrl,
     staleTime: 30 * 1000,
+    retry: 1,
+  });
+}
+
+/**
+ * Org-wide Task worklist: every PAS/CDex Task on the provider server, newest
+ * first. Polled so PAS-subscription-driven status changes surface without a
+ * manual refresh.
+ */
+export function useAllTasks() {
+  const { serverUrl } = useFhirServer();
+  return useQuery({
+    queryKey: ["pas", "all-tasks", serverUrl],
+    queryFn: async () => {
+      const bundle = await fhirFetch<Bundle<Task>>(
+        `${serverUrl}/Task?_sort=-_lastUpdated&_count=50`,
+      );
+      return (bundle.entry ?? [])
+        .map((entry) => entry.resource)
+        .filter(
+          (resource): resource is Task => resource?.resourceType === "Task",
+        );
+    },
+    enabled: !!serverUrl,
+    refetchInterval: 30_000,
     retry: 1,
   });
 }

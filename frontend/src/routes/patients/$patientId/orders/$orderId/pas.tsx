@@ -30,6 +30,7 @@ import {
   invalidateOrderQueries,
   useCoverage,
   useOrderPaStatus,
+  useOrderPaStatusMap,
   useOrderQuestionnaireResponses,
   usePatient,
 } from "@/hooks/use-clinical-api";
@@ -53,7 +54,8 @@ import {
 } from "@/lib/clinical-formatters";
 import { buildTaskFhirContext } from "@/lib/dtr-search";
 import { isPendedClaimResponse } from "@/lib/pas-pend-status";
-import { isTerminalQrStatus } from "@/lib/qr-status";
+import { isTerminalQrStatus, selectNewCompletedQrs } from "@/lib/qr-status";
+import { TERMINAL_TASK_STATUSES } from "@/lib/task-worklist";
 
 interface PasSearch {
   coverageId?: string;
@@ -80,14 +82,6 @@ export const Route = createFileRoute(
   }),
 });
 
-const TERMINAL_TASK_STATUSES = [
-  "completed",
-  "cancelled",
-  "failed",
-  "rejected",
-  "entered-in-error",
-];
-
 function PasPage() {
   const { patientId, orderId } = Route.useParams();
   const { coverageId, claimResponseId, qrIds, orderType } = Route.useSearch();
@@ -102,15 +96,33 @@ function PasPage() {
     });
   }, [patientId, queryClient]);
 
-  const { data: existingClaimResponse } = useQuery({
-    queryKey: ["fhir", "ClaimResponse", claimResponseId, providerFhirUrl],
+  // A deep link (task worklist, orders page, hand-typed URL) may omit
+  // claimResponseId; the persisted PA Task for this order supplies the
+  // tracking identifier so an existing submission is always rehydrated
+  // instead of presenting the submit form again.
+  const paStatusMap = useOrderPaStatusMap(patientId);
+  const derivedTrackingId = paStatusMap.get(
+    `${orderType ?? "ServiceRequest"}/${orderId}`,
+  )?.claimResponseId;
+  const effectiveClaimResponseId = claimResponseId || derivedTrackingId;
+
+  const {
+    data: existingClaimResponse,
+    isLoading: isLoadingExistingClaimResponse,
+  } = useQuery({
+    queryKey: [
+      "fhir",
+      "ClaimResponse",
+      effectiveClaimResponseId,
+      providerFhirUrl,
+    ],
     queryFn: async (): Promise<ClaimResponse | null> => {
-      if (!claimResponseId) return null;
+      if (!effectiveClaimResponseId) return null;
       // Prefer the ClaimResponse persisted on the provider (no payer round-trip, no $inquire).
       try {
         const bundle = await fhirFetch<Bundle<ClaimResponse>>(
           `${providerFhirUrl}/ClaimResponse?identifier=${encodeURIComponent(
-            claimResponseId,
+            effectiveClaimResponseId,
           )}&_sort=-_lastUpdated`,
         );
         const persisted = bundle.entry?.[0]?.resource;
@@ -120,7 +132,7 @@ function PasPage() {
       }
       try {
         return await fetchPasInquiry({
-          claimResponseId,
+          claimResponseId: effectiveClaimResponseId,
           payerFhirUrl,
           patientId,
           orderId,
@@ -132,7 +144,7 @@ function PasPage() {
         return null;
       }
     },
-    enabled: !!claimResponseId && !!providerFhirUrl,
+    enabled: !!effectiveClaimResponseId && !!providerFhirUrl,
     staleTime: 60 * 1000,
     retry: false,
   });
@@ -234,16 +246,10 @@ function PasPage() {
     hasOpenDocRequest ? orderRef : undefined,
     hasOpenDocRequest ? patientId : undefined,
   );
-  const docRequestAnchor =
-    openDocTask?.authoredOn ?? activeClaimResponse?.created;
-  const newCompletedQrs = (orderQrBundle?.entry ?? [])
-    .filter((e) => isTerminalQrStatus(e.resource?.status))
-    .map((e) => e.resource as QuestionnaireResponse)
-    .filter((qr) => {
-      if (!docRequestAnchor) return true;
-      const qrDate = qr.authored ? new Date(qr.authored) : null;
-      return qrDate ? qrDate >= new Date(docRequestAnchor) : true;
-    });
+  const newCompletedQrs = selectNewCompletedQrs(
+    orderQrBundle?.entry,
+    openDocTask?.authoredOn ?? activeClaimResponse?.created,
+  );
   const newCompletedQrIds = newCompletedQrs
     .map((qr) => qr.id)
     .filter((id): id is string => !!id);
@@ -377,6 +383,7 @@ function PasPage() {
     submitAttachment,
     payerFhirUrl,
     providerFhirUrl,
+    resolvedCoverageId,
     invalidateClaimResponseList,
     paStatus,
     completeDocTask,
@@ -547,7 +554,11 @@ function PasPage() {
       <Separator />
 
       {/* Submit / Response Section */}
-      {!latestResponse ? (
+      {isLoadingExistingClaimResponse ? (
+        <div className="flex justify-center py-4">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : !latestResponse ? (
         <div className="flex justify-center">
           <Button
             size="lg"

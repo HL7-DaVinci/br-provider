@@ -32,6 +32,7 @@ import {
 } from "@/lib/order-types";
 import { isPendedClaimResponse } from "@/lib/pas-pend-status";
 import type { AnyQrStatus } from "@/lib/qr-status";
+import { isTerminalTaskStatus } from "@/lib/task-worklist";
 import { fhirFetch } from "./use-fhir-api";
 import { useFhirServer } from "./use-fhir-server";
 
@@ -727,6 +728,10 @@ export interface OrderPaStatus {
   created?: string;
 }
 
+// PAS decisions arrive server-side via the subscription notification, so no client
+// mutation invalidates these caches. Both queries poll while their own data shows an
+// unresolved authorization and stop once everything is decided, mirroring
+// useOrderPaStatus.
 function useOrderClaimResponses(patientId: string) {
   const { serverUrl } = useFhirServer();
   return useQuery({
@@ -736,6 +741,17 @@ function useOrderClaimResponses(patientId: string) {
         `${serverUrl}/ClaimResponse?patient=${patientId}&_count=50`,
       ),
     enabled: !!serverUrl && !!patientId,
+    staleTime: 30 * 1000,
+    refetchInterval: (query) => {
+      const anyPended = (query.state.data?.entry ?? []).some((e) => {
+        const cr = e.resource;
+        return (
+          cr?.resourceType === "ClaimResponse" &&
+          (isPendedClaimResponse(cr) || cr.outcome === "partial")
+        );
+      });
+      return anyPended ? 30 * 1000 : false;
+    },
   });
 }
 
@@ -748,6 +764,15 @@ function useOrderPaTasks(patientId: string) {
         `${serverUrl}/Task?patient=${patientId}&_sort=-_lastUpdated&_count=50`,
       ),
     enabled: !!serverUrl && !!patientId,
+    staleTime: 30 * 1000,
+    refetchInterval: (query) => {
+      const anyOpen = (query.state.data?.entry ?? []).some(
+        (e) =>
+          e.resource?.resourceType === "Task" &&
+          !isTerminalTaskStatus(e.resource.status),
+      );
+      return anyOpen ? 30 * 1000 : false;
+    },
   });
 }
 
