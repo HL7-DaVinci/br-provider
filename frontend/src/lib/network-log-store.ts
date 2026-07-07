@@ -12,6 +12,7 @@ export interface NetworkLogEntry {
   requestBody: unknown;
   error: boolean;
   operationName?: string;
+  source?: "browser" | "server";
 }
 
 const MAX_ENTRIES = 500;

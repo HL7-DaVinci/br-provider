@@ -1,5 +1,7 @@
 package org.hl7.davinci.api;
 
+import java.util.UUID;
+
 import org.hl7.davinci.pas.PasResolutionService;
 import org.hl7.fhir.r4.model.ClaimResponse;
 import org.slf4j.Logger;
@@ -39,20 +41,31 @@ public class PasNotificationController {
   private final PasResolutionService resolutionService;
   private final FhirContext fhirContext;
   private final ObjectMapper objectMapper;
+  private final DevActivityController devActivity;
+  private final JsonNode okBundleNode;
 
   public PasNotificationController(PasResolutionService resolutionService, FhirContext fhirContext,
-      ObjectMapper objectMapper) {
+      ObjectMapper objectMapper, DevActivityController devActivity) {
     this.resolutionService = resolutionService;
     this.fhirContext = fhirContext;
     this.objectMapper = objectMapper;
+    this.devActivity = devActivity;
+    try {
+      this.okBundleNode = objectMapper.readTree(OK_BUNDLE);
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   @PostMapping(consumes = "application/fhir+json", produces = "application/fhir+json")
   public ResponseEntity<String> receive(@RequestBody String body) {
     // Unauthenticated webhook: production must verify the caller (channel.header bearer, mTLS, or an
     // IP allowlist) before acting on a notification.
+    JsonNode bodyNode = null;
+    JsonNode claimResponseNode = null;
     try {
-      JsonNode claimResponseNode = findClaimResponse(objectMapper.readTree(body));
+      bodyNode = objectMapper.readTree(body);
+      claimResponseNode = findClaimResponse(bodyNode);
       if (claimResponseNode != null) {
         ClaimResponse claimResponse = fhirContext.newJsonParser()
             .parseResource(ClaimResponse.class, claimResponseNode.toString());
@@ -62,6 +75,13 @@ public class PasNotificationController {
     } catch (Exception e) {
       log.warn("Failed to process PAS notification", e);
     }
+    boolean decision = claimResponseNode != null;
+    devActivity.record(new DevActivityController.ActivityEvent(
+        UUID.randomUUID().toString(), System.currentTimeMillis(), "inbound", "POST",
+        "/api/pas/notification", 200,
+        decision ? "PAS Notification (decision)" : "PAS Notification",
+        decision ? "pas-decision" : "subscription-event",
+        bodyNode, okBundleNode));
     return ResponseEntity.ok().contentType(FHIR_JSON).body(OK_BUNDLE);
   }
 

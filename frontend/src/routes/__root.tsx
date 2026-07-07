@@ -27,6 +27,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAuth } from "@/hooks/use-auth";
+import { useServerActivityFeed } from "@/hooks/use-server-activity";
 
 import { NotFoundComponent } from "./-not-found";
 
@@ -59,6 +60,9 @@ function RootComponent() {
   const handlePinnedChange = useCallback((pinned: boolean) => {
     setDrawerPinned(pinned);
   }, []);
+
+  const openDrawer = useCallback(() => setDrawerOpen(true), []);
+  useServerActivityFeed(openDrawer);
 
   // Determine route gating in pure expressions so the redirect effect below
   // sees stable boolean deps. Using <Navigate> here re-fires its layout

@@ -13,6 +13,7 @@ import {
 } from "@/components/json-viewer-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
@@ -58,8 +59,14 @@ export const DevToolsDrawer = memo(function DevToolsDrawer({
 }: DevToolsDrawerProps) {
   const [pinned, setPinned] = useState(getStoredPinState);
   const [serverFilter, setServerFilter] = useState<string | undefined>();
+  const [urlFilter, setUrlFilter] = useState("");
   const { entries, clear, entryCount } = useNetworkLog(serverFilter);
   const { viewerData, openViewer, closeViewer } = useJsonViewer();
+
+  const urlQuery = urlFilter.trim().toLowerCase();
+  const filteredEntries = urlQuery
+    ? entries.filter((entry) => entry.url.toLowerCase().includes(urlQuery))
+    : entries;
 
   // Tick counter to refresh relative timestamps in entry rows
   const [tick, setTick] = useState(0);
@@ -101,7 +108,9 @@ export const DevToolsDrawer = memo(function DevToolsDrawer({
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold">Network</span>
               <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                {entryCount}
+                {urlQuery
+                  ? `${filteredEntries.length} / ${entryCount}`
+                  : entryCount}
               </Badge>
             </div>
             <div className="flex items-center gap-1">
@@ -151,13 +160,13 @@ export const DevToolsDrawer = memo(function DevToolsDrawer({
             </div>
           </div>
 
-          {/* Filter */}
-          <div className="border-b px-3 py-2">
+          {/* Filters */}
+          <div className="flex items-center gap-2 border-b px-3 py-2">
             <Select
               value={serverFilter ?? "all"}
               onValueChange={handleServerFilterChange}
             >
-              <SelectTrigger size="sm" className="w-full text-xs">
+              <SelectTrigger size="sm" className="w-40 shrink-0 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -180,17 +189,39 @@ export const DevToolsDrawer = memo(function DevToolsDrawer({
                 </SelectGroup>
               </SelectContent>
             </Select>
+            <div className="relative flex-1">
+              <Input
+                value={urlFilter}
+                onChange={(e) => setUrlFilter(e.target.value)}
+                placeholder="Filter by URL"
+                aria-label="Filter requests by URL"
+                className="h-8 w-full pr-7 text-xs"
+              />
+              {urlFilter && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-1/2 right-1 h-5 w-5 -translate-y-1/2 text-muted-foreground"
+                  onClick={() => setUrlFilter("")}
+                  aria-label="Clear URL filter"
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              )}
+            </div>
           </div>
 
           {/* Entry list */}
           <ScrollArea className="flex-1 min-h-0">
-            {entries.length === 0 ? (
+            {filteredEntries.length === 0 ? (
               <div className="flex items-center justify-center py-12 text-xs text-muted-foreground">
-                No requests logged
+                {entries.length === 0
+                  ? "No requests logged"
+                  : "No requests match the filter"}
               </div>
             ) : (
               <div className="divide-y">
-                {entries.map((entry) => (
+                {filteredEntries.map((entry) => (
                   <NetworkEntry
                     key={entry.id}
                     entry={entry}
@@ -276,6 +307,14 @@ const NetworkEntry = memo(function NetworkEntry({
             <span className="truncate font-mono">
               {truncatePath(entry.url, entry.serverUrl, entry.operationName)}
             </span>
+            {entry.source === "server" && (
+              <Badge
+                variant="outline"
+                className="ml-auto shrink-0 text-[9px] px-1 py-0"
+              >
+                server
+              </Badge>
+            )}
           </div>
           <div className="mt-0.5 flex items-center gap-2 text-muted-foreground">
             <span>{entry.serverName}</span>
@@ -285,8 +324,12 @@ const NetworkEntry = memo(function NetworkEntry({
                 <span>{entry.resourceType}</span>
               </>
             )}
-            <span className="text-border">/</span>
-            <span>{entry.duration}ms</span>
+            {entry.source !== "server" && (
+              <>
+                <span className="text-border">/</span>
+                <span>{entry.duration}ms</span>
+              </>
+            )}
             <span className="ml-auto">
               {formatRelativeTime(entry.timestamp)}
             </span>

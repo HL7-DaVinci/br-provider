@@ -29,8 +29,9 @@ class PasNotificationControllerTest {
   @Test
   void receive_parsesNestedClaimResponseAndAppliesResolution() {
     PasResolutionService resolution = mock(PasResolutionService.class);
-    PasNotificationController controller =
-        new PasNotificationController(resolution, FhirContext.forR4(), new ObjectMapper());
+    DevActivityController devActivity = new DevActivityController();
+    PasNotificationController controller = new PasNotificationController(
+        resolution, FhirContext.forR4(), new ObjectMapper(), devActivity);
 
     assertEquals(200, controller.receive(NESTED_NOTIFICATION).getStatusCode().value());
 
@@ -38,5 +39,23 @@ class PasNotificationControllerTest {
     verify(resolution).applyResolution(captor.capture());
     assertEquals("trk-1", captor.getValue().getIdentifierFirstRep().getValue());
     assertEquals("complete", captor.getValue().getOutcome().toCode());
+
+    assertEquals(1, devActivity.list().size());
+    assertEquals("pas-decision", devActivity.list().get(0).category());
+  }
+
+  @Test
+  void receive_handshakeWithoutClaimResponseRecordsSubscriptionEvent() {
+    PasResolutionService resolution = mock(PasResolutionService.class);
+    DevActivityController devActivity = new DevActivityController();
+    PasNotificationController controller = new PasNotificationController(
+        resolution, FhirContext.forR4(), new ObjectMapper(), devActivity);
+
+    String handshake = "{\"resourceType\":\"Bundle\",\"type\":\"history\",\"entry\":[" +
+        "{\"resource\":{\"resourceType\":\"Parameters\"}}]}";
+    assertEquals(200, controller.receive(handshake).getStatusCode().value());
+
+    assertEquals(1, devActivity.list().size());
+    assertEquals("subscription-event", devActivity.list().get(0).category());
   }
 }
