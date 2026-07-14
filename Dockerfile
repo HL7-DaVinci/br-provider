@@ -10,6 +10,7 @@ WORKDIR /app
 # Copy workspace package files and lockfile
 COPY package.json bun.lock ./
 COPY frontend/package.json ./frontend/
+COPY frontend/scripts/ ./frontend/scripts/
 
 # Install dependencies
 WORKDIR /app
@@ -18,7 +19,7 @@ RUN bun install --frozen-lockfile
 WORKDIR /app
 COPY frontend/index.html ./frontend/
 COPY frontend/tsconfig.json ./frontend/
-COPY frontend/vite.config.ts ./frontend/
+COPY frontend/vite.config.ts frontend/tsconfig.build.json ./frontend/
 COPY frontend/public/ ./frontend/public/
 COPY frontend/src/ ./frontend/src/
 
