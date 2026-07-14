@@ -108,7 +108,7 @@ public class AuthorizationServerConfig {
 
     /**
      * Spring Auth Server requires client_id in the token request body even with
-     * private_key_jwt authentication. The FAST RI (and other UDAP clients) omit it
+     * private_key_jwt authentication. UDAP clients omit it
      * because RFC 6749 considers it optional when the client authenticates via
      * client_assertion. This filter extracts client_id from the JWT assertion's
      * sub claim and injects it into the request when missing.

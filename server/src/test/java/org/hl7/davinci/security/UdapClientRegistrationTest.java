@@ -1,5 +1,11 @@
 package org.hl7.davinci.security;
 
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.util.concurrent.atomic.AtomicInteger;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
@@ -66,6 +72,62 @@ class UdapClientRegistrationTest {
 
         assertFalse(result.udapEnabled());
         assertNull(result.issuer());
+    }
+
+    @Test
+    void refreshRegistration_coalescesWithinCooldownAndFallsBackToCache() throws Exception {
+        AtomicInteger registerCount = new AtomicInteger();
+
+        HttpServer server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        String baseUrl = "http://localhost:" + server.getAddress().getPort();
+        server.createContext("/.well-known/udap", exchange ->
+            respond(exchange, 200, metadataJson(baseUrl)));
+        server.createContext("/register", exchange -> respond(exchange, 201,
+            "{\"client_id\":\"client-" + registerCount.incrementAndGet() + "\"}"));
+        server.start();
+
+        try {
+            props.setIssuer(baseUrl);
+            props.setServerBaseUrl("http://localhost:8080");
+            props.setRegistrationCooldownSeconds(0);
+            UdapClientRegistration reg = new UdapClientRegistration(
+                props, testCertificateHolder(), new OutboundTargetValidator(props));
+
+            reg.refreshRegistration();
+            reg.refreshRegistration();
+
+            assertTrue(reg.isRegistered());
+            assertEquals("client-2", reg.getClientId());
+            assertEquals(2, registerCount.get());
+
+            props.setRegistrationCooldownSeconds(300);
+            reg.refreshRegistration();
+            assertEquals(2, registerCount.get(), "refresh within the cooldown should be a no-op");
+
+            props.setRegistrationCooldownSeconds(0);
+            server.stop(0);
+            assertDoesNotThrow(reg::ensureFreshRegistration);
+            assertEquals("client-2", reg.getClientId(),
+                "cached registration should survive an unreachable issuer");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private static String metadataJson(String baseUrl) {
+        return "{\"issuer\":\"" + baseUrl + "\","
+            + "\"authorization_endpoint\":\"" + baseUrl + "/authorize\","
+            + "\"token_endpoint\":\"" + baseUrl + "/token\","
+            + "\"registration_endpoint\":\"" + baseUrl + "/register\"}";
+    }
+
+    private static void respond(HttpExchange exchange, int status, String body) throws IOException {
+        byte[] bytes = body.getBytes();
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.sendResponseHeaders(status, bytes.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(bytes);
+        }
     }
 
     @Test

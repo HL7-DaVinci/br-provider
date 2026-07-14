@@ -486,6 +486,8 @@ security:
   default-user-password: test
   fetch-cert-retry-attempts: 10
   fetch-cert-retry-delay: 5000
+  # Minimum seconds between UDAP re-registrations with the primary issuer
+  registration-cooldown-seconds: 60
   ssl-verify: false
   external-base-url: http://localhost:3000
   oauth-client-id: provider-client

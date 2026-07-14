@@ -21,6 +21,8 @@ public class SecurityProperties {
     private int fetchCertRetryAttempts = 10;
     private long fetchCertRetryDelay = 5000;
     private String bypassHeader = "X-Bypass-Auth";
+    /** Minimum seconds between UDAP re-registrations with the primary issuer. */
+    private long registrationCooldownSeconds = 60;
     private boolean sslVerify = false;
     private String oauthClientId = "provider-client";
     private List<String> allowedLocalHosts = new ArrayList<>(List.of(
@@ -132,6 +134,9 @@ public class SecurityProperties {
 
     public String getBypassHeader() { return bypassHeader; }
     public void setBypassHeader(String bypassHeader) { this.bypassHeader = bypassHeader; }
+
+    public long getRegistrationCooldownSeconds() { return registrationCooldownSeconds; }
+    public void setRegistrationCooldownSeconds(long registrationCooldownSeconds) { this.registrationCooldownSeconds = registrationCooldownSeconds; }
 
     public boolean isSslVerify() { return sslVerify; }
     public void setSslVerify(boolean sslVerify) { this.sslVerify = sslVerify; }

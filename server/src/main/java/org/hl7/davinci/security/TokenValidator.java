@@ -29,7 +29,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Validates JWTs from two trusted issuers:
- * 1. The FAST RI authorization server (trust community authority) for user tokens
+ * 1. The trust community authorization server (primary issuer) for user tokens
  * 2. This server's own Spring Authorization Server for B2B client_credentials tokens
  *
  * Tokens are validated against the issuer's published JWKS. The issuer claim

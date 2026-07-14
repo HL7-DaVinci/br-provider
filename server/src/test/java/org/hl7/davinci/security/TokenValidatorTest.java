@@ -120,7 +120,7 @@ class TokenValidatorTest {
 
     @Test
     void trustedIssuerToken_bypassesAudCheck() throws Exception {
-        // Tokens issued by the trust-community auth server (FAST RI) carry an
+        // Tokens issued by the trust-community auth server carry an
         // aud that points at the IdP's own resource id, not this FHIR base.
         // The aud check must be skipped for them.
         String token = signToken(new JWTClaimsSet.Builder()

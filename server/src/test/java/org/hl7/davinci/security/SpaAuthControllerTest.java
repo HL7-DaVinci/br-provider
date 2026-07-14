@@ -125,9 +125,41 @@ class SpaAuthControllerTest {
     }
 
     @Test
+    void login_reregistersOnEveryCall() throws Exception {
+        controller.login(null, null);
+        controller.login(null, null);
+
+        assertEquals(2, udapClient.getRefreshCallCount());
+    }
+
+    @Test
+    void login_reregistrationFailsWithCachedRegistration_stillRedirects() throws Exception {
+        udapClient.setHasCachedRegistration(true);
+        udapClient.setFailRegistration(true);
+
+        ResponseEntity<?> response = controller.login(null, null);
+
+        assertEquals(302, response.getStatusCode().value());
+        String location = response.getHeaders().getLocation().toString();
+        assertTrue(location.startsWith("https://localhost:5001/connect/authorize"));
+        assertTrue(location.contains("client_id=test-client-id"));
+    }
+
+    @Test
+    void login_snapshotsClientIntoPendingFlow() throws Exception {
+        controller.login(null, null);
+
+        SpaAuthController.PendingFlow flow =
+            controller.getPendingFlows().values().iterator().next();
+        assertEquals("test-client-id", flow.clientId());
+        assertEquals("https://localhost:5001/connect/token", flow.tokenEndpoint());
+        assertNull(flow.serverUrl());
+    }
+
+    @Test
     void login_withoutExternalBaseUrl_redirectsToRelativeLoginOnConnectFailure() throws Exception {
         securityProperties.setExternalBaseUrl(null);
-        udapClient.setFailEnsureRegistered(true);
+        udapClient.setFailRegistration(true);
 
         ResponseEntity<?> response = controller.login(null, null);
 
@@ -583,7 +615,9 @@ class SpaAuthControllerTest {
         private String tokenEndpoint = "https://localhost:5001/connect/token";
         private String redirectUri = "http://localhost:3000/callback";
         private boolean customRegistrationCached = true;
-        private boolean failEnsureRegistered = false;
+        private boolean failRegistration = false;
+        private boolean hasCachedRegistration = false;
+        private int refreshCallCount = 0;
         private int discoverCallCount = 0;
 
         StubUdapClientRegistration(SecurityProperties securityProperties,
@@ -592,11 +626,21 @@ class SpaAuthControllerTest {
             super(securityProperties, certificateHolder, outboundTargetValidator);
         }
 
+        /**
+         * Network-free stand-in mirroring the real contract: throws only
+         * when nothing is cached; a cached registration swallows refresh
+         * failures.
+         */
         @Override
-        public void ensureRegistered() throws Exception {
-            if (failEnsureRegistered) {
+        public void ensureFreshRegistration() throws Exception {
+            refreshCallCount++;
+            if (hasCachedRegistration) {
+                return;
+            }
+            if (failRegistration) {
                 throw new ConnectException("UDAP auth server unavailable");
             }
+            hasCachedRegistration = true;
         }
 
         @Override
@@ -620,7 +664,7 @@ class SpaAuthControllerTest {
         }
 
         @Override
-        public DiscoveryResult discoverAndRegister(String fhirServerUrl) {
+        public DiscoveryResult discoverAndRegister(String fhirServerUrl, boolean forceRegistration) {
             discoverCallCount++;
             if ("https://custom.fhir.org/fhir".equals(
                     org.hl7.davinci.util.UrlMatchUtil.normalizeUrl(fhirServerUrl))) {
@@ -649,8 +693,16 @@ class SpaAuthControllerTest {
             this.customRegistrationCached = customRegistrationCached;
         }
 
-        void setFailEnsureRegistered(boolean failEnsureRegistered) {
-            this.failEnsureRegistered = failEnsureRegistered;
+        void setFailRegistration(boolean failRegistration) {
+            this.failRegistration = failRegistration;
+        }
+
+        void setHasCachedRegistration(boolean hasCachedRegistration) {
+            this.hasCachedRegistration = hasCachedRegistration;
+        }
+
+        int getRefreshCallCount() {
+            return refreshCallCount;
         }
 
         int getDiscoverCallCount() {

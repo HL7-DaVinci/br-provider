@@ -27,7 +27,10 @@ import org.springframework.stereotype.Component;
 
 /**
  * Performs UDAP Dynamic Client Registration with UDAP-enabled authorization servers.
- * At startup, registers with the configured FAST Security RI (primary issuer).
+ * At startup, registers with the configured primary issuer.
+ * The registration is refreshed before each login redirect (subject to a
+ * cooldown), so a client_id invalidated by an authorization server database
+ * reset heals without restarting this server.
  * Also supports on-demand discovery and registration with custom FHIR servers,
  * caching registrations per-issuer so that multiple resource servers sharing
  * the same authorization server reuse one registration.
@@ -47,6 +50,9 @@ public class UdapClientRegistration {
 
     /** Maps resource server URLs to their discovered issuer URLs. */
     private final ConcurrentHashMap<String, String> serverToIssuerMap = new ConcurrentHashMap<>();
+
+    /** Time of the last successful primary registration, for cooldown coalescing. */
+    private volatile Instant lastRegisteredAt;
 
     private volatile String clientId;
     private volatile String authorizeEndpoint;
@@ -96,11 +102,24 @@ public class UdapClientRegistration {
     }
 
     /**
-     * Discover FAST RI endpoints and register as a UDAP client.
+     * Discover the primary issuer's endpoints and register as a UDAP client.
      * Safe to call multiple times; skips if already registered.
      */
     public synchronized void register() throws Exception {
         if (registered) return;
+        refreshRegistration();
+    }
+
+    /**
+     * Performs the full discovery and registration workflow with the primary issuer,
+     * replacing any cached registration. Calls within the configured cooldown
+     * of the last successful registration are no-ops.
+     */
+    public synchronized void refreshRegistration() throws Exception {
+        if (lastRegisteredAt != null && Instant.now().isBefore(
+                lastRegisteredAt.plusSeconds(securityProperties.getRegistrationCooldownSeconds()))) {
+            return;
+        }
 
         String issuer = securityProperties.getIssuer().replaceAll("/+$", "");
         String udapUrl = issuer + "/.well-known/udap";
@@ -111,18 +130,26 @@ public class UdapClientRegistration {
         this.tokenEndpoint = result.tokenEndpoint();
         this.redirectUri = result.redirectUri();
         this.registered = true;
+        this.lastRegisteredAt = Instant.now();
 
         issuerRegistrations.put(UrlMatchUtil.normalizeUrl(issuer), result);
         logger.info("UDAP client registered successfully with client_id: {}", clientId);
     }
 
     /**
-     * Ensures registration is complete before proceeding.
-     * Called lazily from SpaAuthController if startup registration failed.
+     * Refreshes the registration before a login redirect, falling back to the
+     * cached registration if the refresh fails. Throws only when no
+     * registration exists at all.
      */
-    public void ensureRegistered() throws Exception {
-        if (!registered) {
+    public void ensureFreshRegistration() throws Exception {
+        if (!isRegistered()) {
             register();
+            return;
+        }
+        try {
+            refreshRegistration();
+        } catch (Exception e) {
+            logger.warn("UDAP re-registration failed, using cached registration: {}", e.getMessage());
         }
     }
 
@@ -133,6 +160,15 @@ public class UdapClientRegistration {
      * one registration. This method is idempotent.
      */
     public DiscoveryResult discoverAndRegister(String fhirServerUrl) {
+        return discoverAndRegister(fhirServerUrl, false);
+    }
+
+    /**
+     * Variant of {@link #discoverAndRegister(String)} that can force a fresh
+     * DCR even when a registration is cached for the server's issuer. If the
+     * forced DCR fails, any previously cached registration is retained.
+     */
+    public DiscoveryResult discoverAndRegister(String fhirServerUrl, boolean forceRegistration) {
         String normalizedUrl = UrlMatchUtil.normalizeUrl(fhirServerUrl);
         String udapUrl = normalizedUrl + "/.well-known/udap";
 
@@ -193,7 +229,7 @@ public class UdapClientRegistration {
             }
 
             boolean alreadyRegistered = issuerRegistrations.containsKey(normalizedIssuer);
-            if (!alreadyRegistered) {
+            if (!alreadyRegistered || forceRegistration) {
                 try {
                     ServerRegistration reg = performRegistration(udapUrl);
                     issuerRegistrations.put(normalizedIssuer, reg);
@@ -240,6 +276,7 @@ public class UdapClientRegistration {
         HttpRequest discoveryRequest = HttpRequest.newBuilder()
             .uri(URI.create(udapDiscoveryUrl))
             .GET()
+            .timeout(Duration.ofSeconds(10))
             .build();
 
         HttpResponse<String> discoveryResponse = client.send(discoveryRequest, HttpResponse.BodyHandlers.ofString());
@@ -278,7 +315,7 @@ public class UdapClientRegistration {
             authorizeEp, tokenEp, registrationEndpoint);
 
         // Build software statement for DCR
-        // FAST RI normalizes issuer URLs with a trailing slash
+        // Some authorization servers normalize URLs with a trailing slash
         String baseUrl = securityProperties.getServerBaseUrl();
         if (!baseUrl.endsWith("/")) {
             baseUrl += "/";
@@ -327,6 +364,7 @@ public class UdapClientRegistration {
             .uri(URI.create(registrationEndpoint))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(registrationBody)))
+            .timeout(Duration.ofSeconds(15))
             .build();
 
         HttpResponse<String> regResponse = client.send(regRequest, HttpResponse.BodyHandlers.ofString());

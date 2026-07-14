@@ -106,26 +106,19 @@ public class B2BTokenService {
         // 1. Discover UDAP metadata and perform DCR if needed
         B2BRegistration registration = ensureRegistered(normalizedTarget);
 
-        // 2. Build the client assertion JWT with hl7-b2b extension
-        String clientAssertion = buildClientAssertionJwt(
-            registration.clientId(), registration.tokenEndpoint());
+        // 2. Exchange the client assertion for an access token
+        HttpResponse<String> response = sendTokenRequest(registration, scopeString);
 
-        // 3. POST to the token endpoint
-        String formBody = "grant_type=" + encode("client_credentials")
-            + "&client_assertion_type=" + encode("urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
-            + "&client_assertion=" + encode(clientAssertion)
-            + "&scope=" + encode(scopeString)
-            + "&udap=1";
+        // A 400/401 typically means the authorization server no longer knows
+        // this client. Drop the cached registration, re-register, and retry once.
+        if (response.statusCode() == 400 || response.statusCode() == 401) {
+            logger.warn("B2B token request rejected (HTTP {}) for {}; re-registering",
+                response.statusCode(), targetBaseUrl);
+            b2bRegistrations.values().removeIf(registration::equals);
+            registration = ensureRegistered(normalizedTarget);
+            response = sendTokenRequest(registration, scopeString);
+        }
 
-        HttpClient client = SecurityUtil.getHttpClient(securityProperties);
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(registration.tokenEndpoint()))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .POST(HttpRequest.BodyPublishers.ofString(formBody))
-            .timeout(Duration.ofSeconds(15))
-            .build();
-
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new RuntimeException("Token request failed: HTTP " + response.statusCode()
                 + " " + response.body());
@@ -151,6 +144,32 @@ public class B2BTokenService {
         logger.debug("B2B token cached for {} (expires in {}s)", targetBaseUrl, expiresIn);
 
         return accessToken;
+    }
+
+    /**
+     * Builds the client assertion for the registration and POSTs the
+     * client_credentials grant to its token endpoint.
+     */
+    private HttpResponse<String> sendTokenRequest(
+            B2BRegistration registration, String scopeString) throws Exception {
+        String clientAssertion = buildClientAssertionJwt(
+            registration.clientId(), registration.tokenEndpoint());
+
+        String formBody = "grant_type=" + encode("client_credentials")
+            + "&client_assertion_type=" + encode("urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+            + "&client_assertion=" + encode(clientAssertion)
+            + "&scope=" + encode(scopeString)
+            + "&udap=1";
+
+        HttpClient client = SecurityUtil.getHttpClient(securityProperties);
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(registration.tokenEndpoint()))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .POST(HttpRequest.BodyPublishers.ofString(formBody))
+            .timeout(Duration.ofSeconds(15))
+            .build();
+
+        return client.send(request, HttpResponse.BodyHandlers.ofString());
     }
 
     /**

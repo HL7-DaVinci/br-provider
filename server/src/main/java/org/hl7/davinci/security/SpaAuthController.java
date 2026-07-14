@@ -311,7 +311,7 @@ public class SpaAuthController {
 
     /**
      * Initiates the UDAP authorization code flow. Without a server parameter,
-     * redirects to the primary FAST RI with the idp parameter for Tiered OAuth.
+     * redirects to the primary issuer with the idp parameter for Tiered OAuth.
      * With a server parameter, redirects to the custom server's issuer directly
      * (requires prior discovery via /api/servers/discover).
      */
@@ -324,14 +324,20 @@ public class SpaAuthController {
                 return loginToCustomServer(server, idp);
             }
 
-            udapClient.ensureRegistered();
+            // Refresh the registration (subject to its cooldown) so the
+            // redirect never carries a client_id the authorization server
+            // has forgotten, e.g. after its database was reset.
+            udapClient.ensureFreshRegistration();
 
             String codeVerifier = generateCodeVerifier();
             String codeChallenge = generateCodeChallenge(codeVerifier);
             String state = UUID.randomUUID().toString();
             String redirectUri = udapClient.getRedirectUri();
 
-            pendingFlows.put(state, new PendingFlow(codeVerifier, redirectUri, Instant.now()));
+            // Snapshot the token endpoint and client_id so this flow's code
+            // exchange is unaffected by a later re-registration.
+            pendingFlows.put(state, new PendingFlow(codeVerifier, redirectUri, Instant.now(),
+                null, udapClient.getTokenEndpoint(), udapClient.getClientId()));
 
             String authorizeBase = securityProperties.getAuthorizationEndpoint() != null
                 ? securityProperties.getAuthorizationEndpoint()
@@ -361,7 +367,7 @@ public class SpaAuthController {
     }
 
     /**
-     * Builds the scope string to request from the FAST RI based on the
+     * Builds the scope string to request from the authorization server based on the
      * authenticated user's FHIR resource type. Identity scopes from
      * security.scope are always included; resource-access scopes are appended
      * from security.practitioner-scopes or security.patient-scopes per role.
@@ -406,16 +412,15 @@ public class SpaAuthController {
      * and client_id without the &idp= parameter (not tiered OAuth).
      */
     private ResponseEntity<?> loginToCustomServer(String serverUrl, String idp) throws Exception {
+        // Force a fresh DCR so the redirect never carries a stale client_id;
+        // a previously cached registration is the fallback if the DCR fails.
+        udapClient.discoverAndRegister(serverUrl, true);
         UdapClientRegistration.ServerRegistration registration =
             udapClient.getRegistrationForServer(serverUrl);
         if (registration == null) {
-            udapClient.discoverAndRegister(serverUrl);
-            registration = udapClient.getRegistrationForServer(serverUrl);
-            if (registration == null) {
-                return ResponseEntity.badRequest().body(Map.of(
-                    "error", "registration_required",
-                    "error_description", "Run discovery first for server: " + serverUrl));
-            }
+            return ResponseEntity.badRequest().body(Map.of(
+                "error", "registration_required",
+                "error_description", "Run discovery first for server: " + serverUrl));
         }
 
         String codeVerifier = generateCodeVerifier();
@@ -483,7 +488,7 @@ public class SpaAuthController {
 
         try {
             boolean isCustomServerFlow = flow.serverUrl() != null;
-            String tokenEndpoint = isCustomServerFlow
+            String tokenEndpoint = flow.tokenEndpoint() != null
                 ? flow.tokenEndpoint() : udapClient.getTokenEndpoint();
             String serverUrl = isCustomServerFlow
                 ? flow.serverUrl() : serverProperties.getLocalServerAddress();
@@ -514,7 +519,7 @@ public class SpaAuthController {
             Long expiresIn = expiresInObj instanceof Number n ? n.longValue() : null;
             String refreshToken = tokens.containsKey("refresh_token")
                 ? (String) tokens.get("refresh_token") : null;
-            String clientId = isCustomServerFlow ? flow.clientId() : udapClient.getClientId();
+            String clientId = flow.clientId() != null ? flow.clientId() : udapClient.getClientId();
             storeServerToken(session, serverUrl,
                 (String) tokens.get("access_token"),
                 tokens.containsKey("id_token") ? (String) tokens.get("id_token") : null,
@@ -757,16 +762,10 @@ public class SpaAuthController {
      * and client_id based on whether this is a primary or custom server flow.
      */
     Map<String, String> buildTokenParams(PendingFlow flow, String code) throws Exception {
-        String tokenEndpoint;
-        String clientId;
-
-        if (flow.serverUrl() != null) {
-            tokenEndpoint = flow.tokenEndpoint();
-            clientId = flow.clientId();
-        } else {
-            tokenEndpoint = udapClient.getTokenEndpoint();
-            clientId = udapClient.getClientId();
-        }
+        String tokenEndpoint = flow.tokenEndpoint() != null
+            ? flow.tokenEndpoint() : udapClient.getTokenEndpoint();
+        String clientId = flow.clientId() != null
+            ? flow.clientId() : udapClient.getClientId();
 
         String clientAssertion = buildClientAssertionFor(tokenEndpoint, clientId);
         Map<String, String> tokenParams = new LinkedHashMap<>();
@@ -796,7 +795,7 @@ public class SpaAuthController {
             .jwtID(UUID.randomUUID().toString())
             .build();
 
-        // FAST RI validates UDAP client assertions using the x5c chain in the header.
+        // UDAP client assertions are validated using the x5c chain in the header.
         JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.RS256)
             .x509CertChain(certificateHolder.getX509CertChain())
             .build();

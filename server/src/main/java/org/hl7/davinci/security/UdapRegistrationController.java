@@ -145,9 +145,9 @@ public class UdapRegistrationController {
                     "error_description", "Unsupported token_endpoint_auth_signing_alg"));
             }
 
-            // Deterministic client_id from issuer. Required because the FAST RI's
-            // UpsertTieredClient overwrites new ClientIds with stale ones on re-registration,
-            // causing ExchangeCodeAsync to fail with "client_id not found".
+            // Deterministic client_id from issuer. Some authorization servers upsert
+            // their Tiered OAuth registration and keep using a previously issued
+            // client_id, so the same issuer must always map to the same client_id.
             RegisteredClient existing = registeredClientRepository.findByIssuer(issuer);
             String clientId = (existing != null) ? existing.getClientId()
                 : UUID.nameUUIDFromBytes(issuer.getBytes(StandardCharsets.UTF_8)).toString();
@@ -174,9 +174,10 @@ public class UdapRegistrationController {
             }
 
             // Store the client's public key from the x5c chain for client assertion validation.
-            // No keyID set: the FAST RI signs JWTs with a kid derived from its certificate
-            // thumbprint, not our client_id UUID. Omitting kid lets NimbusDS match by
-            // algorithm and key type instead, which is sufficient for single-key clients.
+            // No keyID set: clients may sign JWTs with a kid derived from their
+            // certificate thumbprint, not our client_id UUID. Omitting kid lets NimbusDS
+            // match by algorithm and key type instead, which is sufficient for
+            // single-key clients.
             RSAKey clientJwk = new RSAKey.Builder(rsaKey.toRSAPublicKey())
                 .keyUse(KeyUse.SIGNATURE)
                 .algorithm(JWSAlgorithm.RS256)
