@@ -71,6 +71,13 @@ public class DevActivityController {
     emitter.onCompletion(() -> emitters.remove(emitter));
     emitter.onTimeout(() -> emitters.remove(emitter));
     emitter.onError(e -> emitters.remove(emitter));
+    try {
+      // Spring only commits SSE response headers on the first write; without this the browser's
+      // EventSource sits in CONNECTING (and misses events) until something else is sent.
+      emitter.send(SseEmitter.event().comment("connected"));
+    } catch (Exception e) {
+      emitters.remove(emitter);
+    }
     return emitter;
   }
 }

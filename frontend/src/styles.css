@@ -286,8 +286,10 @@ a:hover {
   border-color: var(--lhc-divider);
 }
 
-/* Section/group headers */
-.lhc-form-container .lhc-item-group-title {
+/* Section/group headers. The extra .lhc-form ancestor outranks the scoped
+   LForms rule, which otherwise wins equal-specificity ties via @scope
+   proximity. */
+.lhc-form-container .lhc-form .lhc-item-group-title {
   background-color: var(--lhc-section-bg);
   color: var(--foreground);
   border-radius: var(--radius);

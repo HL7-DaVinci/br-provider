@@ -74,6 +74,10 @@ export function LhcFormRenderer({
 
   useEffect(() => {
     let cancelled = false;
+    let signalCancel: (() => void) | undefined;
+    const cancelPromise = new Promise<"cancelled">((resolve) => {
+      signalCancel = () => resolve("cancelled");
+    });
     const previousInit = pendingInitRef.current;
 
     const thisInit = (async () => {
@@ -106,10 +110,32 @@ export function LhcFormRenderer({
 
         if (cancelled || !containerRef.current) return;
 
-        try {
-          await LForms.Util.addFormToPage(formDef, containerRef.current);
-        } catch (formErr) {
-          console.warn("LHC-Forms onError:", formErr);
+        // addFormToPage resolves/rejects only via events from wc-lhc-form;
+        // if the element dies mid-init the promise never settles. Racing it
+        // keeps this init chain from hanging the spinner forever.
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        const outcome = await Promise.race([
+          LForms.Util.addFormToPage(formDef, containerRef.current).then(
+            () => "settled" as const,
+            (formErr) => {
+              console.warn("LHC-Forms onError:", formErr);
+              return "settled" as const;
+            },
+          ),
+          cancelPromise,
+          new Promise<"timeout">((resolve) => {
+            timeoutId = setTimeout(() => resolve("timeout"), 15000);
+          }),
+        ]).finally(() => clearTimeout(timeoutId));
+
+        if (cancelled || outcome === "cancelled") return;
+
+        if (outcome === "timeout") {
+          setError(
+            "The questionnaire form did not finish loading. Try reloading the page.",
+          );
+          setLoading(false);
+          return;
         }
 
         if (!cancelled) {
@@ -135,6 +161,7 @@ export function LhcFormRenderer({
 
     return () => {
       cancelled = true;
+      signalCancel?.();
       if (containerRef.current) {
         while (containerRef.current.firstChild) {
           containerRef.current.removeChild(containerRef.current.firstChild);

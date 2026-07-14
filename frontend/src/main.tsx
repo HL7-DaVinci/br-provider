@@ -52,7 +52,13 @@ if (rootElement && !rootElement.innerHTML) {
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
           <RouterProvider router={router} />
-          <Toaster richColors position="bottom-right" />
+          {/* pointerEvents auto keeps toast buttons clickable while a Radix
+              modal holds pointer-events:none on the body */}
+          <Toaster
+            richColors
+            position="bottom-right"
+            toastOptions={{ style: { pointerEvents: "auto" } }}
+          />
         </QueryClientProvider>
       </ErrorBoundary>
     </StrictMode>,

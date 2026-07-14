@@ -171,6 +171,40 @@ describe("draft order helpers", () => {
     });
   });
 
+  it("restores orders with codes outside the template catalog", () => {
+    const restored = restoreOrdersFromResources([
+      {
+        resourceType: "ServiceRequest",
+        resource: {
+          resourceType: "ServiceRequest",
+          id: "order-2",
+          status: "draft",
+          intent: "order",
+          subject: { reference: "Patient/patient-1" },
+          code: {
+            coding: [
+              {
+                system: "http://example.org/custom-codes",
+                code: "X9999",
+                display: "Custom Procedure",
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    expect(restored.selectedOrders).toHaveLength(1);
+    expect(restored.selectedOrders[0]?.template).toMatchObject({
+      id: "adhoc-ServiceRequest-X9999",
+      code: "X9999",
+      display: "Custom Procedure",
+      category: "Services",
+      resourceType: "ServiceRequest",
+      codeSystem: "http://example.org/custom-codes",
+    });
+  });
+
   it("extracts saved ids from transaction responses", () => {
     expect(
       extractTransactionOrderIds([

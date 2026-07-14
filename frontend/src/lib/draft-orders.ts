@@ -1,11 +1,13 @@
 import type { Bundle, BundleEntry, Resource } from "fhir/r4";
 import type { SuggestionAction } from "@/lib/cds-types";
 import {
+  categoryForResourceType,
   getAllTemplates,
   type OrderTemplate,
   type SelectedOrder,
 } from "@/lib/order-templates";
 import {
+  type EncounterOrderResource,
   getOrderCode,
   getOrderInsuranceReference,
   getOrderIntent,
@@ -274,8 +276,32 @@ function extractCodeFromResource(resource: OrderResource): string | undefined {
 }
 
 /**
+ * Builds a template from a resource's own coding so orders with codes
+ * outside the template catalog (custom or payer-suggested) can still be
+ * restored instead of being dropped.
+ */
+function buildAdhocTemplate(
+  resource: EncounterOrderResource,
+  code: string,
+): OrderTemplate {
+  const codeable = getOrderCode(resource);
+  const coding = codeable?.coding?.[0];
+  const display = coding?.display ?? codeable?.text ?? code;
+  return {
+    id: `adhoc-${resource.resourceType}-${code}`,
+    code,
+    display,
+    description: display,
+    category: categoryForResourceType(resource.resourceType),
+    resourceType: resource.resourceType,
+    codeSystem: coding?.system ?? "",
+  };
+}
+
+/**
  * Converts FHIR draft order resources back into SelectedOrder entries
- * by matching resource codes to the template catalog.
+ * by matching resource codes to the template catalog, falling back to
+ * an ad-hoc template when the code is not in the catalog.
  */
 export function restoreOrdersFromResources(resources: OrderEntry[]): {
   selectedOrders: SelectedOrder[];
@@ -293,10 +319,10 @@ export function restoreOrdersFromResources(resources: OrderEntry[]): {
     const code = extractCodeFromResource(r);
     if (!code) continue;
 
-    const template = allTemplates.find(
-      (t) => t.code === code && t.resourceType === entry.resourceType,
-    );
-    if (!template) continue;
+    const template =
+      allTemplates.find(
+        (t) => t.code === code && t.resourceType === entry.resourceType,
+      ) ?? buildAdhocTemplate(r, code);
 
     const customizations: Record<string, unknown> = {};
     const occurrenceDate = getOrderOccurrenceDate(r);
@@ -366,9 +392,8 @@ export function extractTransactionOrderIds(
 }
 
 /**
- * Match a CDS suggestion resource to an existing order template.
- * Skips ad-hoc templates so restored encounters
- * remain compatible with restoreOrdersFromResources().
+ * Match a CDS suggestion resource to a template in the catalog
+ * (built-in or saved custom).
  */
 export function matchSuggestionResourceToTemplate(
   resource: Resource,

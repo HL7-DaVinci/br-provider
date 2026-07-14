@@ -10,7 +10,7 @@
     "format": "biome format",
     "lint": "biome lint",
     "check": "biome check",
-    "postinstall": "rimraf public/lforms && cpy 'node_modules/lforms/dist/lforms/webcomponent/styles.css' 'node_modules/lforms/dist/lforms/webcomponent/runtime.js' 'node_modules/lforms/dist/lforms/webcomponent/polyfills.js' 'node_modules/lforms/dist/lforms/webcomponent/main.js' 'node_modules/lforms/dist/lforms/webcomponent/assets/lib/zone.min.js' 'node_modules/lforms/dist/lforms/webcomponent/down_arrow_gray_10_10.png' 'node_modules/lforms/dist/lforms/webcomponent/magnifying_glass.png' 'node_modules/lforms/dist/lforms/fhir/R4/lformsFHIR.min.js' public/lforms --flat"
+    "postinstall": "rimraf public/lforms && cpy 'node_modules/lforms/dist/lforms/webcomponent/styles.css' 'node_modules/lforms/dist/lforms/webcomponent/runtime.js' 'node_modules/lforms/dist/lforms/webcomponent/polyfills.js' 'node_modules/lforms/dist/lforms/webcomponent/main.js' 'node_modules/lforms/dist/lforms/webcomponent/assets/lib/zone.min.js' 'node_modules/lforms/dist/lforms/webcomponent/down_arrow_gray_10_10.png' 'node_modules/lforms/dist/lforms/webcomponent/magnifying_glass.png' 'node_modules/lforms/dist/lforms/fhir/R4/lformsFHIR.min.js' public/lforms --flat && bun scripts/scope-lforms-css.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

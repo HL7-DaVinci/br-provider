@@ -13,10 +13,13 @@ import {
 import { useOrderContext } from "@/hooks/use-order-context";
 import {
   getAllTemplates,
+  getCustomTemplates,
   getTemplateById,
   getTemplatesByCategory,
+  type OrderTemplate,
   type TemplateCategory,
 } from "@/lib/order-templates";
+import { CustomOrderDialog } from "./custom-order-dialog";
 
 const CATEGORY_LABELS: Record<TemplateCategory, string> = {
   DME: "Durable Medical Equipment",
@@ -27,15 +30,15 @@ const CATEGORY_LABELS: Record<TemplateCategory, string> = {
 export function OrderTemplateCatalog() {
   const { state, dispatch } = useOrderContext();
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+  const [customTemplates, setCustomTemplates] =
+    useState<OrderTemplate[]>(getCustomTemplates);
+  const [customDialogOpen, setCustomDialogOpen] = useState(false);
 
   const grouped = getTemplatesByCategory();
   const selectedIds = new Set(state.selectedOrders.map((o) => o.templateId));
 
-  const handleAdd = () => {
-    if (!selectedTemplateId) return;
-    const template = getTemplateById(selectedTemplateId);
-    if (!template || selectedIds.has(template.id)) return;
-
+  const addTemplate = (template: OrderTemplate) => {
+    if (selectedIds.has(template.id)) return;
     dispatch({
       type: "ADD_ORDER",
       payload: {
@@ -45,7 +48,19 @@ export function OrderTemplateCatalog() {
         expanded: false,
       },
     });
+  };
+
+  const handleAdd = () => {
+    if (!selectedTemplateId) return;
+    const template = getTemplateById(selectedTemplateId);
+    if (!template) return;
+    addTemplate(template);
     setSelectedTemplateId("");
+  };
+
+  const handleCustomSaved = (template: OrderTemplate) => {
+    setCustomTemplates(getCustomTemplates());
+    addTemplate(template);
   };
 
   const availableCount = getAllTemplates().length - state.selectedOrders.length;
@@ -75,12 +90,28 @@ export function OrderTemplateCatalog() {
                     key={t.id}
                     value={t.id}
                     disabled={selectedIds.has(t.id)}
+                    description={t.description}
                   >
                     {t.code} - {t.display}
                   </SelectItem>
                 ))}
               </SelectGroup>
             ))}
+            {customTemplates.length > 0 && (
+              <SelectGroup>
+                <SelectLabel>My Custom Orders</SelectLabel>
+                {customTemplates.map((t) => (
+                  <SelectItem
+                    key={t.id}
+                    value={t.id}
+                    disabled={selectedIds.has(t.id)}
+                    description={t.description}
+                  >
+                    {t.code} - {t.display}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            )}
           </SelectContent>
         </Select>
         <Button
@@ -93,12 +124,29 @@ export function OrderTemplateCatalog() {
           Add
         </Button>
       </div>
-      {availableCount > 0 && (
-        <p className="text-xs text-muted-foreground">
-          {availableCount} order template{availableCount !== 1 ? "s" : ""}{" "}
-          available
-        </p>
-      )}
+      <div className="flex items-center justify-between">
+        <Button
+          variant="link"
+          size="sm"
+          className="h-auto p-0 text-xs"
+          onClick={() => setCustomDialogOpen(true)}
+        >
+          <Plus className="h-3 w-3 mr-1" />
+          Custom order code...
+        </Button>
+        {availableCount > 0 && (
+          <p className="text-xs text-muted-foreground">
+            {availableCount} order template{availableCount !== 1 ? "s" : ""}{" "}
+            available
+          </p>
+        )}
+      </div>
+      <CustomOrderDialog
+        open={customDialogOpen}
+        onOpenChange={setCustomDialogOpen}
+        onSaved={handleCustomSaved}
+        onDeleted={() => setCustomTemplates(getCustomTemplates())}
+      />
     </div>
   );
 }

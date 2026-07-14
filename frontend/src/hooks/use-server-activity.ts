@@ -38,14 +38,19 @@ export function useServerActivityFeed(onView?: () => void): void {
   }, [onView]);
 
   useEffect(() => {
-    fetch(SERVER_ACTIVITY_URL)
-      .then((res) => (res.ok ? res.json() : []))
-      .then((events: ServerActivityEvent[]) => {
-        for (const event of events) addEvent(event, false);
-      })
-      .catch(() => {});
+    const seed = () =>
+      fetch(SERVER_ACTIVITY_URL)
+        .then((res) => (res.ok ? res.json() : []))
+        .then((events: ServerActivityEvent[]) => {
+          for (const event of events) addEvent(event, false);
+        })
+        .catch(() => {});
 
     const source = new EventSource(`${SERVER_ACTIVITY_URL}/stream`);
+    // Seed on every open (initial and auto-reconnect) so events that occurred while the stream
+    // was down are backfilled from the server's buffer instead of silently lost.
+    source.onopen = () => void seed();
+    seed();
     source.addEventListener("activity", (e) => {
       try {
         addEvent(JSON.parse(e.data), true);

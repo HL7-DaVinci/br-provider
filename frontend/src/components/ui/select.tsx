@@ -97,13 +97,18 @@ function SelectLabel({
 function SelectItem({
   className,
   children,
+  description,
   ...props
-}: React.ComponentProps<typeof Select.Item>) {
+}: React.ComponentProps<typeof Select.Item> & {
+  /** Secondary text shown below the item label; excluded from the trigger's selected value */
+  description?: React.ReactNode;
+}) {
   return (
     <Select.Item
       data-slot="select-item"
       className={cn(
         "focus:bg-accent focus:text-accent-foreground hover:bg-accent hover:text-accent-foreground [&_svg:not([class*='text-'])]:text-muted-foreground relative flex w-full cursor-pointer items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none transition-colors data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
+        description != null && "flex-col items-start gap-0.5",
         className,
       )}
       {...props}
@@ -117,6 +122,11 @@ function SelectItem({
         </Select.ItemIndicator>
       </span>
       <Select.ItemText>{children}</Select.ItemText>
+      {description != null && (
+        <span className="text-xs text-muted-foreground whitespace-normal">
+          {description}
+        </span>
+      )}
     </Select.Item>
   );
 }

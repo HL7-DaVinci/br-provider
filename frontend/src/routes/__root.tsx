@@ -16,7 +16,7 @@ import {
   DRAWER_WIDTH,
 } from "@/components/dev-tools/dev-tools-drawer";
 import { SettingsDialog } from "@/components/settings-dialog";
-import { TaskSheetProvider } from "@/components/task-sheet";
+import { TaskSheetProvider, useTaskSheet } from "@/components/task-sheet";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 
@@ -41,6 +41,18 @@ export const Route = createRootRoute({
 // re-fire its layout effect each render).
 const LOGIN_SEARCH = { error: undefined } as const;
 
+// Lives inside TaskSheetProvider so the toast's View action can dismiss an
+// open task sheet before revealing the dev-tools drawer.
+function ServerActivityBridge({ onView }: { onView: () => void }) {
+  const { closeTaskSheet } = useTaskSheet();
+  const handleView = useCallback(() => {
+    closeTaskSheet();
+    onView();
+  }, [closeTaskSheet, onView]);
+  useServerActivityFeed(handleView);
+  return null;
+}
+
 function RootComponent() {
   const matchRoute = useMatchRoute();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -61,8 +73,12 @@ function RootComponent() {
     setDrawerPinned(pinned);
   }, []);
 
-  const openDrawer = useCallback(() => setDrawerOpen(true), []);
-  useServerActivityFeed(openDrawer);
+  // Toast "View" must close any open modal first: a modal task sheet puts pointer-events:none on
+  // the body and its overlay sits above the drawer, so an opened drawer would be inert behind it.
+  const openDrawerFromToast = useCallback(() => {
+    setSettingsOpen(false);
+    setDrawerOpen(true);
+  }, []);
 
   // Determine route gating in pure expressions so the redirect effect below
   // sees stable boolean deps. Using <Navigate> here re-fires its layout
@@ -127,6 +143,7 @@ function RootComponent() {
 
   return (
     <TaskSheetProvider>
+      <ServerActivityBridge onView={openDrawerFromToast} />
       <TooltipProvider>
         <div
           className="flex min-h-screen flex-col"
