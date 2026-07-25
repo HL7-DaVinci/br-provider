@@ -26,7 +26,7 @@ import {
   buildPasRequestBundle,
   type PasInquiryResources,
   type PasSubmitResources,
-  PROVIDER_ORG_IDENTIFIER,
+  providerOrgIdentifier,
 } from "@/lib/pas-bundle-builder";
 import { buildPasSubscription } from "@/lib/pas-subscription-builder";
 import { ensurePasTasks } from "@/lib/pas-task-builder";
@@ -49,6 +49,10 @@ export interface PasSubmitResult {
   claimResponse: ClaimResponse;
   /** PAS Tasks with code "attachment-request-questionnaire" requesting DTR completion */
   documentationTasks: Task[];
+  /** This provider's insurer Organization (from Coverage.payor), for local reference rewrites */
+  insurerRef: string;
+  /** Identifier of the submitted Claim, for logical ClaimResponse.request references */
+  claimIdentifier?: Identifier;
 }
 
 async function readPractitionerFromOrder(
@@ -115,10 +119,8 @@ async function readPasSubmitResources(
 export function usePasSubmit() {
   return useMutation({
     mutationFn: async (params: PasSubmitParams): Promise<PasSubmitResult> => {
-      const bundle = buildPasRequestBundle(
-        await readPasSubmitResources(params),
-        params.providerFhirUrl,
-      );
+      const resources = await readPasSubmitResources(params);
+      const bundle = buildPasRequestBundle(resources, params.providerFhirUrl);
       const response = await loggedFetch(
         fhirProxyUrl(`${params.payerFhirUrl}/Claim/$submit`, {
           payer: true,
@@ -140,13 +142,17 @@ export function usePasSubmit() {
       const claim = bundle.entry?.find(
         (e) => e.resource?.resourceType === "Claim",
       )?.resource as Claim | undefined;
-      return extractPasResult(
-        await response.json(),
-        params.payerFhirUrl,
-        `${params.orderType}/${params.orderId}`,
-        `Patient/${params.patientId}`,
-        claim?.identifier?.[0],
-      );
+      return {
+        ...extractPasResult(
+          await response.json(),
+          params.payerFhirUrl,
+          `${params.orderType}/${params.orderId}`,
+          `Patient/${params.patientId}`,
+          claim?.identifier?.[0],
+        ),
+        insurerRef: `Organization/${resources.insurer.id}`,
+        claimIdentifier: claim?.identifier?.[0],
+      };
     },
   });
 }
@@ -172,6 +178,8 @@ export async function persistClaimResponseToProvider(
   serverUrl: string,
   claimResponse: ClaimResponse,
   patientRef: string,
+  insurerRef: string,
+  claimIdentifier?: Identifier,
 ): Promise<void> {
   const trackingId = claimResponse.identifier?.[0]?.value;
   if (!trackingId) return;
@@ -180,16 +188,23 @@ export async function persistClaimResponseToProvider(
     {
       method: "PUT",
       headers: { "Content-Type": "application/fhir+json" },
-      // Conditional update by identifier (drop id). Every reference on the payer's
-      // ClaimResponse points at payer-side resources that do not exist here: request,
-      // requestor, insurer, and communicationRequest are dropped, and patient is
-      // rewritten to this provider's Patient so local patient-scoped queries work.
+      // Conditional update by identifier (drop id, versionId, lastUpdated). Literal
+      // references on the payer's ClaimResponse point at payer-side resources that do
+      // not exist here: patient and insurer (1..1) are rewritten to this provider's
+      // resources, request becomes a logical reference by Claim identifier, and
+      // requestor and communicationRequest are dropped (no local counterpart; the
+      // documentation requests were already transcribed into provider Tasks).
       body: JSON.stringify({
         ...claimResponse,
         id: undefined,
-        request: undefined,
+        meta: {
+          ...claimResponse.meta,
+          versionId: undefined,
+          lastUpdated: undefined,
+        },
+        request: claimIdentifier ? { identifier: claimIdentifier } : undefined,
         requestor: undefined,
-        insurer: undefined,
+        insurer: { reference: insurerRef },
         communicationRequest: undefined,
         patient: { reference: patientRef },
       }),
@@ -270,13 +285,39 @@ export function useCompleteDocumentationTask() {
  * Creates a PAS rest-hook Subscription on the payer so it notifies the provider when a pended prior
  * authorization is finalized. Best-effort: a failure here does not block the PA flow.
  */
+const ensuredSubscriptions = new Set<string>();
+
 export function useEnsurePasSubscription() {
   const { serverUrl } = useFhirServer();
   return useMutation({
     mutationFn: async (payerFhirUrl: string): Promise<void> => {
+      const notificationUrl = getPasNotificationUrl(serverUrl);
+      // Search-then-create so a resubmit reuses the live subscription for this endpoint
+      // instead of stacking a duplicate (duplicates mean duplicate notifications per
+      // decision). An If-None-Exist conditional create would be atomic but fails CORS
+      // preflight against payers that do not allow that request header. The in-memory
+      // guard covers back-to-back submits, where a payer's search-result cache (HAPI:
+      // ~60s) can still serve an empty result from just before the create.
+      const ensuredKey = `${payerFhirUrl}|${notificationUrl}`;
+      if (ensuredSubscriptions.has(ensuredKey)) return;
+      const dedupeQuery = `url=${encodeURIComponent(notificationUrl)}&status=requested,active`;
+      const existing = await loggedFetch(
+        fhirProxyUrl(`${payerFhirUrl}/Subscription?${dedupeQuery}`, {
+          payer: true,
+          op: "subscription",
+        }),
+        {},
+        { payerUrl: payerFhirUrl, operationName: "Subscription search" },
+      )
+        .then((res) => (res.ok ? (res.json() as Promise<Bundle>) : null))
+        .catch(() => null);
+      if (existing?.entry?.some((e) => e.resource)) {
+        ensuredSubscriptions.add(ensuredKey);
+        return;
+      }
       const subscription = buildPasSubscription({
-        orgIdentifier: PROVIDER_ORG_IDENTIFIER,
-        notificationUrl: getPasNotificationUrl(serverUrl),
+        orgIdentifier: providerOrgIdentifier(),
+        notificationUrl,
       });
       const response = await loggedFetch(
         fhirProxyUrl(`${payerFhirUrl}/Subscription`, {
@@ -296,6 +337,7 @@ export function useEnsurePasSubscription() {
           extractFhirError(body) ?? `PAS subscribe failed: ${response.status}`,
         );
       }
+      ensuredSubscriptions.add(ensuredKey);
     },
   });
 }
@@ -316,7 +358,7 @@ function extractPasResult(
   orderRef: string,
   patientRef: string,
   claimIdentifier?: Identifier,
-): PasSubmitResult {
+): Pick<PasSubmitResult, "claimResponse" | "documentationTasks"> {
   const bundle = data as Bundle;
   if (bundle.resourceType === "Bundle" && bundle.entry?.length) {
     const cr = bundle.entry.find(

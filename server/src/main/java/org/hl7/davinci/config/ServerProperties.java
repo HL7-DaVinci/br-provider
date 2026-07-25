@@ -27,6 +27,9 @@ public class ServerProperties {
 
     private List<ProviderServer> providerServers = new ArrayList<>();
     private List<PayerServer> payerServers = new ArrayList<>();
+    private String providerOrgIdentifier;
+    private String providerOrgIdentifierSystem = "http://example.org/fhir/org-identifier";
+    private String payerOrgIdentifier = "1234567893";
 
     @Value("${hapi.fhir.server_address:http://localhost:8080/fhir}")
     private String localServerAddress;
@@ -70,6 +73,15 @@ public class ServerProperties {
     public List<PayerServer> getPayerServers() { return payerServers; }
     public void setPayerServers(List<PayerServer> payerServers) { this.payerServers = payerServers; }
 
+    public String getProviderOrgIdentifier() { return providerOrgIdentifier; }
+    public void setProviderOrgIdentifier(String v) { this.providerOrgIdentifier = v; }
+
+    public String getProviderOrgIdentifierSystem() { return providerOrgIdentifierSystem; }
+    public void setProviderOrgIdentifierSystem(String v) { this.providerOrgIdentifierSystem = v; }
+
+    public String getPayerOrgIdentifier() { return payerOrgIdentifier; }
+    public void setPayerOrgIdentifier(String v) { this.payerOrgIdentifier = v; }
+
     /**
      * Returns true if the target URL matches a configured payer server's FHIR URL.
      */
@@ -93,21 +105,28 @@ public class ServerProperties {
             .orElse(targetUrl);
     }
 
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
     public static class ProviderServer {
         private String name;
         private String url;
+        private Boolean requiresAuth;
 
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
 
         public String getUrl() { return url; }
         public void setUrl(String url) { this.url = url; }
+
+        public Boolean getRequiresAuth() { return requiresAuth; }
+        public void setRequiresAuth(Boolean requiresAuth) { this.requiresAuth = requiresAuth; }
     }
 
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
     public static class PayerServer {
         private String name;
         private String cdsUrl;
         private String fhirUrl;
+        private Boolean requiresAuth;
 
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
@@ -117,5 +136,8 @@ public class ServerProperties {
 
         public String getFhirUrl() { return fhirUrl; }
         public void setFhirUrl(String fhirUrl) { this.fhirUrl = fhirUrl; }
+
+        public Boolean getRequiresAuth() { return requiresAuth; }
+        public void setRequiresAuth(Boolean requiresAuth) { this.requiresAuth = requiresAuth; }
     }
 }

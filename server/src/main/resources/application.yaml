@@ -470,10 +470,19 @@ app:
   provider-servers:
     - name: "Local Provider Server"
       url: "http://localhost:8080/fhir"
+      # requires-auth: false   # open server: SPA bypasses the BFF proxy and calls it directly
   payer-servers:
     - name: "Local Payer Server"
       cds-url: "http://localhost:8081/cds-services"
       fhir-url: "http://localhost:8081/fhir"
+      requires-auth: false
+  # Organization identity stamped into PAS/CDex payloads and the PAS Subscription.
+  # provider-org-identifier is unset by default: the frontend derives a distinct
+  # sending-system identifier per EHR server, which the PAS IG subscription routing
+  # requires. Set it only to pin a real trading-partner identifier for a deployment.
+  # provider-org-identifier: "1122334455"
+  provider-org-identifier-system: "http://example.org/fhir/org-identifier"
+  payer-org-identifier: "1234567893"
 
 # -------------------------------------------------------------------------------------
 # Security Configuration
@@ -491,6 +500,10 @@ security:
   ssl-verify: false
   external-base-url: http://localhost:3000
   oauth-client-id: provider-client
+  # hl7-b2b client assertion extension values (Da Vinci CDex B2B backend services)
+  b2b-organization-id: "urn:oid:provider-org"
+  b2b-organization-name: "Provider Organization"
+  b2b-purpose-of-use: "urn:oid:2.16.840.1.113883.5.8#TREAT"
   scope: "openid udap fhirUser profile"
   practitioner-scopes:
     - "user/*.cruds"

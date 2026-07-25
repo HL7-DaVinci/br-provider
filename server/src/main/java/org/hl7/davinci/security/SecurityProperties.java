@@ -99,6 +99,9 @@ public class SecurityProperties {
     private String clientName = "Da Vinci Provider";
     private String authorizationEndpoint;
     private String idpBaseUrl;
+    private String b2bOrganizationId = "urn:oid:provider-org";
+    private String b2bOrganizationName = "Provider Organization";
+    private String b2bPurposeOfUse = "urn:oid:2.16.840.1.113883.5.8#TREAT";
 
     @Value("${hapi.fhir.server_address:http://localhost:8080/fhir}")
     public void deriveServerBaseUrl(String serverAddress) {
@@ -203,6 +206,15 @@ public class SecurityProperties {
 
     public String getIdpBaseUrl() { return idpBaseUrl != null ? idpBaseUrl : serverBaseUrl; }
     public void setIdpBaseUrl(String idpBaseUrl) { this.idpBaseUrl = idpBaseUrl; }
+
+    public String getB2bOrganizationId() { return b2bOrganizationId; }
+    public void setB2bOrganizationId(String v) { this.b2bOrganizationId = v; }
+
+    public String getB2bOrganizationName() { return b2bOrganizationName; }
+    public void setB2bOrganizationName(String v) { this.b2bOrganizationName = v; }
+
+    public String getB2bPurposeOfUse() { return b2bPurposeOfUse; }
+    public void setB2bPurposeOfUse(String v) { this.b2bPurposeOfUse = v; }
 
     /**
      * Returns the canonical provider base URL (no trailing slashes).

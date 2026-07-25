@@ -28,7 +28,6 @@ describe("fhirFetch", () => {
     vi.resetModules();
 
     window.APP_CONFIG = {
-      providerServerUrl: PROVIDER_SERVER_URL,
       fhirServers: [
         { name: "Provider", url: PROVIDER_FHIR_BASE },
         { name: "External", url: EXTERNAL_FHIR_BASE },

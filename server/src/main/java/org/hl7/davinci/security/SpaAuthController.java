@@ -566,6 +566,11 @@ public class SpaAuthController {
             logger.info("Token exchange completed for server: {}", serverUrl);
             return ResponseEntity.ok(result);
 
+        } catch (IllegalStateException e) {
+            logger.error("Token exchange failed: {}", e.getMessage());
+            return ResponseEntity.status(503).body(Map.of(
+                "error", "certificate_unavailable",
+                "error_description", e.getMessage()));
         } catch (Exception e) {
             logger.error("Token exchange error: {}", e.getMessage(), e);
             return ResponseEntity.status(500).body(Map.of(
@@ -786,6 +791,10 @@ public class SpaAuthController {
     static String buildClientAssertionFor(
             CertificateHolder certificateHolder, String tokenEndpoint, String clientId)
             throws Exception {
+        if (!certificateHolder.ensureInitialized()) {
+            throw new IllegalStateException(
+                "Signing certificate is not initialized; the UDAP issuer may be unreachable");
+        }
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
             .issuer(clientId)
             .subject(clientId)

@@ -7,7 +7,10 @@ import type {
   Task,
 } from "fhir/r4";
 import { getStoredPractitionerRef } from "@/hooks/use-practitioner-ref";
-import { PROVIDER_ORG_IDENTIFIER } from "./pas-bundle-builder";
+import {
+  PROVIDER_ORG_IDENTIFIER_SYSTEM,
+  providerOrgIdentifier,
+} from "./pas-bundle-builder";
 import { isPendedClaimResponse } from "./pas-pend-status";
 
 type TaskInput = NonNullable<Task["input"]>[number];
@@ -66,7 +69,6 @@ const CONTENT_MODIFIER_EXT =
 const LOINC_SYSTEM = "http://loinc.org";
 const X12_755_SYSTEM = "https://codesystem.x12.org/005010/755";
 const LOINC_CODE_SHAPE = /^\d+-\d$/;
-const US_NPI_SYSTEM = "http://hl7.org/fhir/sid/us-npi";
 const CLAIM_RESPONSE_OUTPUT = "ClaimResponse";
 const LOINC_QUESTIONNAIRE_REQUEST = "102089-0";
 const ITEM_TRACE_NUMBER_EXT =
@@ -384,8 +386,8 @@ function withLineNumber(input: TaskInput, lineNumber?: number): TaskInput {
 
 function baseTask(context: TaskContext, status: Task["status"]): Task {
   const providerId: Identifier = {
-    system: US_NPI_SYSTEM,
-    value: PROVIDER_ORG_IDENTIFIER,
+    system: PROVIDER_ORG_IDENTIFIER_SYSTEM,
+    value: providerOrgIdentifier(),
   };
   const practitionerRef = getStoredPractitionerRef();
   const trackingId = context.trackingId ?? context.claimIdentifier;

@@ -1,3 +1,4 @@
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { toast } from "sonner";
 import { networkLogStore } from "@/lib/network-log-store";
@@ -11,12 +12,30 @@ import {
 const seenIds = new Set<string>();
 
 let onViewActivity: (() => void) | undefined;
+let onPasDecision: (() => void) | undefined;
+
+/**
+ * Marks every PA-related query stale so views refetch instead of serving a
+ * cached "pended" decision until their staleTime or poll interval expires.
+ */
+export function invalidatePasDecisionQueries(queryClient: QueryClient): void {
+  queryClient.invalidateQueries({
+    predicate: (query) => {
+      const [root, second] = query.queryKey;
+      return (
+        root === "pas" ||
+        (root === "fhir" && (second === "ClaimResponse" || second === "Task"))
+      );
+    },
+  });
+}
 
 function addEvent(event: ServerActivityEvent, notify: boolean): void {
   if (seenIds.has(event.id)) return;
   seenIds.add(event.id);
   networkLogStore.addEntry(serverActivityToLogEntry(event));
   if (notify && event.category === "pas-decision") {
+    onPasDecision?.();
     toast.info("Prior authorization decision received", {
       description:
         "The payer pushed a subscription notification to the provider server.",
@@ -33,9 +52,18 @@ function addEvent(event: ServerActivityEvent, notify: boolean): void {
  * arrives. Mount once at the app root; onView opens the dev-tools drawer from the toast.
  */
 export function useServerActivityFeed(onView?: () => void): void {
+  const queryClient = useQueryClient();
+
   useEffect(() => {
     onViewActivity = onView;
   }, [onView]);
+
+  useEffect(() => {
+    onPasDecision = () => invalidatePasDecisionQueries(queryClient);
+    return () => {
+      onPasDecision = undefined;
+    };
+  }, [queryClient]);
 
   useEffect(() => {
     const seed = () =>

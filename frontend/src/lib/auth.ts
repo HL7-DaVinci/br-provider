@@ -111,6 +111,18 @@ export async function logout(): Promise<void> {
   clearAuthStorage();
 }
 
+// Writes a locally-selected identity for an open server (requiresAuth: false).
+// Uses the same storage slot as a real OAuth login, so downstream consumers
+// (usePractitionerRef, Task authorship, display name) work unchanged. This is
+// a display/authorship claim only; the open server enforces nothing.
+export function setLocalIdentity(identity: {
+  name?: string;
+  fhirUser: string;
+  fhirUserType: string;
+}): void {
+  sessionStorage.setItem(USERINFO_KEY, JSON.stringify(identity));
+}
+
 // Returns user identity from the server-provided userinfo (set during token exchange)
 export function getUserInfo(): {
   name?: string;

@@ -29,16 +29,30 @@ export interface PayerServer {
    * directly, bypassing the proxy.
    */
   requiresAuth?: boolean;
+  /**
+   * Sends the X-Bypass-Payor-Check test header on requests to this payer, asking it to skip
+   * payor-handled enforcement for the EHR's Coverage payor (including identifier-less payors
+   * and multiple-Coverage patients). Supported by the BR payer reference implementation; other
+   * payers ignore or reject the header.
+   */
+  bypassPayorCheck?: boolean;
 }
 
 interface AppConfig {
   fhirServers?: FhirServer[];
   cdsServers?: CdsServer[];
   payerServers?: PayerServer[];
-  providerServerUrl?: string;
+  /**
+   * Base URL of this app's own backend (BFF): /auth, /api, the CDS relay, and the local OAuth
+   * IdP. NOT a FHIR endpoint; the active FHIR server may live on a different domain.
+   */
+  apiBaseUrl?: string;
   /** Provider rest-hook URL the payer posts PAS notifications to; defaults to the provider origin. */
   pasNotificationUrl?: string;
   authEnabled?: boolean;
+  providerOrgIdentifier?: string;
+  providerOrgIdentifierSystem?: string;
+  payerOrgIdentifier?: string;
 }
 
 declare global {
@@ -97,6 +111,7 @@ export const FHIR_SERVERS: FhirServer[] = parseFhirServers();
 
 const STORAGE_KEY = "fhir-server-url";
 const CUSTOM_AUTH_TARGET_STORAGE_KEY = "fhir-custom-auth-target";
+const CUSTOM_OPEN_SERVER_STORAGE_KEY = "fhir-custom-open-server";
 
 export function normalizeServerUrl(url: string): string {
   return url.replace(/\/+$/, "");
@@ -191,6 +206,50 @@ export function clearStoredCustomAuthTarget(): void {
   }
 }
 
+export function setStoredCustomOpenServer(url: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  localStorage.setItem(
+    CUSTOM_OPEN_SERVER_STORAGE_KEY,
+    JSON.stringify({ url: normalizeServerUrl(url) }),
+  );
+}
+
+export function clearStoredCustomOpenServer(): void {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(CUSTOM_OPEN_SERVER_STORAGE_KEY);
+  }
+}
+
+export function isStoredCustomOpenServer(url: string): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const stored = localStorage.getItem(CUSTOM_OPEN_SERVER_STORAGE_KEY);
+  if (!stored) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(stored);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof parsed.url !== "string" ||
+      parsed.url.length === 0
+    ) {
+      return false;
+    }
+
+    return normalizeServerUrl(parsed.url) === normalizeServerUrl(url);
+  } catch {
+    return false;
+  }
+}
+
 export function getServerByUrl(url: string): FhirServer | undefined {
   const normalizedUrl = normalizeServerUrl(url);
   return FHIR_SERVERS.find(
@@ -217,41 +276,35 @@ export function getServerByRequestUrl(
     getServerByUrl(currentServerUrl) ?? {
       name: CUSTOM_SERVER_NAME,
       url: currentServerUrl,
+      ...(isStoredCustomOpenServer(currentServerUrl)
+        ? { requiresAuth: false }
+        : {}),
     }
   );
-}
-
-export function getProviderFhirBaseUrl(): string | null {
-  const providerServerUrl = getAppConfig().providerServerUrl;
-  if (!providerServerUrl) {
-    return null;
-  }
-
-  return normalizeServerUrl(`${providerServerUrl}/fhir`);
-}
-
-export function isProviderFhirRequestUrl(requestUrl: string): boolean {
-  const providerFhirBaseUrl = getProviderFhirBaseUrl();
-  if (!providerFhirBaseUrl) {
-    return false;
-  }
-
-  return matchesRequestUrl(requestUrl, providerFhirBaseUrl);
 }
 
 export function getAppConfig(): AppConfig {
   return window?.APP_CONFIG ?? {};
 }
 
+/** Base URL of this app's own backend (BFF). */
+export function getApiBaseUrl(): string | undefined {
+  return getAppConfig().apiBaseUrl;
+}
+
 /**
  * Provider rest-hook URL the payer posts PAS notifications to: the `pasNotificationUrl` config if
- * set, otherwise derived from the active provider FHIR base.
+ * set, otherwise derived from this app's own API base URL (never the active provider FHIR base,
+ * which may point at an external EHR that can't receive the webhook). Always carries an `ehr`
+ * query param (the active provider FHIR base) so the backend knows which server to write the
+ * decision to.
  */
 export function getPasNotificationUrl(providerFhirBaseUrl: string): string {
   const configured = getAppConfig().pasNotificationUrl;
-  if (configured) {
-    return normalizeServerUrl(configured);
-  }
-  const origin = normalizeServerUrl(providerFhirBaseUrl).replace(/\/fhir$/, "");
-  return `${origin}/api/pas/notification`;
+  const base = configured
+    ? normalizeServerUrl(configured)
+    : `${normalizeServerUrl(getApiBaseUrl() ?? window.location.origin)}/api/pas/notification`;
+  const separator = base.includes("?") ? "&" : "?";
+  const ehr = encodeURIComponent(normalizeServerUrl(providerFhirBaseUrl));
+  return `${base}${separator}ehr=${ehr}`;
 }

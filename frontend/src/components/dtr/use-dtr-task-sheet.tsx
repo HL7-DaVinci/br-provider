@@ -12,12 +12,13 @@ export function useDtrTaskSheet() {
   const { openTaskSheet, closeTaskSheet } = useTaskSheet();
 
   return useCallback(
-    (context: DtrTaskContext) => {
+    (context: DtrTaskContext, opts?: { onClose?: () => void }) => {
       openTaskSheet({
         title: "Documentation",
         description: context.orderRef ?? context.fhirContext,
         width: "94vw",
         content: <DtrWorkspace context={context} onClose={closeTaskSheet} />,
+        onDismiss: opts?.onClose,
       });
     },
     [openTaskSheet, closeTaskSheet],
@@ -34,18 +35,24 @@ export function useLaunchDtrForTask() {
   return useCallback(
     (
       task: Task,
-      opts: { iss: string; patientId?: string; coverageRef?: string },
+      opts: {
+        iss: string;
+        patientId?: string;
+        coverageRef?: string;
+        onClose?: () => void;
+      },
     ): boolean => {
       const contexts = extractTaskQuestionnaireContexts([task]);
       if (contexts.length === 0) return false;
-      openDtrTask({
-        iss: opts.iss,
-        patientId: opts.patientId,
-        // Every questionnaire-context input is queued, not just the first,
-        // so the payer resolves and returns all of this Task's questionnaires.
-        coverageAssertionId: contexts.join(","),
-        fhirContext: buildTaskFhirContext(task, [opts.coverageRef]),
-      });
+      openDtrTask(
+        {
+          iss: opts.iss,
+          patientId: opts.patientId,
+          coverageAssertionId: contexts.join(","),
+          fhirContext: buildTaskFhirContext(task, [opts.coverageRef]),
+        },
+        { onClose: opts.onClose },
+      );
       return true;
     },
     [openDtrTask],

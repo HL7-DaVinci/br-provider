@@ -8,11 +8,24 @@ import {
   logout,
   startLogin,
 } from "@/lib/auth";
-import { getAppConfig } from "@/lib/fhir-config";
+import {
+  getAppConfig,
+  getServerByUrl,
+  getStoredServerUrl,
+  isStoredCustomOpenServer,
+} from "@/lib/fhir-config";
 
 export function useAuth() {
   const config = getAppConfig();
   const authEnabled = config.authEnabled !== false;
+  // Local identity mode requires an explicit openness signal: either a server
+  // configured requiresAuth: false, or a custom server whose save-time probe
+  // confirmed an open non-UDAP FHIR server. Openness is never inferred here.
+  const storedUrl = getStoredServerUrl();
+  const localIdentityMode =
+    authEnabled &&
+    (getServerByUrl(storedUrl)?.requiresAuth === false ||
+      isStoredCustomOpenServer(storedUrl));
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [, forceUpdate] = useState(0);
@@ -34,12 +47,14 @@ export function useAuth() {
       return 60_000;
     },
     retry: false,
-    enabled: authEnabled,
+    enabled: authEnabled && !localIdentityMode,
   });
 
-  // Sync local state with server session
+  // Sync local state with server session. Skipped in local identity mode:
+  // stale session data cached before a server switch must not clear the
+  // locally selected identity.
   useEffect(() => {
-    if (!sessionData) return;
+    if (localIdentityMode || !sessionData) return;
 
     if (!sessionData.authenticated && userInfo) {
       // Server session expired -- clear local state
@@ -56,11 +71,12 @@ export function useAuth() {
         forceUpdate((n) => n + 1);
       }
     }
-  }, [sessionData, userInfo]);
+  }, [localIdentityMode, sessionData, userInfo]);
 
   const effectiveUserInfo =
     userInfo ?? (sessionData?.authenticated ? sessionData.userinfo : undefined);
-  const isRestoringSession = authEnabled && !userInfo && isSessionPending;
+  const isRestoringSession =
+    authEnabled && !localIdentityMode && !userInfo && isSessionPending;
 
   const login = useCallback(
     (serverUrl?: string, idp?: string) => startLogin(serverUrl, idp),
@@ -77,6 +93,7 @@ export function useAuth() {
     isAuthenticated: !!effectiveUserInfo || sessionData?.authenticated === true,
     isRestoringSession,
     authEnabled,
+    localIdentityMode,
     user: effectiveUserInfo,
     fhirUser: effectiveUserInfo?.fhirUser,
     fhirUserType: effectiveUserInfo?.fhirUserType,

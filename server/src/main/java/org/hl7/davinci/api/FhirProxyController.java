@@ -13,6 +13,7 @@ import jakarta.servlet.http.HttpSession;
 import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.B2BTokenService;
 import org.hl7.davinci.security.CertificateHolder;
+import org.hl7.davinci.security.OutboundAuthService;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SecurityUtil;
 import org.hl7.davinci.security.SpaAuthController;
@@ -44,9 +45,10 @@ public class FhirProxyController {
 
     private static final Logger logger = LoggerFactory.getLogger(FhirProxyController.class);
 
+    // x-bypass-payor-check is this stack's own payer test header (see payer PlanDefinitionService);
+    // it is only sent when the user enables the payor check bypass setting for a payer.
     private static final Set<String> FORWARDED_HEADERS = Set.of(
-        "accept", "content-type", "prefer", "if-match", "if-none-match",
-        "x-bypass-auth"
+        "accept", "content-type", "prefer", "if-match", "if-none-match", "x-bypass-payor-check"
     );
 
     /** Headers that must not be forwarded through a proxy. */
@@ -65,15 +67,18 @@ public class FhirProxyController {
     private final ServerProperties serverProperties;
     private final B2BTokenService b2bTokenService;
     private final CertificateHolder certificateHolder;
+    private final OutboundAuthService outboundAuth;
 
     public FhirProxyController(SecurityProperties securityProperties,
             ServerProperties serverProperties,
             B2BTokenService b2bTokenService,
-            CertificateHolder certificateHolder) {
+            CertificateHolder certificateHolder,
+            OutboundAuthService outboundAuth) {
         this.securityProperties = securityProperties;
         this.serverProperties = serverProperties;
         this.b2bTokenService = b2bTokenService;
         this.certificateHolder = certificateHolder;
+        this.outboundAuth = outboundAuth;
     }
 
     @RequestMapping(method = {GET, POST, PUT, DELETE, PATCH})
@@ -113,20 +118,39 @@ public class FhirProxyController {
         try {
             // Auth strategy determined by caller intent (payer param), not URL matching.
             // This allows a single server to serve both provider and payer roles.
-            String token;
+            String token = null;
+            boolean optimisticPayer = false;
+            String payerBaseUrl = null;
+            List<String> payerScopes = null;
+
             if (payerAuth) {
-                List<String> scopes;
+                payerBaseUrl = resolvePayerBaseUrl(targetUrl, session);
                 try {
-                    scopes = ProxyUtil.payerScopesForOp(op);
+                    payerScopes = ProxyUtil.payerScopesForOp(op);
                 } catch (IllegalArgumentException e) {
                     response.sendError(HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
                     return;
                 }
-                String payerBaseUrl = serverProperties.getPayerFhirBaseUrl(targetUrl);
-                token = b2bTokenService.getTokenForServer(payerBaseUrl, scopes);
-                if (token != null) {
-                    logger.debug("Payer proxy: using B2B client_credentials for {} (op={})",
-                        payerBaseUrl, op);
+                switch (outboundAuth.modeFor(payerBaseUrl)) {
+                    case OPEN -> logger.debug("Payer proxy: {} is open; forwarding without a token", payerBaseUrl);
+                    case UDAP_B2B -> {
+                        token = b2bTokenService.getTokenForServer(payerBaseUrl, payerScopes);
+                        boolean bypassRequested = request.getHeader(securityProperties.getBypassHeader()) != null;
+                        if (token == null && securityProperties.isEnableAuthentication() && !bypassRequested) {
+                            logger.warn("Payer proxy: no B2B token obtainable for {}; refusing unauthenticated forward",
+                                payerBaseUrl);
+                            response.sendError(HttpServletResponse.SC_BAD_GATEWAY,
+                                "Unable to obtain a B2B token for payer " + payerBaseUrl
+                                + ". Check the payer's UDAP support or mark it requiresAuth: false / use "
+                                + securityProperties.getBypassHeader() + " for open servers.");
+                            return;
+                        }
+                        if (token != null) {
+                            logger.debug("Payer proxy: using B2B client_credentials for {} (op={})",
+                                payerBaseUrl, op);
+                        }
+                    }
+                    case UNKNOWN -> optimisticPayer = true;
                 }
             } else {
                 SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder);
@@ -160,8 +184,23 @@ public class FhirProxyController {
             }
 
             HttpClient client = SecurityUtil.getHttpClient(securityProperties);
-            HttpResponse<byte[]> upstream = client.send(
-                reqBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
+            HttpRequest httpRequest = reqBuilder.build();
+            HttpResponse<byte[]> upstream = client.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
+
+            if (optimisticPayer && isAuthRejection(upstream.statusCode())) {
+                outboundAuth.recordAuthRequired(payerBaseUrl);
+                String retryToken = b2bTokenService.getTokenForServer(payerBaseUrl, payerScopes);
+                if (retryToken != null) {
+                    logger.info("Payer proxy: {} rejected tokenless request ({}); retrying with B2B token",
+                        payerBaseUrl, upstream.statusCode());
+                    HttpRequest retry = HttpRequest.newBuilder(httpRequest, (name, value) -> true)
+                        .header("Authorization", "Bearer " + retryToken)
+                        .build();
+                    upstream = client.send(retry, HttpResponse.BodyHandlers.ofByteArray());
+                }
+            } else if (optimisticPayer && upstream.statusCode() < 500) {
+                outboundAuth.recordOpen(payerBaseUrl);
+            }
 
             response.setStatus(upstream.statusCode());
             upstream.headers().map().forEach((name, values) -> {
@@ -185,6 +224,29 @@ public class FhirProxyController {
         String normalized = headerName.toLowerCase(Locale.ROOT);
         return !HOP_BY_HOP_HEADERS.contains(normalized)
             && !BLOCKED_RESPONSE_HEADERS.contains(normalized);
+    }
+
+    private static boolean isAuthRejection(int status) {
+        return status == 401 || status == 403;
+    }
+
+    /**
+     * Configured payer base if the target matches one; otherwise the session's active payer;
+     * otherwise the target URL itself. The raw target is an imperfect auth-mode cache key, so it
+     * is only the last resort.
+     */
+    private String resolvePayerBaseUrl(String targetUrl, HttpSession session) {
+        String configured = serverProperties.getPayerFhirBaseUrl(targetUrl);
+        if (!configured.equals(targetUrl)) {
+            return configured;
+        }
+        if (session != null) {
+            String sessionPayer = (String) session.getAttribute(SpaAuthController.SESSION_PAYER_FHIR_URL);
+            if (sessionPayer != null && UrlMatchUtil.matchesBaseUrl(targetUrl, sessionPayer)) {
+                return sessionPayer;
+            }
+        }
+        return targetUrl;
     }
 
     /**

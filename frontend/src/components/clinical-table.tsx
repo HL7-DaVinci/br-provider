@@ -93,7 +93,7 @@ export function ClinicalTable<T>({
               : data.map((row, i) => (
                   <tr
                     key={keyExtractor ? keyExtractor(row, i) : i}
-                    className={`stagger-item transition-colors hover:[box-shadow:inset_2px_0_0_var(--primary)] ${onRowClick ? "cursor-pointer" : ""}`}
+                    className={`stagger-item transition-colors hover:[box-shadow:inset_2px_0_0_var(--primary)] ${onRowClick ? "cursor-pointer hover:bg-muted/50" : ""}`}
                     style={{ animationDelay: `${i * 30}ms` }}
                     onClick={onRowClick ? () => onRowClick(row, i) : undefined}
                     onKeyDown={

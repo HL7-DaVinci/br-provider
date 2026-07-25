@@ -6,6 +6,7 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,12 @@ interface TaskSheetDescriptor {
   width?: string;
   actions?: ReactNode;
   content: ReactNode;
+  /**
+   * Called after this sheet is closed by any means (close button, outside
+   * click, or closeTaskSheet). May open a follow-up sheet, e.g. returning
+   * to the task detail sheet after the DTR workspace closes.
+   */
+  onDismiss?: () => void;
 }
 
 interface TaskSheetContextValue {
@@ -27,9 +34,13 @@ const TaskSheetContext = createContext<TaskSheetContextValue | null>(null);
 
 export function TaskSheetProvider({ children }: { children: ReactNode }) {
   const [sheet, setSheet] = useState<TaskSheetDescriptor | null>(null);
+  const sheetRef = useRef<TaskSheetDescriptor | null>(null);
+  sheetRef.current = sheet;
 
   const closeTaskSheet = useCallback(() => {
+    const dismissed = sheetRef.current;
     setSheet(null);
+    dismissed?.onDismiss?.();
   }, []);
 
   const openTaskSheet = useCallback((nextSheet: TaskSheetDescriptor) => {
@@ -46,7 +57,7 @@ export function TaskSheetProvider({ children }: { children: ReactNode }) {
       {children}
       <Dialog.Root
         open={!!sheet}
-        onOpenChange={(open) => !open && setSheet(null)}
+        onOpenChange={(open) => !open && closeTaskSheet()}
       >
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/35 data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
@@ -83,7 +94,7 @@ export function TaskSheetProvider({ children }: { children: ReactNode }) {
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {sheet?.actions}
-                <Dialog.Close className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring">
+                <Dialog.Close className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus:outline-hidden focus:ring-2 focus:ring-ring">
                   <XIcon className="h-4 w-4" />
                   <span className="sr-only">Close task sheet</span>
                 </Dialog.Close>

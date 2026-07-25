@@ -15,6 +15,12 @@ import type {
   QuestionnaireResponse,
 } from "fhir/r4";
 
+import {
+  getAppConfig,
+  getStoredServerUrl,
+  normalizeServerUrl,
+} from "./fhir-config";
+
 /**
  * Builds the PAS request Bundles: Claim/$submit (initial) and Claim/$inquire.
  */
@@ -51,11 +57,34 @@ const SUBMITTER_CLAIM_IDENTIFIER_SYSTEM =
 const MEMBER_IDENTIFIER_SYSTEM = "http://example.org/MIN";
 const US_NPI_SYSTEM = "http://hl7.org/fhir/sid/us-npi";
 
-/** Provider org identifier: the request's applicationSenderCode and the Subscription orgIdentifier. */
-export const PROVIDER_ORG_IDENTIFIER = "1122334455";
+/**
+ * Sending-system identifier (X12 ISA06): the request's applicationSenderCode and the Subscription
+ * orgIdentifier filter. The PAS IG scopes subscriptions per sending system, so each plugged-in EHR
+ * must present a distinct identifier or one EHR's decisions notify every other EHR's subscription.
+ * A configured providerOrgIdentifier pins the value; otherwise it is derived from the active EHR
+ * base URL. Seed-data NPIs are not usable here: servers seeded from the same IG examples share them.
+ */
+export function providerOrgIdentifier(): string {
+  return (
+    getAppConfig().providerOrgIdentifier ??
+    deriveOrgIdentifier(getStoredServerUrl())
+  );
+}
+
+/** Stable 10-digit identifier from a server base URL (FNV-1a 64, decimal-truncated). */
+export function deriveOrgIdentifier(serverUrl: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const ch of normalizeServerUrl(serverUrl)) {
+    hash ^= BigInt(ch.codePointAt(0) ?? 0);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return (hash % 10_000_000_000n).toString().padStart(10, "0");
+}
+
 export const PROVIDER_ORG_IDENTIFIER_SYSTEM =
+  getAppConfig().providerOrgIdentifierSystem ??
   "http://example.org/fhir/org-identifier";
-const PAYER_ORG_IDENTIFIER = "1234567893";
+const PAYER_ORG_IDENTIFIER = getAppConfig().payerOrgIdentifier ?? "1234567893";
 
 // Demo defaults for the X12-bound (required) item extensions; tune per service line as needed.
 const X12_REQUEST_CATEGORY_SYSTEM = "https://codesystem.x12.org/005010/1525";
@@ -134,7 +163,7 @@ function buildRequestorOrganization(): Organization {
     identifier: [
       {
         system: PROVIDER_ORG_IDENTIFIER_SYSTEM,
-        value: PROVIDER_ORG_IDENTIFIER,
+        value: providerOrgIdentifier(),
       },
     ],
     name: "Demo Provider Organization",
@@ -163,7 +192,7 @@ function buildTransmissionIdentifiers(receiverCode: string): Extension {
   return {
     url: EXT_TRANSMISSION_IDENTIFIERS,
     extension: [
-      { url: "applicationSenderCode", valueString: PROVIDER_ORG_IDENTIFIER },
+      { url: "applicationSenderCode", valueString: providerOrgIdentifier() },
       { url: "applicationReceiverCode", valueString: receiverCode },
     ],
   };

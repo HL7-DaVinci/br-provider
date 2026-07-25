@@ -160,11 +160,18 @@ export function useCdsHooksCore(
         );
 
         if (!response.ok) {
-          const message = await parseErrorMessage(
-            response,
-            `CDS hook ${hookName} (service: ${service.id}) failed: ${response.status} ${response.statusText}`,
-          );
-          throw new Error(message);
+          let body: unknown = null;
+          try {
+            body = await response.json();
+          } catch {
+            // Response body wasn't JSON
+          }
+          const message =
+            errorMessageFromBody(body) ??
+            `CDS hook ${hookName} (service: ${service.id}) failed: ${response.status} ${response.statusText}`;
+          // The raw error body (e.g. an OperationOutcome) rides along on
+          // cause so the response panel can offer a raw JSON view.
+          throw new Error(message, { cause: body ?? undefined });
         }
 
         const data: CdsHookResponse = await response.json();
@@ -406,34 +413,25 @@ function filterToSingleCoverage(
 
 // -- Error parsing --
 
-async function parseErrorMessage(
-  response: Response,
-  defaultMessage: string,
-): Promise<string> {
-  try {
-    const body = await response.json();
-    if (
-      body?.resourceType === "OperationOutcome" &&
-      Array.isArray(body.issue)
-    ) {
-      const diagnostics = body.issue
-        .map(
-          (issue: OperationOutcomeIssue) =>
-            issue.diagnostics || issue.details?.text,
-        )
-        .filter(Boolean);
-      if (diagnostics.length > 0) {
-        return diagnostics.join("; ");
-      }
+function errorMessageFromBody(rawBody: unknown): string | undefined {
+  // biome-ignore lint/suspicious/noExplicitAny: probing an untyped error body
+  const body = rawBody as any;
+  if (body?.resourceType === "OperationOutcome" && Array.isArray(body.issue)) {
+    const diagnostics = body.issue
+      .map(
+        (issue: OperationOutcomeIssue) =>
+          issue.diagnostics || issue.details?.text,
+      )
+      .filter(Boolean);
+    if (diagnostics.length > 0) {
+      return diagnostics.join("; ");
     }
-    if (body?.error_description || body?.error) {
-      return body.error_description || body.error;
-    }
-    if (body?.message) {
-      return body.message;
-    }
-  } catch {
-    // Response body wasn't JSON
   }
-  return defaultMessage;
+  if (body?.error_description || body?.error) {
+    return body.error_description || body.error;
+  }
+  if (body?.message) {
+    return body.message;
+  }
+  return undefined;
 }

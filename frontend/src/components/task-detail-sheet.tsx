@@ -1,7 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { Coverage, QuestionnaireResponse, Task } from "fhir/r4";
-import { ExternalLink, Eye, Loader2, Play, Send } from "lucide-react";
+import {
+  CheckCircle2,
+  ExternalLink,
+  Eye,
+  Loader2,
+  Play,
+  Send,
+} from "lucide-react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { CompletedQrViewer } from "@/components/dtr/completed-qr-viewer";
@@ -143,6 +150,7 @@ export function TaskDetailSheet({
   });
 
   const launchDtrForTask = useLaunchDtrForTask();
+  const openTaskDetail = useTaskDetailSheet();
   const handleComplete = useCallback(() => {
     const launched = launchDtrForTask(task, {
       iss: providerFhirUrl,
@@ -150,9 +158,20 @@ export function TaskDetailSheet({
       coverageRef: primaryCoverage?.id
         ? `Coverage/${primaryCoverage.id}`
         : undefined,
+      // Closing the DTR workspace returns to this detail sheet so the user
+      // lands on the submit step instead of back at the worklist.
+      onClose: () => openTaskDetail(task, { isFinalAttachment }),
     });
     if (!launched) toast.error("This request has no questionnaire to launch");
-  }, [launchDtrForTask, task, providerFhirUrl, patientId, primaryCoverage?.id]);
+  }, [
+    launchDtrForTask,
+    task,
+    providerFhirUrl,
+    patientId,
+    primaryCoverage?.id,
+    openTaskDetail,
+    isFinalAttachment,
+  ]);
 
   const submitAttachment = useSubmitAttachment();
   const completeDocTask = useCompleteDocumentationTask();
@@ -275,9 +294,29 @@ export function TaskDetailSheet({
 
       <Separator />
 
+      {open && kind === "questionnaire" && (
+        <ol className="space-y-1.5">
+          <WorkflowStep
+            number={1}
+            done={newCompletedQrIds.length > 0}
+            label="Complete the questionnaire"
+          />
+          <WorkflowStep
+            number={2}
+            done={false}
+            pending={newCompletedQrIds.length === 0}
+            label="Submit the completed documentation to the payer"
+          />
+        </ol>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         {open && kind === "questionnaire" && (
-          <Button size="sm" onClick={handleComplete}>
+          <Button
+            size="sm"
+            variant={newCompletedQrIds.length > 0 ? "outline" : "default"}
+            onClick={handleComplete}
+          >
             <Play className="mr-1 h-3 w-3" />
             Complete questionnaire
           </Button>
@@ -285,7 +324,6 @@ export function TaskDetailSheet({
         {canSubmitDocs && newCompletedQrIds.length > 0 && (
           <Button
             size="sm"
-            variant="secondary"
             onClick={handleSubmit}
             disabled={submitAttachment.isPending}
           >
@@ -312,6 +350,33 @@ export function TaskDetailSheet({
         )}
       </div>
     </div>
+  );
+}
+
+function WorkflowStep({
+  number,
+  label,
+  done,
+  pending = false,
+}: {
+  number: number;
+  label: string;
+  done: boolean;
+  pending?: boolean;
+}) {
+  return (
+    <li
+      className={`flex items-center gap-2 ${pending ? "text-muted-foreground" : ""}`}
+    >
+      {done ? (
+        <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600" />
+      ) : (
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border text-[10px] font-medium">
+          {number}
+        </span>
+      )}
+      {label}
+    </li>
   );
 }
 

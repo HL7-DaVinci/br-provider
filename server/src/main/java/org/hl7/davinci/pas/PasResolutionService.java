@@ -12,49 +12,37 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import ca.uhn.fhir.jpa.api.dao.DaoRegistry;
-import ca.uhn.fhir.jpa.api.dao.IFhirResourceDao;
-import ca.uhn.fhir.jpa.searchparam.SearchParameterMap;
-import ca.uhn.fhir.rest.api.server.IBundleProvider;
-import ca.uhn.fhir.rest.api.server.SystemRequestDetails;
-import ca.uhn.fhir.rest.param.TokenParam;
-
 /**
- * Applies a resolved PAS ClaimResponse to the provider's local FHIR store. The ClaimResponse is the
- * IG-native carrier of the prior-authorization decision; the provider-minted Task (Task.focus = the
- * order) is the durable correlation. Used by the inbound Subscription notification path, which has no
- * user session, so all store access uses SystemRequestDetails.
+ * Applies a resolved PAS ClaimResponse to a caller-supplied {@link PasResolutionStore}. The
+ * ClaimResponse is the IG-native carrier of the prior-authorization decision; the provider-minted
+ * Task (Task.focus = the order) is the durable correlation.
  */
 @Component
 public class PasResolutionService {
 
   private static final Logger log = LoggerFactory.getLogger(PasResolutionService.class);
 
-  private final DaoRegistry daoRegistry;
-
-  public PasResolutionService(DaoRegistry daoRegistry) {
-    this.daoRegistry = daoRegistry;
-  }
-
-  public void applyResolution(ClaimResponse claimResponse) {
+  // Serialized because the payer may deliver the same decision through several subscriptions at
+  // once; concurrent identical conditional updates fail on version conflicts at the target EHR.
+  // ponytail: global lock, per-tracking-id locks if notification volume matters
+  public synchronized void applyResolution(ClaimResponse claimResponse, PasResolutionStore store) {
     String trackingId = claimResponse.getIdentifierFirstRep().getValue();
     if (trackingId == null || trackingId.isBlank()) {
       log.warn("PAS notification: ClaimResponse carries no tracking identifier; ignoring");
       return;
     }
-    List<Task> tasks = findTasks(trackingId);
+    List<Task> tasks = store.findTasksByIdentifier(trackingId);
+    ClaimResponse existing = store.findClaimResponseByIdentifier(trackingId);
+    if (tasks.isEmpty() && existing == null) {
+      log.info("PAS notification: tracking id {} matches no Task or ClaimResponse in this store; "
+          + "decision not stored", trackingId);
+      return;
+    }
     blankPayerReferences(claimResponse);
     adoptPatientFromTask(claimResponse, tasks);
-    String claimResponseId = upsertClaimResponse(claimResponse, trackingId);
-    updateTasks(tasks, claimResponse, claimResponseId, trackingId);
-  }
-
-  @SuppressWarnings({"rawtypes", "unchecked"})
-  private String upsertClaimResponse(ClaimResponse claimResponse, String trackingId) {
-    IFhirResourceDao dao = daoRegistry.getResourceDao("ClaimResponse");
-    claimResponse.setId((String) null);
-    return dao.update(claimResponse, "ClaimResponse?identifier=" + trackingId, new SystemRequestDetails())
-        .getId().getIdPart();
+    adoptLocalReferences(claimResponse, existing);
+    String claimResponseId = store.upsertClaimResponse(claimResponse, trackingId);
+    updateTasks(store, tasks, claimResponse, claimResponseId, trackingId);
   }
 
   /**
@@ -94,32 +82,36 @@ public class PasResolutionService {
     }
   }
 
-  @SuppressWarnings("rawtypes")
-  private List<Task> findTasks(String trackingId) {
-    IFhirResourceDao dao = daoRegistry.getResourceDao("Task");
-    SearchParameterMap params = new SearchParameterMap().add("identifier", new TokenParam(trackingId));
-    IBundleProvider results = dao.search(params, new SystemRequestDetails());
-    return results.getAllResources().stream()
-        .filter(Task.class::isInstance)
-        .map(Task.class::cast)
-        .toList();
+  /**
+   * Rewrites the required references (patient, insurer) from the store's already-persisted copy
+   * of this ClaimResponse. Blanking alone drops these 1..1 elements, and servers that validate
+   * writes (unlike HAPI's default) reject the resource.
+   */
+  private void adoptLocalReferences(ClaimResponse claimResponse, ClaimResponse existing) {
+    if (existing == null) {
+      return;
+    }
+    if (!claimResponse.getPatient().hasReference() && existing.getPatient().hasReference()) {
+      claimResponse.setPatient(existing.getPatient().copy());
+    }
+    if (!claimResponse.getInsurer().hasReference() && existing.getInsurer().hasReference()) {
+      claimResponse.setInsurer(existing.getInsurer().copy());
+    }
   }
 
-  @SuppressWarnings({"rawtypes", "unchecked"})
-  private void updateTasks(List<Task> tasks, ClaimResponse claimResponse, String claimResponseId,
-      String trackingId) {
+  private void updateTasks(PasResolutionStore store, List<Task> tasks, ClaimResponse claimResponse,
+      String claimResponseId, String trackingId) {
     if (tasks.isEmpty()) {
       log.info("PAS notification: no Task found for tracking id {}; ClaimResponse stored only", trackingId);
       return;
     }
-    IFhirResourceDao dao = daoRegistry.getResourceDao("Task");
     String status = isPended(claimResponse) ? "in-progress" : mapOutcomeToTaskStatus(claimResponse.getOutcome());
     for (Task task : tasks) {
       if (status != null) {
         task.setStatus(Task.TaskStatus.fromCode(status));
       }
       setClaimResponseOutput(task, claimResponseId);
-      dao.update(task, new SystemRequestDetails());
+      store.updateTask(task);
     }
     log.info("PAS notification: updated {} Task(s) for tracking id {} -> {}", tasks.size(), trackingId, status);
   }

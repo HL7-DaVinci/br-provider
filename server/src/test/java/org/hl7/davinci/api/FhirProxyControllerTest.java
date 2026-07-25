@@ -1,7 +1,16 @@
 package org.hl7.davinci.api;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import com.sun.net.httpserver.HttpServer;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.hl7.davinci.config.ServerProperties;
+import org.hl7.davinci.security.B2BTokenService;
+import org.hl7.davinci.security.OutboundAuthService;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SpaAuthController;
 import org.junit.jupiter.api.BeforeEach;
@@ -9,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 class FhirProxyControllerTest {
 
@@ -16,6 +26,7 @@ class FhirProxyControllerTest {
 
     SecurityProperties securityProperties;
     ServerProperties serverProperties;
+    OutboundAuthService outboundAuth;
     FhirProxyController controller;
 
     @BeforeEach
@@ -23,7 +34,8 @@ class FhirProxyControllerTest {
         securityProperties = new SecurityProperties();
         securityProperties.setSslVerify(false);
         serverProperties = new ServerProperties(LOCAL_SERVER, null);
-        controller = new FhirProxyController(securityProperties, serverProperties, null, null);
+        outboundAuth = new OutboundAuthService(serverProperties);
+        controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth);
     }
 
     // --- Scheme validation (400) ---
@@ -199,7 +211,7 @@ class FhirProxyControllerTest {
         external.setName("External");
         external.setUrl("https://external.fhir.org/fhir");
         var props = new ServerProperties(LOCAL_SERVER, List.of(external));
-        var ctrl = new FhirProxyController(securityProperties, props, null, null);
+        var ctrl = new FhirProxyController(securityProperties, props, null, null, new OutboundAuthService(props));
 
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
@@ -211,6 +223,215 @@ class FhirProxyControllerTest {
         }
 
         assertNotEquals(403, response.getStatus());
+    }
+
+    // --- Payer B2B token failure handling ---
+
+    @Test
+    void payerRequestWithoutTokenIsRejectedWhenAuthEnabled() throws Exception {
+        securityProperties.setEnableAuthentication(true);
+        var payer = new ServerProperties.PayerServer();
+        payer.setFhirUrl("https://payer.test/fhir");
+        payer.setRequiresAuth(true);
+        serverProperties.setPayerServers(List.of(payer));
+
+        B2BTokenService b2bTokenService = mock(B2BTokenService.class);
+        when(b2bTokenService.getTokenForServer(any(), any())).thenReturn(null);
+        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        HttpServletResponse response = mock(HttpServletResponse.class);
+
+        ctrl.proxy("https://payer.test/fhir/Patient", true, "read", request, response);
+
+        verify(response).sendError(eq(502), contains("B2B token"));
+    }
+
+    @Test
+    void payerRequestWithoutTokenForwardsWhenBypassHeaderPresent() throws Exception {
+        securityProperties.setEnableAuthentication(true);
+        var payer = new ServerProperties.PayerServer();
+        payer.setFhirUrl("https://payer.test/fhir");
+        payer.setRequiresAuth(true);
+        serverProperties.setPayerServers(List.of(payer));
+
+        B2BTokenService b2bTokenService = mock(B2BTokenService.class);
+        when(b2bTokenService.getTokenForServer(any(), any())).thenReturn(null);
+        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        when(request.getHeader(securityProperties.getBypassHeader())).thenReturn("true");
+        HttpServletResponse response = mock(HttpServletResponse.class);
+
+        // Unresolvable target: the upstream call itself will fail, but that is a
+        // separate, pre-existing failure path (generic 502) from the guard under
+        // test here, which must not reject the request when bypass is requested.
+        ctrl.proxy("https://payer.test/fhir/Patient", true, "read", request, response);
+
+        verify(response, never()).sendError(eq(502), contains("B2B token"));
+    }
+
+    @Test
+    void payerRequestOpenPayerSkipsB2BTokenAndGuard() throws Exception {
+        securityProperties.setEnableAuthentication(true);
+        var payer = new ServerProperties.PayerServer();
+        payer.setFhirUrl("https://payer.test/fhir");
+        payer.setRequiresAuth(false);
+        serverProperties.setPayerServers(List.of(payer));
+
+        B2BTokenService b2bTokenService = mock(B2BTokenService.class);
+        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        HttpServletResponse response = mock(HttpServletResponse.class);
+
+        ctrl.proxy("https://payer.test/fhir/Patient", true, "read", request, response);
+
+        verify(response, never()).sendError(eq(502), contains("B2B token"));
+        verify(b2bTokenService, never()).getTokenForServer(any(), any());
+    }
+
+    // --- Optimistic payer auth (mode UNKNOWN) ---
+
+    static HttpServer startStub(java.util.function.Function<Integer, Integer> statusForAttempt,
+            List<String> capturedAuthHeaders) throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        AtomicInteger attempts = new AtomicInteger();
+        server.createContext("/fhir", exchange -> {
+            capturedAuthHeaders.add(exchange.getRequestHeaders().getFirst("Authorization"));
+            int status = statusForAttempt.apply(attempts.incrementAndGet());
+            byte[] body = "{\"resourceType\":\"Bundle\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(status, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        return server;
+    }
+
+    @Test
+    void unknownPayer_upstream200_tokenless_forwardedOnce_andLearnedOpen() throws Exception {
+        List<String> capturedAuthHeaders = new java.util.ArrayList<>();
+        HttpServer stub = startStub(attempt -> 200, capturedAuthHeaders);
+        try {
+            String stubBase = "http://localhost:" + stub.getAddress().getPort();
+            var request = new MockHttpServletRequest("POST", "/api/fhir-proxy");
+            var session = request.getSession(true);
+            session.setAttribute(SpaAuthController.SESSION_PAYER_FHIR_URL, stubBase);
+            var response = new MockHttpServletResponse();
+
+            B2BTokenService b2bTokenService = mock(B2BTokenService.class);
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+
+            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", request, response);
+
+            assertEquals(200, response.getStatus());
+            assertEquals(1, capturedAuthHeaders.size());
+            assertNull(capturedAuthHeaders.get(0));
+            assertEquals(OutboundAuthService.Mode.OPEN, outboundAuth.modeFor(stubBase));
+            verify(b2bTokenService, never()).getTokenForServer(any(), any());
+        } finally {
+            stub.stop(0);
+        }
+    }
+
+    @Test
+    void unknownPayer_upstream401ThenAuthed_retriesOnceWithBearer_andLearnsAuthRequired() throws Exception {
+        List<String> capturedAuthHeaders = new java.util.ArrayList<>();
+        HttpServer stub = startStub(attempt -> attempt == 1 ? 401 : 200, capturedAuthHeaders);
+        try {
+            String stubBase = "http://localhost:" + stub.getAddress().getPort();
+            var request = new MockHttpServletRequest("POST", "/api/fhir-proxy");
+            var session = request.getSession(true);
+            session.setAttribute(SpaAuthController.SESSION_PAYER_FHIR_URL, stubBase);
+            var response = new MockHttpServletResponse();
+
+            B2BTokenService b2bTokenService = mock(B2BTokenService.class);
+            when(b2bTokenService.getTokenForServer(eq(stubBase), any())).thenReturn("tok-123");
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+
+            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", request, response);
+
+            assertEquals(200, response.getStatus());
+            assertEquals(2, capturedAuthHeaders.size());
+            assertNull(capturedAuthHeaders.get(0));
+            assertEquals("Bearer tok-123", capturedAuthHeaders.get(1));
+            verify(b2bTokenService, times(1)).getTokenForServer(eq(stubBase), any());
+            assertEquals(OutboundAuthService.Mode.UDAP_B2B, outboundAuth.modeFor(stubBase));
+        } finally {
+            stub.stop(0);
+        }
+    }
+
+    @Test
+    void unknownPayer_upstream401_noTokenObtainable_relays401() throws Exception {
+        List<String> capturedAuthHeaders = new java.util.ArrayList<>();
+        HttpServer stub = startStub(attempt -> 401, capturedAuthHeaders);
+        try {
+            String stubBase = "http://localhost:" + stub.getAddress().getPort();
+            var request = new MockHttpServletRequest("POST", "/api/fhir-proxy");
+            var session = request.getSession(true);
+            session.setAttribute(SpaAuthController.SESSION_PAYER_FHIR_URL, stubBase);
+            var response = new MockHttpServletResponse();
+
+            B2BTokenService b2bTokenService = mock(B2BTokenService.class);
+            when(b2bTokenService.getTokenForServer(eq(stubBase), any())).thenReturn(null);
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+
+            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", request, response);
+
+            assertEquals(401, response.getStatus());
+            assertEquals(1, capturedAuthHeaders.size());
+            assertEquals(OutboundAuthService.Mode.UDAP_B2B, outboundAuth.modeFor(stubBase));
+        } finally {
+            stub.stop(0);
+        }
+    }
+
+    @Test
+    void learnedAuthRequired_secondRequest_mintsUpfront() throws Exception {
+        List<String> capturedAuthHeaders = new java.util.ArrayList<>();
+        HttpServer stub = startStub(attempt -> 200, capturedAuthHeaders);
+        try {
+            String stubBase = "http://localhost:" + stub.getAddress().getPort();
+            outboundAuth.recordAuthRequired(stubBase);
+
+            var request = new MockHttpServletRequest("POST", "/api/fhir-proxy");
+            var session = request.getSession(true);
+            session.setAttribute(SpaAuthController.SESSION_PAYER_FHIR_URL, stubBase);
+            var response = new MockHttpServletResponse();
+
+            B2BTokenService b2bTokenService = mock(B2BTokenService.class);
+            when(b2bTokenService.getTokenForServer(eq(stubBase), any())).thenReturn("tok-9");
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+
+            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", request, response);
+
+            assertEquals(200, response.getStatus());
+            assertEquals(1, capturedAuthHeaders.size());
+            assertEquals("Bearer tok-9", capturedAuthHeaders.get(0));
+        } finally {
+            stub.stop(0);
+        }
+    }
+
+    @Test
+    void openConfiguredPayer_bogusOp_returns400() throws Exception {
+        var payer = new ServerProperties.PayerServer();
+        payer.setFhirUrl("https://payer.test/fhir");
+        payer.setRequiresAuth(false);
+        serverProperties.setPayerServers(List.of(payer));
+
+        B2BTokenService b2bTokenService = mock(B2BTokenService.class);
+        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        HttpServletResponse response = mock(HttpServletResponse.class);
+
+        ctrl.proxy("https://payer.test/fhir/Patient", true, "nonsense", request, response);
+
+        verify(response).sendError(eq(400), any());
+        verify(b2bTokenService, never()).getTokenForServer(any(), any());
     }
 
     @Test

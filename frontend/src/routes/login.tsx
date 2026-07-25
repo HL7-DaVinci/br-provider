@@ -1,4 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import type { Bundle, Patient, Practitioner } from "fhir/r4";
 import { useEffect, useMemo, useState } from "react";
 
 import {
@@ -9,6 +10,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useAuth } from "@/hooks/use-auth";
+import { useFhirServer } from "@/hooks/use-fhir-server";
+import { fhirSend } from "@/lib/api";
+import { setLocalIdentity } from "@/lib/auth";
+import { formatPatientName } from "@/lib/clinical-formatters";
 
 interface TestAccount {
   username: string;
@@ -16,6 +22,35 @@ interface TestAccount {
   displayName: string;
   fhirResource: string;
   resourceType: string;
+}
+
+// Fetches Practitioner/Patient resources from the open server and shapes them
+// as TestAccount entries so the existing tabs/Select UI and submit flow can
+// be reused unchanged. password is unused in local identity mode.
+async function fetchLocalIdentities(serverUrl: string): Promise<TestAccount[]> {
+  const lists = await Promise.all(
+    (["Practitioner", "Patient"] as const).map(async (resourceType) => {
+      const res = await fhirSend(`${serverUrl}/${resourceType}?_count=50`);
+      if (!res.ok) return [];
+      const bundle: Bundle<Practitioner | Patient> = await res.json();
+      return (bundle.entry ?? [])
+        .map((entry) => entry.resource)
+        .filter(
+          (resource): resource is Practitioner | Patient => !!resource?.id,
+        )
+        .map((resource) => {
+          const fhirResource = `${resourceType}/${resource.id}`;
+          return {
+            username: fhirResource,
+            password: "",
+            displayName: formatPatientName(resource.name),
+            fhirResource,
+            resourceType,
+          };
+        });
+    }),
+  );
+  return lists.flat();
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -33,6 +68,9 @@ export const Route = createFileRoute("/login")({
 
 function LoginPage() {
   const { error: urlError } = Route.useSearch();
+  const { localIdentityMode } = useAuth();
+  const { serverUrl } = useFhirServer();
+  const navigate = useNavigate();
   const [accounts, setAccounts] = useState<TestAccount[]>([]);
   const [error, setError] = useState<string | undefined>(
     () =>
@@ -41,11 +79,19 @@ function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
+    if (localIdentityMode) return;
     fetch("/api/users")
       .then((res) => res.json())
       .then((data) => setAccounts(data))
       .catch(() => {});
-  }, []);
+  }, [localIdentityMode]);
+
+  useEffect(() => {
+    if (!localIdentityMode) return;
+    fetchLocalIdentities(serverUrl)
+      .then(setAccounts)
+      .catch(() => setError("Unable to load identities from the server."));
+  }, [localIdentityMode, serverUrl]);
 
   const practitioners = useMemo(
     () => accounts.filter((a) => a.resourceType === "Practitioner"),
@@ -66,6 +112,19 @@ function LoginPage() {
     if (!account) return;
 
     setError(undefined);
+
+    if (localIdentityMode) {
+      setLocalIdentity({
+        name: account.displayName,
+        fhirUser: account.fhirResource,
+        fhirUserType: account.resourceType,
+      });
+      navigate({
+        to: account.resourceType === "Patient" ? "/patient" : "/practitioner",
+      });
+      return;
+    }
+
     setSubmitting(true);
 
     // Use a real form POST so the browser follows Spring's redirect chain.
@@ -106,6 +165,12 @@ function LoginPage() {
         <p className="mb-6 text-sm text-muted-foreground">
           Choose an account type, then select a user to sign in.
         </p>
+        {localIdentityMode && (
+          <p className="mb-6 text-sm text-amber-600 dark:text-amber-500">
+            This server does not require authentication. You are selecting a
+            demo identity. Requests are not authenticated.
+          </p>
+        )}
 
         <Tabs value={activeTab} onValueChange={handleTabChange}>
           <TabsList className="w-full">

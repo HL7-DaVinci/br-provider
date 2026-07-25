@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import type { Bundle, Patient, Task } from "fhir/r4";
+import { ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ClinicalTable } from "@/components/clinical-table";
 import {
@@ -158,6 +159,16 @@ function TaskWorklistPage() {
       header: "Last Updated",
       accessor: (task: Task) =>
         formatClinicalDate(task.meta?.lastUpdated ?? task.authoredOn),
+    },
+    {
+      header: "",
+      accessor: () => (
+        <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground">
+          Details
+          <ChevronRight className="h-4 w-4" />
+        </span>
+      ),
+      className: "w-20 text-right",
     },
   ];
 

@@ -32,56 +32,107 @@ public class CertificateHolder {
 
     private static final Logger logger = LoggerFactory.getLogger(CertificateHolder.class);
 
-    private final KeyStore keyStore;
-    private final RSAKey signingKey;
-    private final X509Certificate certificate;
-    private final List<com.nimbusds.jose.util.Base64> x509CertChain;
+    /** Minimum time between on-demand initialization retries, to avoid hammering an unreachable issuer. */
+    private static final long INIT_RETRY_COOLDOWN_MS = 60_000;
+
+    private final SecurityProperties securityProperties;
+
+    private RSAKey signingKey;
+    private X509Certificate certificate;
+    private List<com.nimbusds.jose.util.Base64> x509CertChain;
+    // keyStore is written last in initialize() so that a reader observing keyStore != null
+    // (isInitialized()) is guaranteed, via the volatile write's happens-before edge, to also
+    // see the fully-published signingKey/certificate/x509CertChain from the same initialization.
+    private volatile KeyStore keyStore;
+
+    private volatile long lastInitAttemptMs;
 
     public CertificateHolder(
             SecurityProperties securityProperties
-    ) throws Exception {
+    ) {
+        this.securityProperties = securityProperties;
 
+        if (nothingToInitialize()) {
+            logger.info("Authentication disabled; skipping certificate initialization");
+            return;
+        }
+
+        lastInitAttemptMs = System.currentTimeMillis();
+        try {
+            initialize();
+        } catch (Exception e) {
+            logger.error("Certificate initialization failed; starting without a certificate. "
+                + "UDAP registration and B2B tokens are unavailable until a retry succeeds.", e);
+        }
+    }
+
+    /**
+     * Attempts certificate initialization if not already initialized, subject to a
+     * cooldown between retries. Returns true if a certificate is available afterward.
+     */
+    public synchronized boolean ensureInitialized() {
+        if (isInitialized()) {
+            return true;
+        }
+        if (nothingToInitialize()) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastInitAttemptMs < INIT_RETRY_COOLDOWN_MS) {
+            return false;
+        }
+        lastInitAttemptMs = now;
+        try {
+            initialize();
+            return true;
+        } catch (Exception e) {
+            logger.warn("Certificate initialization retry failed: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean nothingToInitialize() {
+        return !securityProperties.isEnableAuthentication() && securityProperties.getCertFile() == null;
+    }
+
+    private void initialize() throws Exception {
         if (!securityProperties.isEnableAuthentication()) {
-            if (securityProperties.getCertFile() == null) {
-                logger.info("Authentication disabled; skipping certificate initialization");
-                this.keyStore = null;
-                this.signingKey = null;
-                this.certificate = null;
-                this.x509CertChain = null;
-                return;
-            }
-
             logger.info("Authentication disabled; loading explicitly configured certificate");
         }
 
-        this.keyStore = initializeCert(securityProperties, securityProperties.getServerBaseUrl());
+        KeyStore loadedKeyStore = initializeCert(securityProperties, securityProperties.getServerBaseUrl());
 
-        String alias = keyStore.aliases().nextElement();
-        this.certificate = (X509Certificate) keyStore.getCertificate(alias);
+        String alias = loadedKeyStore.aliases().nextElement();
+        X509Certificate loadedCertificate = (X509Certificate) loadedKeyStore.getCertificate(alias);
 
-        RSAPublicKey publicKey = (RSAPublicKey) certificate.getPublicKey();
-        RSAPrivateKey privateKey = (RSAPrivateKey) keyStore.getKey(alias,
+        RSAPublicKey publicKey = (RSAPublicKey) loadedCertificate.getPublicKey();
+        RSAPrivateKey privateKey = (RSAPrivateKey) loadedKeyStore.getKey(alias,
             securityProperties.getCertPassword().toCharArray());
 
-        java.security.cert.Certificate[] chain = keyStore.getCertificateChain(alias);
-        this.x509CertChain = new ArrayList<>();
+        java.security.cert.Certificate[] chain = loadedKeyStore.getCertificateChain(alias);
+        List<com.nimbusds.jose.util.Base64> loadedX509CertChain = new ArrayList<>();
         if (chain != null) {
             for (java.security.cert.Certificate cert : chain) {
-                x509CertChain.add(com.nimbusds.jose.util.Base64.encode(cert.getEncoded()));
+                loadedX509CertChain.add(com.nimbusds.jose.util.Base64.encode(cert.getEncoded()));
             }
         } else {
-            x509CertChain.add(com.nimbusds.jose.util.Base64.encode(certificate.getEncoded()));
+            loadedX509CertChain.add(com.nimbusds.jose.util.Base64.encode(loadedCertificate.getEncoded()));
         }
 
-        this.signingKey = new RSAKey.Builder(publicKey)
+        RSAKey loadedSigningKey = new RSAKey.Builder(publicKey)
             .privateKey(privateKey)
             .keyUse(KeyUse.SIGNATURE)
             .algorithm(JWSAlgorithm.RS256)
             .keyID("provider-signing-key")
-            .x509CertChain(x509CertChain)
+            .x509CertChain(loadedX509CertChain)
             .build();
 
-        logger.info("Certificate loaded successfully. Subject: {}", certificate.getSubjectX500Principal());
+        this.certificate = loadedCertificate;
+        this.x509CertChain = loadedX509CertChain;
+        this.signingKey = loadedSigningKey;
+        this.keyStore = loadedKeyStore;
+
+        logger.info("Certificate loaded successfully. Subject: {}", loadedCertificate.getSubjectX500Principal());
     }
 
     // --- Three-path cert initialization ---
@@ -175,6 +226,9 @@ public class CertificateHolder {
         stream.close();
         return ks;
     }
+
+    /** Visible for testing: exposes the timestamp of the last initialization attempt. */
+    long lastInitAttemptMs() { return lastInitAttemptMs; }
 
     public boolean isInitialized() { return keyStore != null; }
     public KeyStore getKeyStore() { return keyStore; }

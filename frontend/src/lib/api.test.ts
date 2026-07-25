@@ -6,14 +6,12 @@ describe("fhirProxyUrl", () => {
     window.APP_CONFIG = undefined;
   });
 
-  it("wraps requests through the BFF proxy by default", () => {
-    const url = fhirProxyUrl("http://localhost:8081/fhir/Claim/$submit", {
-      payer: true,
-      op: "pas-submit",
-    });
-    expect(url).toContain("/api/fhir-proxy");
-    expect(url).toContain("payer=true");
-    expect(url).toContain("op=pas-submit");
+  it("bypasses the proxy for the default (unauthenticated) payer server", () => {
+    const target = "http://localhost:8081/fhir/Claim/$submit";
+    expect(fhirProxyUrl(target, { payer: true, op: "pas-submit" })).toBe(
+      target,
+    );
+    expect(targetRequiresAuth(target)).toBe(false);
   });
 
   it("bypasses the proxy for a payer server flagged requiresAuth:false", () => {

@@ -15,6 +15,7 @@ import {
   buildPasRequestBundle,
   extractOrderCode,
   type PasSubmitResources,
+  providerOrgIdentifier,
 } from "./pas-bundle-builder";
 
 function resources(
@@ -107,7 +108,7 @@ describe("buildPasRequestBundle", () => {
     const receiverCode = ti?.extension?.find(
       (e) => e.url === "applicationReceiverCode",
     )?.valueString;
-    expect(senderCode).toBe("1122334455");
+    expect(senderCode).toBe(providerOrgIdentifier());
     expect(receiverCode).toBeTruthy();
   });
 

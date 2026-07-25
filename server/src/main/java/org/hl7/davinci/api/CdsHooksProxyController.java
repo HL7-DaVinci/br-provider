@@ -41,6 +41,9 @@ public class CdsHooksProxyController {
 
     private static final Logger logger = LoggerFactory.getLogger(CdsHooksProxyController.class);
 
+    /** Payer test header that bypasses the payer's payor-handled check. */
+    private static final String BYPASS_PAYOR_CHECK_HEADER = "X-Bypass-Payor-Check";
+
     private final CdsClientJwtService cdsClientJwtService;
     private final SecurityProperties securityProperties;
     private final ServerProperties serverProperties;
@@ -155,6 +158,11 @@ public class CdsHooksProxyController {
 
             if (clientJwt != null) {
                 reqBuilder.header("Authorization", "Bearer " + clientJwt);
+            }
+
+            String bypassPayorCheck = request.getHeader(BYPASS_PAYOR_CHECK_HEADER);
+            if (bypassPayorCheck != null) {
+                reqBuilder.header(BYPASS_PAYOR_CHECK_HEADER, bypassPayorCheck);
             }
 
             HttpClient client = SecurityUtil.getHttpClient(securityProperties);

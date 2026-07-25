@@ -2,6 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { CheckCircle, Info, Loader2, Server, X, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -26,9 +27,11 @@ import { useFhirServer, useServerDiscovery } from "@/hooks/use-fhir-server";
 import { usePayerServer } from "@/hooks/use-payer-server";
 import {
   clearStoredCustomAuthTarget,
-  getAppConfig,
+  clearStoredCustomOpenServer,
+  getApiBaseUrl,
   getStoredCustomAuthTarget,
   setStoredCustomAuthTarget,
+  setStoredCustomOpenServer,
 } from "@/lib/fhir-config";
 
 interface SettingsDialogProps {
@@ -69,6 +72,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [showCustomPayer, setShowCustomPayer] = useState(false);
   const [customPayerCdsUrl, setCustomPayerCdsUrl] = useState("");
   const [customPayerFhirUrl, setCustomPayerFhirUrl] = useState("");
+  const [bypassPayorCheck, setBypassPayorCheck] = useState(false);
 
   // Reset local state when dialog opens
   const wasOpen = useRef(false);
@@ -87,6 +91,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       setShowCustomPayer(false);
       setCustomPayerCdsUrl("");
       setCustomPayerFhirUrl("");
+      setBypassPayorCheck(payerServer.bypassPayorCheck ?? false);
     }
     wasOpen.current = open;
   });
@@ -107,6 +112,11 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   // so a pending custom server always needs auth if UDAP-registered
   const needsAuth =
     isPendingCustom && discovery?.udapEnabled && discovery.registered;
+
+  // When the probe confirms a custom server is a valid FHIR server without
+  // UDAP support, login uses local identity mode instead of the UDAP flow.
+  const probedOpen =
+    isPendingCustom && discovery?.fhirServer === true && !discovery.udapEnabled;
 
   // Connect button visible when input differs from what has been probed
   const normalizedInput = customUrlInput.trim().replace(/\/+$/, "");
@@ -142,6 +152,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       !!customPayerFhirUrl.trim());
 
   const handlePayerChange = (value: string) => {
+    // Changing the payer resets the bypass to the safe default; only
+    // re-selecting the active payer restores its stored preference.
+    setBypassPayorCheck(
+      value === payerServer.name
+        ? (payerServer.bypassPayorCheck ?? false)
+        : false,
+    );
     if (value === "custom") {
       setShowCustomPayer(true);
       setPendingPayer("");
@@ -151,10 +168,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     setPendingPayer(value);
   };
 
+  const bypassPayorCheckChanged =
+    bypassPayorCheck !== (payerServer.bypassPayorCheck ?? false);
+
   // Custom servers must pass the metadata check before save is allowed
   const canSave = switchingServer
     ? !isPendingCustom || (discovery?.fhirServer === true && !isDiscovering)
-    : switchingPayer;
+    : switchingPayer || bypassPayorCheckChanged;
 
   const handleSave = async () => {
     if (switchingServer) {
@@ -162,6 +182,11 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         setStoredCustomAuthTarget(pendingUrl, idpUrl || undefined);
       } else {
         clearStoredCustomAuthTarget();
+      }
+      if (probedOpen) {
+        setStoredCustomOpenServer(pendingUrl);
+      } else {
+        clearStoredCustomOpenServer();
       }
     }
 
@@ -175,16 +200,21 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
       });
     }
     // Save payer server selection (no auth impact)
-    if (switchingPayer) {
-      const next = showCustomPayer
-        ? {
-            name: "Custom Payer",
-            cdsUrl: customPayerCdsUrl.trim().replace(/\/+$/, ""),
-            fhirUrl: customPayerFhirUrl.trim().replace(/\/+$/, ""),
-          }
-        : payerServers.find((s) => s.name === pendingPayer);
-      if (next) {
-        await setPayerServer(next).catch((err) => {
+    if (switchingPayer || bypassPayorCheckChanged) {
+      const base = switchingPayer
+        ? showCustomPayer
+          ? {
+              name: "Custom Payer",
+              cdsUrl: customPayerCdsUrl.trim().replace(/\/+$/, ""),
+              fhirUrl: customPayerFhirUrl.trim().replace(/\/+$/, ""),
+            }
+          : payerServers.find((s) => s.name === pendingPayer)
+        : payerServer;
+      if (base) {
+        await setPayerServer({
+          ...base,
+          bypassPayorCheck: bypassPayorCheck || undefined,
+        }).catch((err) => {
           console.error("setPayerServer failed", err);
         });
       }
@@ -349,6 +379,28 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
               </div>
             )}
 
+            <div className="flex items-start gap-2">
+              <Checkbox
+                id="bypass-payor-check"
+                checked={bypassPayorCheck}
+                onCheckedChange={(checked) =>
+                  setBypassPayorCheck(checked === true)
+                }
+                className="mt-0.5"
+              />
+              <div className="space-y-0.5">
+                <Label htmlFor="bypass-payor-check">
+                  Bypass payor-handled check
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Sends the X-Bypass-Payor-Check header so the BR payer accepts
+                  unknown payors, payors without an identifier, and patients
+                  with multiple Coverages. The patient still needs a Coverage
+                  resource. Leave off to test payor-not-handled responses.
+                </p>
+              </div>
+            </div>
+
             <ConnectionStatus
               isLoading={payerChecking}
               isConnected={payerConnected}
@@ -488,7 +540,7 @@ function DiscoveryStatusSection({
   idpUrl,
   setIdpUrl,
 }: DiscoveryStatusSectionProps) {
-  const providerServerUrl = getAppConfig().providerServerUrl;
+  const apiBaseUrl = getApiBaseUrl();
 
   if (isDiscovering) {
     return (
@@ -551,7 +603,7 @@ function DiscoveryStatusSection({
         <div className="relative">
           <Input
             id="idp-url"
-            placeholder={providerServerUrl || "https://idp.example.com"}
+            placeholder={apiBaseUrl || "https://idp.example.com"}
             value={idpUrl}
             onChange={(e) => setIdpUrl(e.target.value)}
             className="h-8 text-xs pr-8"

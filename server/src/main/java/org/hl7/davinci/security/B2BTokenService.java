@@ -78,7 +78,7 @@ public class B2BTokenService {
      * @return bearer access token, or null if unavailable
      */
     public String getTokenForServer(String targetBaseUrl, List<String> scopes) {
-        if (!certificateHolder.isInitialized()) {
+        if (!certificateHolder.ensureInitialized()) {
             logger.warn("Certificate not initialized, cannot obtain B2B token");
             return null;
         }
@@ -317,9 +317,9 @@ public class B2BTokenService {
 
         Map<String, Object> b2bExtension = Map.of(
             "version", "1",
-            "organization_id", "urn:oid:provider-org",
-            "organization_name", "Provider Organization",
-            "purpose_of_use", List.of("urn:oid:2.16.840.1.113883.5.8#TREAT")
+            "organization_id", securityProperties.getB2bOrganizationId(),
+            "organization_name", securityProperties.getB2bOrganizationName(),
+            "purpose_of_use", List.of(securityProperties.getB2bPurposeOfUse())
         );
 
         JWTClaimsSet claims = new JWTClaimsSet.Builder()

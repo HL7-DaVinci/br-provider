@@ -281,6 +281,8 @@ function PasPage() {
                 providerFhirUrl,
                 result.claimResponse,
                 `Patient/${patientId}`,
+                result.insurerRef,
+                result.claimIdentifier,
               );
             } catch {
               // best-effort: the server backfills the ClaimResponse on resolution

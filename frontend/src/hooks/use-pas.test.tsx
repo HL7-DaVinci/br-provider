@@ -3,10 +3,14 @@ import { renderHook, waitFor } from "@testing-library/react";
 import type { Bundle, ClaimResponse, Task } from "fhir/r4";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fhirSend } from "@/lib/api";
+import { loggedFetch } from "@/lib/logged-fetch";
 import { fhirFetch } from "./use-fhir-api";
 import {
   extractClaimResponseFromInquiry,
   extractTaskQuestionnaireContexts,
+  persistClaimResponseToProvider,
+  useEnsurePasSubscription,
   usePasDocumentationTasks,
   usePasSubmit,
 } from "./use-pas";
@@ -15,7 +19,18 @@ vi.mock("./use-fhir-api", () => ({
   fhirFetch: vi.fn(),
 }));
 
+vi.mock("@/lib/api", () => ({
+  fhirProxyUrl: vi.fn((url: string) => url),
+  fhirSend: vi.fn(),
+}));
+
+vi.mock("@/lib/logged-fetch", () => ({
+  loggedFetch: vi.fn(),
+}));
+
 const fhirFetchMock = vi.mocked(fhirFetch);
+const fhirSendMock = vi.mocked(fhirSend);
+const loggedFetchMock = vi.mocked(loggedFetch);
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -295,6 +310,115 @@ describe("usePas", () => {
     expect(result.current.error).toEqual(
       new Error("No practitioner available for PAS submission"),
     );
+  });
+
+  it("rewrites references and strips payer versioning when persisting a ClaimResponse", async () => {
+    fhirSendMock.mockResolvedValue({ ok: true } as Response);
+    const payerClaimResponse: ClaimResponse = {
+      ...buildClaimResponse("1836", "2026-07-14T22:12:33-04:00"),
+      meta: {
+        versionId: "1",
+        lastUpdated: "2026-07-14T22:12:33.777-04:00",
+        profile: [
+          "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-claimresponse",
+        ],
+      },
+      identifier: [
+        {
+          system: "http://example.org/PATIENT_EVENT_TRACE_NUMBER",
+          value: "trace-abc",
+        },
+      ],
+      patient: { reference: "Patient/payer-pat" },
+      insurer: { reference: "Organization/payer-org" },
+      requestor: { reference: "Organization/payer-requestor" },
+      request: { reference: "Claim/payer-claim" },
+      communicationRequest: [{ reference: "CommunicationRequest/payer-cr" }],
+    };
+    const claimIdentifier = {
+      system: "http://example.org/claims",
+      value: "claim-42",
+    };
+
+    await persistClaimResponseToProvider(
+      "http://provider.example/fhir",
+      payerClaimResponse,
+      "Patient/pat-1",
+      "Organization/org-local",
+      claimIdentifier,
+    );
+
+    expect(fhirSendMock).toHaveBeenCalledWith(
+      "http://provider.example/fhir/ClaimResponse?identifier=trace-abc",
+      expect.objectContaining({ method: "PUT" }),
+    );
+    const body = JSON.parse(fhirSendMock.mock.calls[0][1]?.body as string);
+    expect(body.id).toBeUndefined();
+    expect(body.meta).toEqual({
+      profile: [
+        "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-claimresponse",
+      ],
+    });
+    expect(body.patient).toEqual({ reference: "Patient/pat-1" });
+    expect(body.insurer).toEqual({ reference: "Organization/org-local" });
+    expect(body.request).toEqual({ identifier: claimIdentifier });
+    expect(body.requestor).toBeUndefined();
+    expect(body.communicationRequest).toBeUndefined();
+  });
+});
+
+describe("useEnsurePasSubscription", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("skips creation when a live subscription exists for the notification endpoint", async () => {
+    loggedFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        resourceType: "Bundle",
+        entry: [{ resource: { resourceType: "Subscription" } }],
+      }),
+    } as Response);
+
+    const { result } = renderHook(() => useEnsurePasSubscription(), {
+      wrapper: createWrapper(),
+    });
+    result.current.mutate("http://payer-found.example/fhir");
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(loggedFetchMock).toHaveBeenCalledTimes(1);
+    const [searchUrl] = loggedFetchMock.mock.calls[0];
+    expect(searchUrl).toMatch(/Subscription\?url=.+&status=requested,active$/);
+    expect(decodeURIComponent(String(searchUrl))).toContain(
+      "/api/pas/notification",
+    );
+  });
+
+  it("creates the subscription when the dedupe search finds none, then skips repeats in-session", async () => {
+    loggedFetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ resourceType: "Bundle" }),
+      } as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+
+    const { result } = renderHook(() => useEnsurePasSubscription(), {
+      wrapper: createWrapper(),
+    });
+    result.current.mutate("http://payer-empty.example/fhir");
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(loggedFetchMock).toHaveBeenCalledTimes(2);
+    const [, init] = loggedFetchMock.mock.calls[1];
+    expect(init?.method).toBe("POST");
+    expect(init?.headers).toEqual({ "Content-Type": "application/fhir+json" });
+    const body = JSON.parse(String(init?.body));
+    expect(body.resourceType).toBe("Subscription");
+
+    result.current.mutate("http://payer-empty.example/fhir");
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(loggedFetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

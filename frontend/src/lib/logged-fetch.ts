@@ -51,6 +51,14 @@ export async function loggedFetch(
     // bypass call to an open server (absolute URL) so it works with wildcard CORS.
     response = await fetch(input, {
       ...init,
+      ...(payer?.bypassPayorCheck
+        ? {
+            headers: {
+              ...(init?.headers as Record<string, string>),
+              "X-Bypass-Payor-Check": "true",
+            },
+          }
+        : {}),
       credentials: credentialsFor(url),
     });
   } catch (error) {

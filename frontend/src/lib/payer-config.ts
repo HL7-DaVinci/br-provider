@@ -5,6 +5,7 @@ const DEFAULT_PAYER_SERVERS: PayerServer[] = [
     name: "Local Payer Server",
     cdsUrl: "http://localhost:8081/cds-services",
     fhirUrl: "http://localhost:8081/fhir",
+    requiresAuth: false,
   },
 ];
 
@@ -55,11 +56,17 @@ export function getStoredPayerServer(): PayerServer {
 
 export function getPayerByUrl(url: string): PayerServer | undefined {
   const normalized = normalizeServerUrl(url);
-  return getPayerServers().find(
-    (s) =>
-      normalizeServerUrl(s.fhirUrl) === normalized ||
-      normalizeServerUrl(s.cdsUrl) === normalized,
-  );
+  const matches = (s: PayerServer) =>
+    normalizeServerUrl(s.fhirUrl) === normalized ||
+    normalizeServerUrl(s.cdsUrl) === normalized;
+
+  // The stored payer carries user-set flags (bypassPayorCheck) that the static
+  // preset list does not, so it wins when both match.
+  const stored = getStoredPayerServer();
+  if (matches(stored)) {
+    return stored;
+  }
+  return getPayerServers().find(matches);
 }
 
 export function setStoredPayerServer(server: PayerServer): void {
@@ -70,6 +77,10 @@ export function setStoredPayerServer(server: PayerServer): void {
         name: server.name,
         cdsUrl: normalizeServerUrl(server.cdsUrl),
         fhirUrl: normalizeServerUrl(server.fhirUrl),
+        ...(server.requiresAuth !== undefined
+          ? { requiresAuth: server.requiresAuth }
+          : {}),
+        ...(server.bypassPayorCheck ? { bypassPayorCheck: true } : {}),
       }),
     );
   }

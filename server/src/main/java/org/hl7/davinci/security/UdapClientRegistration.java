@@ -90,7 +90,7 @@ public class UdapClientRegistration {
 
     @EventListener(ApplicationReadyEvent.class)
     public void onStartup() {
-        if (!securityProperties.isEnableAuthentication() || !certificateHolder.isInitialized()) {
+        if (!securityProperties.isEnableAuthentication() || !certificateHolder.ensureInitialized()) {
             logger.info("UDAP client registration skipped (auth disabled or cert not initialized)");
             return;
         }

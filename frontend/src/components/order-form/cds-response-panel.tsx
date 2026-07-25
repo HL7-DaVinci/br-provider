@@ -33,6 +33,9 @@ export function CdsResponsePanel() {
   const { serverUrl } = useFhirServer();
   const openDtrTask = useDtrTaskSheet();
   const hasCards = cdsCards.length > 0;
+  // In an error state, show the error body (e.g. an OperationOutcome) rather
+  // than a stale successful response.
+  const rawResponse = hookError ? hookError.cause : lastRawResponse;
 
   const handleApplySuggestion = useCallback(
     (card: CdsCardType, suggestion: CdsSuggestion) => {
@@ -122,15 +125,17 @@ export function CdsResponsePanel() {
               </span>
             )}
           </CardTitle>
-          {lastRawResponse && (
+          {!!rawResponse && (
             <Button
               variant="ghost"
               size="sm"
               className="h-7 text-xs"
               onClick={() =>
                 openViewer(
-                  lastRawResponse,
-                  `CDS Response: ${lastHookName}`,
+                  rawResponse,
+                  lastHookName
+                    ? `CDS Response: ${lastHookName}`
+                    : "CDS Response",
                   "Raw JSON response from the CDS service",
                 )
               }
@@ -144,8 +149,8 @@ export function CdsResponsePanel() {
       <CardContent className="space-y-3">
         {hookError && (
           <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm dark:border-red-900 dark:bg-red-950/30">
-            <div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-              <AlertCircle className="h-4 w-4 shrink-0" />
+            <div className="flex items-start gap-2 text-red-700 dark:text-red-400">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
               <p>{hookError.message}</p>
             </div>
           </div>
@@ -166,13 +171,15 @@ export function CdsResponsePanel() {
             ))}
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">
-            {isHookLoading
-              ? "Checking..."
-              : lastHookName
-                ? "No cards returned"
-                : "No CDS hooks fired"}
-          </p>
+          !hookError && (
+            <p className="text-sm text-muted-foreground">
+              {isHookLoading
+                ? "Checking..."
+                : lastHookName
+                  ? "No cards returned"
+                  : "No CDS hooks fired"}
+            </p>
+          )
         )}
       </CardContent>
 

@@ -4,83 +4,79 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import org.hl7.fhir.r4.model.ClaimResponse;
 import org.hl7.fhir.r4.model.CodeableConcept;
 import org.hl7.fhir.r4.model.Coding;
 import org.hl7.fhir.r4.model.Extension;
-import org.hl7.fhir.r4.model.IdType;
 import org.hl7.fhir.r4.model.Reference;
 import org.hl7.fhir.r4.model.Task;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
-
-import ca.uhn.fhir.jpa.api.dao.DaoRegistry;
-import ca.uhn.fhir.jpa.api.dao.IFhirResourceDao;
-import ca.uhn.fhir.rest.api.server.RequestDetails;
-import ca.uhn.fhir.rest.api.server.SystemRequestDetails;
-import ca.uhn.fhir.jpa.api.model.DaoMethodOutcome;
-import ca.uhn.fhir.rest.server.SimpleBundleProvider;
 
 class PasResolutionServiceTest {
 
+  static class FakeStore implements PasResolutionStore {
+    List<Task> tasks = new ArrayList<>();
+    ClaimResponse existing;
+    ClaimResponse upserted;
+    String upsertedTrackingId;
+    List<Task> updatedTasks = new ArrayList<>();
+
+    @Override
+    public List<Task> findTasksByIdentifier(String trackingId) {
+      return tasks;
+    }
+
+    @Override
+    public ClaimResponse findClaimResponseByIdentifier(String trackingId) {
+      return existing;
+    }
+
+    @Override
+    public String upsertClaimResponse(ClaimResponse cr, String trackingId) {
+      this.upserted = cr;
+      this.upsertedTrackingId = trackingId;
+      return "cr-1";
+    }
+
+    @Override
+    public void updateTask(Task task) {
+      updatedTasks.add(task);
+    }
+  }
+
   @Test
-  @SuppressWarnings({"rawtypes", "unchecked"})
   void applyResolution_upsertsClaimResponseAndUpdatesTaskStatusAndOutput() {
-    DaoRegistry daoRegistry = mock(DaoRegistry.class);
-    IFhirResourceDao crDao = mock(IFhirResourceDao.class);
-    IFhirResourceDao taskDao = mock(IFhirResourceDao.class);
-    when(daoRegistry.getResourceDao("ClaimResponse")).thenReturn(crDao);
-    when(daoRegistry.getResourceDao("Task")).thenReturn(taskDao);
-
-    DaoMethodOutcome crOutcome = new DaoMethodOutcome();
-    crOutcome.setId(new IdType("ClaimResponse", "cr-123"));
-    when(crDao.update(any(), anyString(), any(RequestDetails.class))).thenReturn(crOutcome);
-
+    FakeStore store = new FakeStore();
     Task task = new Task();
     task.addIdentifier().setValue("trk-1");
-    when(taskDao.search(any(), any())).thenReturn(new SimpleBundleProvider(task));
+    store.tasks.add(task);
 
     ClaimResponse cr = new ClaimResponse();
     cr.addIdentifier().setValue("trk-1");
     cr.setOutcome(ClaimResponse.RemittanceOutcome.COMPLETE);
     cr.setPreAuthRef("AUTH-1");
 
-    new PasResolutionService(daoRegistry).applyResolution(cr);
+    new PasResolutionService().applyResolution(cr, store);
 
-    verify(crDao).update(eq(cr), contains("identifier=trk-1"), any(RequestDetails.class));
-    ArgumentCaptor<Task> taskCaptor = ArgumentCaptor.forClass(Task.class);
-    verify(taskDao).update(taskCaptor.capture(), any(SystemRequestDetails.class));
-    Task updated = taskCaptor.getValue();
+    assertEquals(cr, store.upserted);
+    assertEquals("trk-1", store.upsertedTrackingId);
+    Task updated = store.updatedTasks.get(0);
     assertEquals("completed", updated.getStatus().toCode());
     assertTrue(updated.getOutput().stream().anyMatch(out ->
-        out.getValue() instanceof Reference ref && "ClaimResponse/cr-123".equals(ref.getReference())));
+        out.getValue() instanceof Reference ref && "ClaimResponse/cr-1".equals(ref.getReference())));
   }
 
   @Test
-  @SuppressWarnings({"rawtypes", "unchecked"})
   void applyResolution_blanksPayerReferencesAndAdoptsPatientFromTask() {
-    DaoRegistry daoRegistry = mock(DaoRegistry.class);
-    IFhirResourceDao crDao = mock(IFhirResourceDao.class);
-    IFhirResourceDao taskDao = mock(IFhirResourceDao.class);
-    when(daoRegistry.getResourceDao("ClaimResponse")).thenReturn(crDao);
-    when(daoRegistry.getResourceDao("Task")).thenReturn(taskDao);
-    DaoMethodOutcome crOutcome = new DaoMethodOutcome();
-    crOutcome.setId(new IdType("ClaimResponse", "cr-1"));
-    when(crDao.update(any(), anyString(), any(RequestDetails.class))).thenReturn(crOutcome);
-
+    FakeStore store = new FakeStore();
     Task task = new Task();
     task.addIdentifier().setValue("trk-1");
     task.setFor(new Reference("Patient/pat014"));
-    when(taskDao.search(any(), any())).thenReturn(new SimpleBundleProvider(task));
-    when(taskDao.update(any(), any(SystemRequestDetails.class))).thenReturn(new DaoMethodOutcome());
+    store.tasks.add(task);
 
     ClaimResponse cr = new ClaimResponse();
     cr.addIdentifier().setValue("trk-1");
@@ -91,11 +87,9 @@ class PasResolutionServiceTest {
     cr.setInsurer(new Reference("Organization/1824"));
     cr.addCommunicationRequest(new Reference("CommunicationRequest/1825"));
 
-    new PasResolutionService(daoRegistry).applyResolution(cr);
+    new PasResolutionService().applyResolution(cr, store);
 
-    ArgumentCaptor<ClaimResponse> captor = ArgumentCaptor.forClass(ClaimResponse.class);
-    verify(crDao).update(captor.capture(), anyString(), any(RequestDetails.class));
-    ClaimResponse stored = captor.getValue();
+    ClaimResponse stored = store.upserted;
     assertNull(stored.getRequest().getReference());
     assertNull(stored.getRequestor().getReference());
     assertNull(stored.getInsurer().getReference());
@@ -105,28 +99,56 @@ class PasResolutionServiceTest {
   }
 
   @Test
-  @SuppressWarnings({"rawtypes", "unchecked"})
-  void applyResolution_blanksPatientWhenNoTaskCorrelates() {
-    DaoRegistry daoRegistry = mock(DaoRegistry.class);
-    IFhirResourceDao crDao = mock(IFhirResourceDao.class);
-    IFhirResourceDao taskDao = mock(IFhirResourceDao.class);
-    when(daoRegistry.getResourceDao("ClaimResponse")).thenReturn(crDao);
-    when(daoRegistry.getResourceDao("Task")).thenReturn(taskDao);
-    DaoMethodOutcome crOutcome = new DaoMethodOutcome();
-    crOutcome.setId(new IdType("ClaimResponse", "cr-2"));
-    when(crDao.update(any(), anyString(), any(RequestDetails.class))).thenReturn(crOutcome);
-    when(taskDao.search(any(), any())).thenReturn(new SimpleBundleProvider());
+  void applyResolution_adoptsRequiredReferencesFromStoredClaimResponse() {
+    FakeStore store = new FakeStore();
+    Task task = new Task();
+    task.addIdentifier().setValue("trk-1");
+    store.tasks.add(task);
+    ClaimResponse existing = new ClaimResponse();
+    existing.setPatient(new Reference("Patient/pat014"));
+    existing.setInsurer(new Reference("Organization/local-payer"));
+    store.existing = existing;
+
+    ClaimResponse cr = new ClaimResponse();
+    cr.addIdentifier().setValue("trk-1");
+    cr.setOutcome(ClaimResponse.RemittanceOutcome.COMPLETE);
+    cr.setPatient(new Reference("Patient/1822"));
+    cr.setInsurer(new Reference("Organization/1824"));
+
+    new PasResolutionService().applyResolution(cr, store);
+
+    assertEquals("Patient/pat014", store.upserted.getPatient().getReference(),
+        "Patient must come from the stored ClaimResponse when the Task has no Task.for");
+    assertEquals("Organization/local-payer", store.upserted.getInsurer().getReference(),
+        "Insurer must come from the stored ClaimResponse, not the payer reference");
+  }
+
+  @Test
+  void applyResolution_skipsStoreWhenNothingCorrelatesTrackingId() {
+    FakeStore store = new FakeStore();
 
     ClaimResponse cr = new ClaimResponse();
     cr.addIdentifier().setValue("trk-9");
     cr.setOutcome(ClaimResponse.RemittanceOutcome.COMPLETE);
     cr.setPatient(new Reference("Patient/1822"));
 
-    new PasResolutionService(daoRegistry).applyResolution(cr);
+    new PasResolutionService().applyResolution(cr, store);
 
-    ArgumentCaptor<ClaimResponse> captor = ArgumentCaptor.forClass(ClaimResponse.class);
-    verify(crDao).update(captor.capture(), anyString(), any(RequestDetails.class));
-    assertNull(captor.getValue().getPatient().getReference());
+    assertNull(store.upserted, "A decision no local Task or ClaimResponse correlates must not be stored");
+    assertTrue(store.updatedTasks.isEmpty());
+  }
+
+  @Test
+  void applyResolution_ignoresClaimResponseWithoutTrackingIdentifier() {
+    FakeStore store = new FakeStore();
+
+    ClaimResponse cr = new ClaimResponse();
+    cr.setOutcome(ClaimResponse.RemittanceOutcome.COMPLETE);
+
+    new PasResolutionService().applyResolution(cr, store);
+
+    assertNull(store.upserted);
+    assertTrue(store.updatedTasks.isEmpty());
   }
 
   @Test
@@ -142,31 +164,19 @@ class PasResolutionServiceTest {
   }
 
   @Test
-  @SuppressWarnings({"rawtypes", "unchecked"})
   void applyResolution_keepsPendedCompleteResponseInProgress() {
-    DaoRegistry daoRegistry = mock(DaoRegistry.class);
-    IFhirResourceDao crDao = mock(IFhirResourceDao.class);
-    IFhirResourceDao taskDao = mock(IFhirResourceDao.class);
-    when(daoRegistry.getResourceDao("ClaimResponse")).thenReturn(crDao);
-    when(daoRegistry.getResourceDao("Task")).thenReturn(taskDao);
-
-    DaoMethodOutcome crOutcome = new DaoMethodOutcome();
-    crOutcome.setId(new IdType("ClaimResponse", "cr-124"));
-    when(crDao.update(any(), anyString(), any(RequestDetails.class))).thenReturn(crOutcome);
-
+    FakeStore store = new FakeStore();
     Task task = new Task();
     task.addIdentifier().setValue("trk-2");
-    when(taskDao.search(any(), any())).thenReturn(new SimpleBundleProvider(task));
+    store.tasks.add(task);
 
     ClaimResponse cr = claimResponseWithReviewAction("A4");
     cr.getIdentifier().clear();
     cr.addIdentifier().setValue("trk-2");
 
-    new PasResolutionService(daoRegistry).applyResolution(cr);
+    new PasResolutionService().applyResolution(cr, store);
 
-    ArgumentCaptor<Task> taskCaptor = ArgumentCaptor.forClass(Task.class);
-    verify(taskDao).update(taskCaptor.capture(), any(SystemRequestDetails.class));
-    assertEquals("in-progress", taskCaptor.getValue().getStatus().toCode());
+    assertEquals("in-progress", store.updatedTasks.get(0).getStatus().toCode());
   }
 
   @Test

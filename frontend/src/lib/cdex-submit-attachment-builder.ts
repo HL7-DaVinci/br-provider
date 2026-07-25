@@ -8,8 +8,8 @@ import type {
   Task,
 } from "fhir/r4";
 import {
-  PROVIDER_ORG_IDENTIFIER,
   PROVIDER_ORG_IDENTIFIER_SYSTEM,
+  providerOrgIdentifier,
 } from "./pas-bundle-builder";
 import { SERVICE_LINE_NUMBER_EXT } from "./pas-task-builder";
 
@@ -160,7 +160,7 @@ export function providerIdentifier(npi?: string): Identifier | undefined {
 export function organizationIdentifier(): Identifier {
   return {
     system: PROVIDER_ORG_IDENTIFIER_SYSTEM,
-    value: PROVIDER_ORG_IDENTIFIER,
+    value: providerOrgIdentifier(),
   };
 }
 

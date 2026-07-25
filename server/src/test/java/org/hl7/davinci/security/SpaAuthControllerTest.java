@@ -117,6 +117,32 @@ class SpaAuthControllerTest {
     }
 
     @Test
+    void token_uninitializedCertificate_returns503() throws Exception {
+        SecurityProperties uninitializedProps = new SecurityProperties();
+        uninitializedProps.setServerBaseUrl("http://localhost:8080");
+        uninitializedProps.setEnableAuthentication(true);
+        uninitializedProps.setFetchCert(false);
+        uninitializedProps.setCertFile(null);
+        CertificateHolder uninitializedCertHolder = new CertificateHolder(uninitializedProps);
+        assertFalse(uninitializedCertHolder.isInitialized());
+
+        SpaAuthController uninitializedController = new SpaAuthController(
+            udapClient, uninitializedCertHolder, securityProperties, serverProperties,
+            new StubUserDetailsService(), new OutboundTargetValidator(securityProperties));
+
+        var request = new MockHttpServletRequest();
+        String state = "pending-state";
+        uninitializedController.getPendingFlows().put(state,
+            new SpaAuthController.PendingFlow("verifier", "http://localhost:3000/callback", Instant.now()));
+        Map<String, String> body = Map.of("code", "some-code", "state", state);
+
+        ResponseEntity<Map<String, Object>> response = uninitializedController.exchangeToken(body, request);
+
+        assertEquals(503, response.getStatusCode().value());
+        assertEquals("certificate_unavailable", response.getBody().get("error"));
+    }
+
+    @Test
     void login_storesUniqueStatePerCall() throws Exception {
         controller.login(null, null);
         controller.login(null, null);

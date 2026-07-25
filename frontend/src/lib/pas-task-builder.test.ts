@@ -195,7 +195,7 @@ describe("buildPasTasks", () => {
     }
   });
 
-  it("falls back to the organization NPI owner without a practitioner fhirUser", () => {
+  it("falls back to the organization identifier owner without a practitioner fhirUser", () => {
     const task = buildPasTasks(
       pendedBundle(QUESTIONNAIRE_PAYLOAD),
       PAYER,
@@ -204,7 +204,7 @@ describe("buildPasTasks", () => {
     )[0];
     expect(task.owner?.reference).toBeUndefined();
     expect(task.owner?.identifier?.system).toBe(
-      "http://hl7.org/fhir/sid/us-npi",
+      "http://example.org/fhir/org-identifier",
     );
     expect(task.owner?.identifier?.value).toBeTruthy();
   });

@@ -27,16 +27,27 @@ public class ConfigController {
   @GetMapping(value = "/config.js", produces = "application/javascript")
   public String getConfig() {
     String providerServersJson = serializeProviderServers();
-    String providerBaseUrl = serverProperties.getLocalServerAddress()
+    String apiBaseUrl = serverProperties.getLocalServerAddress()
         .replaceAll("/fhir/?$", "");
 
     return "window.APP_CONFIG = { "
         + "fhirServers: " + providerServersJson + ", "
-        + "providerServers: " + providerServersJson + ", "
         + "payerServers: " + serializePayerServers() + ", "
-        + "providerServerUrl: \"" + providerBaseUrl + "\", "
+        + "apiBaseUrl: \"" + apiBaseUrl + "\", "
+        + providerOrgIdentifierFragment()
+        + "providerOrgIdentifierSystem: \"" + serverProperties.getProviderOrgIdentifierSystem() + "\", "
+        + "payerOrgIdentifier: \"" + serverProperties.getPayerOrgIdentifier() + "\", "
         + "authEnabled: " + securityProperties.isEnableAuthentication()
         + " };";
+  }
+
+  /** Emitted only when configured; absent, the frontend derives a per-EHR identifier. */
+  private String providerOrgIdentifierFragment() {
+    String identifier = serverProperties.getProviderOrgIdentifier();
+    if (identifier == null || identifier.isBlank()) {
+      return "";
+    }
+    return "providerOrgIdentifier: \"" + identifier + "\", ";
   }
 
   private String serializeProviderServers() {

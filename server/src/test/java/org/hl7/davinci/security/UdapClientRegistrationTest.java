@@ -154,6 +154,10 @@ class UdapClientRegistrationTest {
             SecurityProperties props = new SecurityProperties();
             props.setEnableAuthentication(false);
             props.setCertFile(null);
+            // ensureInitialized() now retries on demand; disable fetch so a retry
+            // attempt (e.g. from onStartup's guard) fails fast instead of hitting
+            // the network on the default issuer.
+            props.setFetchCert(false);
             return props;
         }
     }

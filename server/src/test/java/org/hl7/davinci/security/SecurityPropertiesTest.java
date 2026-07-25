@@ -63,4 +63,12 @@ class SecurityPropertiesTest {
         props.deriveServerBaseUrl("http://localhost:8080/");
         assertEquals("http://localhost:8080", props.getServerBaseUrl());
     }
+
+    @Test
+    void b2bExtensionDefaults() {
+        SecurityProperties props = new SecurityProperties();
+        assertEquals("urn:oid:provider-org", props.getB2bOrganizationId());
+        assertEquals("Provider Organization", props.getB2bOrganizationName());
+        assertEquals("urn:oid:2.16.840.1.113883.5.8#TREAT", props.getB2bPurposeOfUse());
+    }
 }
