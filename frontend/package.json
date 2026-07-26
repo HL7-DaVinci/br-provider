@@ -7,10 +7,12 @@
     "build": "vite build && tsc -p tsconfig.build.json",
     "preview": "vite preview",
     "test": "vitest run",
+    "e2e": "playwright test",
+    "e2e:stack": "node e2e/run-stack.mjs",
     "format": "biome format",
     "lint": "biome lint",
     "check": "biome check",
-    "postinstall": "rimraf public/lforms && cpy 'node_modules/lforms/dist/lforms/webcomponent/styles.css' 'node_modules/lforms/dist/lforms/webcomponent/runtime.js' 'node_modules/lforms/dist/lforms/webcomponent/polyfills.js' 'node_modules/lforms/dist/lforms/webcomponent/main.js' 'node_modules/lforms/dist/lforms/webcomponent/assets/lib/zone.min.js' 'node_modules/lforms/dist/lforms/webcomponent/down_arrow_gray_10_10.png' 'node_modules/lforms/dist/lforms/webcomponent/magnifying_glass.png' 'node_modules/lforms/dist/lforms/fhir/R4/lformsFHIR.min.js' public/lforms --flat && bun scripts/scope-lforms-css.mjs"
+    "postinstall": "rimraf public/lforms && cpy node_modules/lforms/dist/lforms/webcomponent/styles.css node_modules/lforms/dist/lforms/webcomponent/runtime.js node_modules/lforms/dist/lforms/webcomponent/polyfills.js node_modules/lforms/dist/lforms/webcomponent/main.js node_modules/lforms/dist/lforms/webcomponent/assets/lib/zone.min.js node_modules/lforms/dist/lforms/webcomponent/down_arrow_gray_10_10.png node_modules/lforms/dist/lforms/webcomponent/magnifying_glass.png node_modules/lforms/dist/lforms/fhir/R4/lformsFHIR.min.js public/lforms --flat && node scripts/scope-lforms-css.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -38,6 +40,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.5",
+    "@playwright/test": "^1.61.1",
     "@tanstack/devtools-vite": "^0.5.3",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
@@ -47,12 +50,12 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
+    "cpy-cli": "^6.0.0",
     "jsdom": "^28.1.0",
+    "rimraf": "^6.0.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
     "vite-tsconfig-paths": "^6.1.1",
-    "vitest": "^4.0.18",
-    "cpy-cli": "^6.0.0",
-    "rimraf": "^6.0.0"
+    "vitest": "^4.0.18"
   }
 }

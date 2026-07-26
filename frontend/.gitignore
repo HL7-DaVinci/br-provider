@@ -7,3 +7,5 @@ public/lforms
 !.env.example
 *.log
 .tanstack
+test-results
+playwright-report

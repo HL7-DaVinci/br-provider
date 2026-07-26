@@ -1,6 +1,6 @@
 # Da Vinci Burden Reduction Local Dev Stack
 #
-# All three services share a common network to be able to work using localhost
+# All services share a common network namespace to be able to work using localhost
 # This allows the default localhost URLs in application.yaml to work as-is.
 # If configuring for a different environment, you can override URLs using environment variables as needed.
 #
@@ -8,6 +8,16 @@
 #   Provider:      http://localhost:8080        (frontend + FHIR at /fhir)
 #   Payer:         http://localhost:8081/fhir
 #   FAST Security: https://localhost:5001
+#   fhir-candle:   http://localhost:5826/fhir/r4 (E2E only, `e2e` profile)
+#
+# A plain `docker compose up` starts the three Burden Reduction services. The
+# fhir-candle external EHR is only for E2E tests and needs `--profile e2e`.
+# Pass that profile to `down` as well, because a plain `down` leaves a
+# profiled container running.
+#
+# The E2E suite boots this stack via `bun e2e:stack` (see frontend/e2e/run-stack.mjs).
+# br-payer is pulled from Docker Hub. To test local payer changes, build it first:
+#   docker build -t hlseven/davinci-br-payer:latest ../br-payer
 
 services:
   fast-security:
@@ -18,16 +28,23 @@ services:
       - "5001:5001" # security https
       - "8080:8080" # provider
       - "8081:8081" # payer
+      - "5826:5826" # fhir-candle
     environment:
       ASPNETCORE_URLS: "https://+:5001;http://+:5000"
       ASPNETCORE_ENVIRONMENT: Development
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "-O", "/dev/null", "https://localhost:5001/.well-known/udap"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
 
   br-payer:
     image: hlseven/davinci-br-payer:latest
     container_name: br-payer
     network_mode: "service:fast-security"
     depends_on:
-      - fast-security
+      fast-security:
+        condition: service_healthy
 
   br-provider:
     # image: hlseven/davinci-br-provider:latest
@@ -40,5 +57,22 @@ services:
       JAVA_TOOL_OPTIONS: "-Djdk.internal.httpclient.disableHostnameVerification"
       SECURITY_EXTERNAL_BASE_URL: "http://localhost:8080"
     depends_on:
-      - fast-security
-      - br-payer
+      fast-security:
+        condition: service_healthy
+      br-payer:
+        condition: service_started
+
+  # Not part of the Burden Reduction implementation. This is a stand-in external
+  # EHR used by the E2E suite. The profile keeps it out of a plain
+  # `docker compose up`. Start it with `docker compose --profile e2e up`.
+  fhir-candle:
+    profiles: ["e2e"]
+    image: ghcr.io/fhir/fhir-candle:latest
+    container_name: fhir-candle
+    network_mode: "service:fast-security"
+    command: ["--headless", "--port", "5826", "--r4", "r4", "-p", "hl7.fhir.us.carin-bb#2.1.0", "--load-examples", "--fhir-source", "/seed"]
+    volumes:
+      - ./frontend/e2e/fixtures/seed:/seed:ro
+    depends_on:
+      fast-security:
+        condition: service_started
