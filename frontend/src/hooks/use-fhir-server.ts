@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { applyCustomHeaders } from "@/lib/api";
 import {
+  type CustomHeader,
   FHIR_SERVERS,
   type FhirServer,
   getServerByUrl,
@@ -193,13 +195,17 @@ interface ServerDiscoveryResult {
  * Probes a custom server for UDAP support.
  * Only runs when the selected server is not in the configured server list.
  */
-export function useServerDiscovery(serverUrl: string, isCustomServer: boolean) {
+export function useServerDiscovery(
+  serverUrl: string,
+  isCustomServer: boolean,
+  headers: CustomHeader[] = [],
+) {
   return useQuery({
-    queryKey: ["server-discovery", serverUrl],
+    queryKey: ["server-discovery", serverUrl, headers],
     queryFn: async (): Promise<ServerDiscoveryResult> => {
       const response = await fetch(
         `/api/servers/discover?${new URLSearchParams({ url: serverUrl })}`,
-        { credentials: "include" },
+        applyCustomHeaders({ credentials: "include" }, headers, true),
       );
       if (!response.ok) return { udapEnabled: false };
       return response.json();

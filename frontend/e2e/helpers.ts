@@ -81,9 +81,12 @@ export async function loginNoAuth(page: Page, accountMatch: string) {
   await page.waitForURL("**/practitioner", { timeout: 15_000 });
 }
 
-async function openSettings(page: Page) {
+export async function openSettings(page: Page, tab?: "Provider/EHR" | "Payer") {
   await page.getByRole("button", { name: "Open settings" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
+  if (tab) {
+    await page.getByRole("tab", { name: tab }).click();
+  }
 }
 
 async function closeSettingsViaCancel(page: Page) {
@@ -94,7 +97,7 @@ async function closeSettingsViaCancel(page: Page) {
 /** Switches the active FHIR provider server to a custom URL and waits for the sign-out redirect. */
 export async function setCustomFhirServer(page: Page, url: string) {
   await page.goto("/");
-  await openSettings(page);
+  await openSettings(page, "Provider/EHR");
   await page.getByLabel("FHIR Server").click();
   await page.getByRole("option", { name: "Custom URL..." }).click();
   await page.getByLabel("Custom Server URL").fill(url);
@@ -119,7 +122,7 @@ export async function setCustomFhirServer(page: Page, url: string) {
  * when nothing changed.
  */
 export async function setBypassPayorCheck(page: Page, desired: boolean) {
-  await openSettings(page);
+  await openSettings(page, "Payer");
   const checkbox = page.getByRole("checkbox", {
     name: "Bypass payor-handled check",
   });

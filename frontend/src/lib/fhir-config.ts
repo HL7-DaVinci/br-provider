@@ -1,3 +1,76 @@
+export interface CustomHeader {
+  name: string;
+  value: string;
+}
+
+export type PayerAuthMode = "auto" | "open" | "udap-b2b";
+
+const PAYER_AUTH_MODES: readonly PayerAuthMode[] = ["auto", "open", "udap-b2b"];
+
+export const DISALLOWED_HEADER_NAMES = new Set([
+  "host",
+  "connection",
+  "content-length",
+  "transfer-encoding",
+  "keep-alive",
+  "upgrade",
+  "te",
+  "trailer",
+  "expect",
+  "proxy-authorization",
+  "proxy-authenticate",
+]);
+
+/** RFC 7230 token rule: the character set `Headers.set()` accepts for a header name. */
+const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/;
+
+export function isValidHeaderName(name: string): boolean {
+  return HEADER_NAME_PATTERN.test(name);
+}
+
+/** `Headers.set()` rejects CR, LF, and NUL in a header value. */
+export function hasInvalidHeaderValueChars(value: string): boolean {
+  return /[\r\n\0]/.test(value);
+}
+
+export function sanitizeCustomHeaders(
+  value: unknown,
+): CustomHeader[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const headers: CustomHeader[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const name = (entry as CustomHeader).name;
+    const headerValue = (entry as CustomHeader).value;
+    if (typeof name !== "string" || typeof headerValue !== "string") continue;
+    const trimmed = name.trim();
+    const lower = trimmed.toLowerCase();
+    if (!lower || DISALLOWED_HEADER_NAMES.has(lower) || seen.has(lower)) {
+      continue;
+    }
+    if (
+      !isValidHeaderName(trimmed) ||
+      hasInvalidHeaderValueChars(headerValue)
+    ) {
+      continue;
+    }
+    seen.add(lower);
+    headers.push({ name: trimmed, value: headerValue });
+  }
+  return headers.length > 0 ? headers : undefined;
+}
+
+export function sanitizePayerAuthMode(
+  value: unknown,
+): PayerAuthMode | undefined {
+  return PAYER_AUTH_MODES.includes(value as PayerAuthMode)
+    ? (value as PayerAuthMode)
+    : undefined;
+}
+
 export interface FhirServer {
   name: string;
   url: string;
@@ -7,6 +80,8 @@ export interface FhirServer {
    * requests are sent directly, bypassing the proxy.
    */
   requiresAuth?: boolean;
+  /** Custom headers forwarded to this server on every request. */
+  headers?: CustomHeader[];
 }
 
 export interface CdsServer {
@@ -17,6 +92,7 @@ export interface CdsServer {
 export interface CustomAuthTarget {
   serverUrl: string;
   idp?: string;
+  headers?: CustomHeader[];
 }
 
 export interface PayerServer {
@@ -36,6 +112,27 @@ export interface PayerServer {
    * payers ignore or reject the header.
    */
   bypassPayorCheck?: boolean;
+  /**
+   * How outbound requests to this payer authenticate. "auto" tries tokenless
+   * and falls back to B2B. "open" sends direct unauthenticated requests.
+   * "udap-b2b" always injects a B2B token. Wins over requiresAuth.
+   * Extensible for future mechanisms such as SMART.
+   */
+  authMode?: PayerAuthMode;
+  headers?: CustomHeader[];
+}
+
+export function resolvePayerAuthMode(server: PayerServer): PayerAuthMode {
+  if (server.authMode) {
+    return server.authMode;
+  }
+  if (server.requiresAuth === false) {
+    return "open";
+  }
+  if (server.requiresAuth === true) {
+    return "udap-b2b";
+  }
+  return "auto";
 }
 
 interface AppConfig {
@@ -172,10 +269,12 @@ export function getStoredCustomAuthTarget(): CustomAuthTarget | null {
       typeof parsed.idp === "string" && parsed.idp.length > 0
         ? normalizeServerUrl(parsed.idp)
         : undefined;
+    const headers = sanitizeCustomHeaders(parsed.headers);
 
     return {
       serverUrl,
       ...(idp ? { idp } : {}),
+      ...(headers ? { headers } : {}),
     };
   } catch {
     return null;
@@ -185,6 +284,7 @@ export function getStoredCustomAuthTarget(): CustomAuthTarget | null {
 export function setStoredCustomAuthTarget(
   serverUrl: string,
   idp?: string,
+  headers?: CustomHeader[],
 ): void {
   if (typeof window === "undefined") {
     return;
@@ -196,6 +296,7 @@ export function setStoredCustomAuthTarget(
     JSON.stringify({
       serverUrl: normalizeServerUrl(serverUrl),
       ...(normalizedIdp ? { idp: normalizedIdp } : {}),
+      ...(headers?.length ? { headers } : {}),
     }),
   );
 }
@@ -206,14 +307,20 @@ export function clearStoredCustomAuthTarget(): void {
   }
 }
 
-export function setStoredCustomOpenServer(url: string): void {
+export function setStoredCustomOpenServer(
+  url: string,
+  headers?: CustomHeader[],
+): void {
   if (typeof window === "undefined") {
     return;
   }
 
   localStorage.setItem(
     CUSTOM_OPEN_SERVER_STORAGE_KEY,
-    JSON.stringify({ url: normalizeServerUrl(url) }),
+    JSON.stringify({
+      url: normalizeServerUrl(url),
+      ...(headers?.length ? { headers } : {}),
+    }),
   );
 }
 
@@ -223,16 +330,17 @@ export function clearStoredCustomOpenServer(): void {
   }
 }
 
-export function isStoredCustomOpenServer(url: string): boolean {
+export function getStoredCustomOpenServer(): {
+  url: string;
+  headers?: CustomHeader[];
+} | null {
   if (typeof window === "undefined") {
-    return false;
+    return null;
   }
-
   const stored = localStorage.getItem(CUSTOM_OPEN_SERVER_STORAGE_KEY);
   if (!stored) {
-    return false;
+    return null;
   }
-
   try {
     const parsed = JSON.parse(stored);
     if (
@@ -241,13 +349,65 @@ export function isStoredCustomOpenServer(url: string): boolean {
       typeof parsed.url !== "string" ||
       parsed.url.length === 0
     ) {
-      return false;
+      return null;
     }
-
-    return normalizeServerUrl(parsed.url) === normalizeServerUrl(url);
+    const headers = sanitizeCustomHeaders(parsed.headers);
+    return {
+      url: normalizeServerUrl(parsed.url),
+      ...(headers ? { headers } : {}),
+    };
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function isStoredCustomOpenServer(url: string): boolean {
+  return getStoredCustomOpenServer()?.url === normalizeServerUrl(url);
+}
+
+const SERVER_HEADERS_STORAGE_KEY = "fhir-server-headers";
+
+function readStoredServerHeadersRecord(): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(SERVER_HEADERS_STORAGE_KEY) ?? "{}",
+    );
+    if (typeof parsed === "object" && parsed !== null) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Corrupt blob reads as empty
+  }
+  return {};
+}
+
+/**
+ * Custom headers keyed by server base URL. Applies to preset and custom
+ * provider servers alike, so every configuration can carry headers.
+ */
+export function getStoredServerHeaders(url: string): CustomHeader[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  const record = readStoredServerHeadersRecord();
+  return sanitizeCustomHeaders(record[normalizeServerUrl(url)]) ?? [];
+}
+
+export function setStoredServerHeaders(
+  url: string,
+  headers?: CustomHeader[],
+): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const record = readStoredServerHeadersRecord();
+  const key = normalizeServerUrl(url);
+  if (headers?.length) {
+    record[key] = headers;
+  } else {
+    delete record[key];
+  }
+  localStorage.setItem(SERVER_HEADERS_STORAGE_KEY, JSON.stringify(record));
 }
 
 export function getServerByUrl(url: string): FhirServer | undefined {
@@ -272,13 +432,21 @@ export function getServerByRequestUrl(
     return undefined;
   }
 
+  const authTarget = getStoredCustomAuthTarget();
+  const openServer = getStoredCustomOpenServer();
+  const headers =
+    authTarget?.serverUrl === currentServerUrl
+      ? authTarget.headers
+      : openServer?.url === currentServerUrl
+        ? openServer.headers
+        : undefined;
+
   return (
     getServerByUrl(currentServerUrl) ?? {
       name: CUSTOM_SERVER_NAME,
       url: currentServerUrl,
-      ...(isStoredCustomOpenServer(currentServerUrl)
-        ? { requiresAuth: false }
-        : {}),
+      ...(openServer?.url === currentServerUrl ? { requiresAuth: false } : {}),
+      ...(headers ? { headers } : {}),
     }
   );
 }

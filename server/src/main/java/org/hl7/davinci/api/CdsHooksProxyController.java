@@ -15,6 +15,7 @@ import org.hl7.davinci.security.OutboundTargetValidator;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SecurityUtil;
 import org.hl7.davinci.security.SpaAuthController;
+import org.hl7.davinci.util.ForwardedHeaderUtil;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,9 +41,6 @@ import org.springframework.web.bind.annotation.RestController;
 public class CdsHooksProxyController {
 
     private static final Logger logger = LoggerFactory.getLogger(CdsHooksProxyController.class);
-
-    /** Payer test header that bypasses the payer's payor-handled check. */
-    private static final String BYPASS_PAYOR_CHECK_HEADER = "X-Bypass-Payor-Check";
 
     private final CdsClientJwtService cdsClientJwtService;
     private final SecurityProperties securityProperties;
@@ -71,6 +69,7 @@ public class CdsHooksProxyController {
     public ResponseEntity<?> discoverServices(@RequestParam("server") String server,
             HttpServletRequest request) {
         try {
+            var forwarded = ForwardedHeaderUtil.extract(request);
             String discoveryUrl = UrlMatchUtil.normalizeUrl(server);
             outboundTargetValidator.validate(discoveryUrl);
 
@@ -78,13 +77,18 @@ public class CdsHooksProxyController {
 
             HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(discoveryUrl))
-                .header("Accept", "application/json")
                 .timeout(Duration.ofSeconds(15))
                 .GET();
 
-            if (clientJwt != null) {
+            if (!forwarded.contains("Accept")) {
+                reqBuilder.header("Accept", "application/json");
+            }
+
+            if (clientJwt != null && !forwarded.hasAuthorization()) {
                 reqBuilder.header("Authorization", "Bearer " + clientJwt);
             }
+
+            forwarded.headers().forEach(reqBuilder::header);
 
             HttpClient client = SecurityUtil.getHttpClient(securityProperties);
             HttpResponse<String> upstream = client.send(
@@ -123,6 +127,7 @@ public class CdsHooksProxyController {
             @RequestBody Map<String, Object> hookRequest,
             HttpServletRequest request) {
         try {
+            var forwarded = ForwardedHeaderUtil.extract(request);
             String serviceUrl = UrlMatchUtil.normalizeUrl(server) + "/" + serviceId;
             outboundTargetValidator.validate(UrlMatchUtil.normalizeUrl(server));
 
@@ -151,19 +156,21 @@ public class CdsHooksProxyController {
 
             HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(serviceUrl))
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
                 .timeout(Duration.ofSeconds(30))
                 .POST(HttpRequest.BodyPublishers.ofString(body));
 
-            if (clientJwt != null) {
+            if (!forwarded.contains("Content-Type")) {
+                reqBuilder.header("Content-Type", "application/json");
+            }
+            if (!forwarded.contains("Accept")) {
+                reqBuilder.header("Accept", "application/json");
+            }
+
+            if (clientJwt != null && !forwarded.hasAuthorization()) {
                 reqBuilder.header("Authorization", "Bearer " + clientJwt);
             }
 
-            String bypassPayorCheck = request.getHeader(BYPASS_PAYOR_CHECK_HEADER);
-            if (bypassPayorCheck != null) {
-                reqBuilder.header(BYPASS_PAYOR_CHECK_HEADER, bypassPayorCheck);
-            }
+            forwarded.headers().forEach(reqBuilder::header);
 
             HttpClient client = SecurityUtil.getHttpClient(securityProperties);
             HttpResponse<String> upstream = client.send(

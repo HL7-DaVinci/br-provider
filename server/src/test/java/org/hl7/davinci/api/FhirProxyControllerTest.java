@@ -45,7 +45,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest();
         var response = new MockHttpServletResponse();
 
-        controller.proxy("file:///etc/passwd", false, "read", request, response);
+        controller.proxy("file:///etc/passwd", false, "read", null, request, response);
 
         assertEquals(400, response.getStatus());
     }
@@ -55,7 +55,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest();
         var response = new MockHttpServletResponse();
 
-        controller.proxy("ftp://example.org/file", false, "read", request, response);
+        controller.proxy("ftp://example.org/file", false, "read", null, request, response);
 
         assertEquals(400, response.getStatus());
     }
@@ -65,7 +65,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest();
         var response = new MockHttpServletResponse();
 
-        controller.proxy("not-a-url", false, "read", request, response);
+        controller.proxy("not-a-url", false, "read", null, request, response);
 
         assertEquals(400, response.getStatus());
     }
@@ -77,7 +77,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
 
-        controller.proxy("https://hapi.fhir.org/baseR4/Patient", false, "read", request, response);
+        controller.proxy("https://hapi.fhir.org/baseR4/Patient", false, "read", null, request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -87,7 +87,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
 
-        controller.proxy("http://169.254.169.254/latest/meta-data", false, "read", request, response);
+        controller.proxy("http://169.254.169.254/latest/meta-data", false, "read", null, request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -97,7 +97,7 @@ class FhirProxyControllerTest {
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
 
-        controller.proxy("http://localhost:6379/keys", false, "read", request, response);
+        controller.proxy("http://localhost:6379/keys", false, "read", null, request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -108,7 +108,7 @@ class FhirProxyControllerTest {
         var response = new MockHttpServletResponse();
 
         // http://localhost:8080/fhir is trusted, but fhir.evil.com should not match
-        controller.proxy("http://localhost:8080/fhir.evil.com/Patient", false, "read", request, response);
+        controller.proxy("http://localhost:8080/fhir.evil.com/Patient", false, "read", null, request, response);
 
         assertEquals(403, response.getStatus());
     }
@@ -121,7 +121,7 @@ class FhirProxyControllerTest {
         var response = new MockHttpServletResponse();
 
         try {
-            controller.proxy(LOCAL_SERVER + "/metadata", false, "read", request, response);
+            controller.proxy(LOCAL_SERVER + "/metadata", false, "read", null, request, response);
         } catch (Exception e) {
             // Connection refused is expected; the key assertion is no 401/403
         }
@@ -138,7 +138,7 @@ class FhirProxyControllerTest {
         var response = new MockHttpServletResponse();
 
         try {
-            controller.proxy(LOCAL_SERVER + "/Patient", false, "read", request, response);
+            controller.proxy(LOCAL_SERVER + "/Patient", false, "read", null, request, response);
         } catch (Exception e) {
             // Connection refused is expected
         }
@@ -160,7 +160,7 @@ class FhirProxyControllerTest {
 
         var response = new MockHttpServletResponse();
         try {
-            controller.proxy(customServer + "/Patient", false, "read", request, response);
+            controller.proxy(customServer + "/Patient", false, "read", null, request, response);
         } catch (Exception e) {
             // Connection refused is expected
         }
@@ -217,7 +217,7 @@ class FhirProxyControllerTest {
         var response = new MockHttpServletResponse();
 
         try {
-            ctrl.proxy("https://external.fhir.org/fhir/Patient", false, "read", request, response);
+            ctrl.proxy("https://external.fhir.org/fhir/Patient", false, "read", null, request, response);
         } catch (Exception e) {
             // Connection refused is expected
         }
@@ -242,7 +242,7 @@ class FhirProxyControllerTest {
         HttpServletRequest request = mock(HttpServletRequest.class);
         HttpServletResponse response = mock(HttpServletResponse.class);
 
-        ctrl.proxy("https://payer.test/fhir/Patient", true, "read", request, response);
+        ctrl.proxy("https://payer.test/fhir/Patient", true, "read", null, request, response);
 
         verify(response).sendError(eq(502), contains("B2B token"));
     }
@@ -266,7 +266,7 @@ class FhirProxyControllerTest {
         // Unresolvable target: the upstream call itself will fail, but that is a
         // separate, pre-existing failure path (generic 502) from the guard under
         // test here, which must not reject the request when bypass is requested.
-        ctrl.proxy("https://payer.test/fhir/Patient", true, "read", request, response);
+        ctrl.proxy("https://payer.test/fhir/Patient", true, "read", null, request, response);
 
         verify(response, never()).sendError(eq(502), contains("B2B token"));
     }
@@ -285,7 +285,7 @@ class FhirProxyControllerTest {
         HttpServletRequest request = mock(HttpServletRequest.class);
         HttpServletResponse response = mock(HttpServletResponse.class);
 
-        ctrl.proxy("https://payer.test/fhir/Patient", true, "read", request, response);
+        ctrl.proxy("https://payer.test/fhir/Patient", true, "read", null, request, response);
 
         verify(response, never()).sendError(eq(502), contains("B2B token"));
         verify(b2bTokenService, never()).getTokenForServer(any(), any());
@@ -323,7 +323,7 @@ class FhirProxyControllerTest {
             B2BTokenService b2bTokenService = mock(B2BTokenService.class);
             var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
 
-            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", request, response);
+            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", null, request, response);
 
             assertEquals(200, response.getStatus());
             assertEquals(1, capturedAuthHeaders.size());
@@ -350,7 +350,7 @@ class FhirProxyControllerTest {
             when(b2bTokenService.getTokenForServer(eq(stubBase), any())).thenReturn("tok-123");
             var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
 
-            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", request, response);
+            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", null, request, response);
 
             assertEquals(200, response.getStatus());
             assertEquals(2, capturedAuthHeaders.size());
@@ -378,7 +378,7 @@ class FhirProxyControllerTest {
             when(b2bTokenService.getTokenForServer(eq(stubBase), any())).thenReturn(null);
             var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
 
-            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", request, response);
+            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", null, request, response);
 
             assertEquals(401, response.getStatus());
             assertEquals(1, capturedAuthHeaders.size());
@@ -405,7 +405,7 @@ class FhirProxyControllerTest {
             when(b2bTokenService.getTokenForServer(eq(stubBase), any())).thenReturn("tok-9");
             var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
 
-            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", request, response);
+            ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", null, request, response);
 
             assertEquals(200, response.getStatus());
             assertEquals(1, capturedAuthHeaders.size());
@@ -428,10 +428,107 @@ class FhirProxyControllerTest {
         HttpServletRequest request = mock(HttpServletRequest.class);
         HttpServletResponse response = mock(HttpServletResponse.class);
 
-        ctrl.proxy("https://payer.test/fhir/Patient", true, "nonsense", request, response);
+        ctrl.proxy("https://payer.test/fhir/Patient", true, "nonsense", null, request, response);
 
         verify(response).sendError(eq(400), any());
         verify(b2bTokenService, never()).getTokenForServer(any(), any());
+    }
+
+    // --- Forwarded header passthrough (X-Fwd-*) ---
+
+    @Test
+    void proxy_forwardsCustomHeadersWithPrefixStripped() throws Exception {
+        var received = new java.util.concurrent.atomic.AtomicReference<com.sun.net.httpserver.Headers>();
+        HttpServer upstream = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        upstream.createContext("/fhir", exchange -> {
+            received.set(exchange.getRequestHeaders());
+            byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/fhir+json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        upstream.start();
+        try {
+            String base = "http://127.0.0.1:" + upstream.getAddress().getPort() + "/fhir";
+            serverProperties = new ServerProperties(base, null);
+            outboundAuth = new OutboundAuthService(serverProperties);
+            controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth);
+
+            var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
+            request.addHeader("X-Fwd-X-Api-Key", "abc");
+            var response = new MockHttpServletResponse();
+
+            controller.proxy(base + "/metadata", false, "read", null, request, response);
+
+            assertEquals(200, response.getStatus());
+            assertEquals("abc", received.get().getFirst("X-Api-Key"));
+            assertNull(received.get().getFirst("X-Fwd-X-Api-Key"));
+        } finally {
+            upstream.stop(0);
+        }
+    }
+
+    @Test
+    void proxy_forwardedAuthorizationSuppressesSessionToken() throws Exception {
+        var received = new java.util.concurrent.atomic.AtomicReference<com.sun.net.httpserver.Headers>();
+        HttpServer upstream = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        upstream.createContext("/fhir", exchange -> {
+            received.set(exchange.getRequestHeaders());
+            exchange.sendResponseHeaders(200, 0);
+            exchange.close();
+        });
+        upstream.start();
+        try {
+            String base = "http://127.0.0.1:" + upstream.getAddress().getPort() + "/fhir";
+            serverProperties = new ServerProperties(base, null);
+            outboundAuth = new OutboundAuthService(serverProperties);
+            controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth);
+
+            var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
+            var session = request.getSession(true);
+            SpaAuthController.storeServerToken(session, base, "session-token", null);
+            request.addHeader("X-Fwd-Authorization", "Bearer static-token");
+            var response = new MockHttpServletResponse();
+
+            controller.proxy(base + "/metadata", false, "read", null, request, response);
+
+            assertEquals(200, response.getStatus());
+            assertEquals("Bearer static-token", received.get().getFirst("Authorization"));
+        } finally {
+            upstream.stop(0);
+        }
+    }
+
+    @Test
+    void proxy_forwardedAcceptReplacesDefaultInsteadOfDuplicating() throws Exception {
+        var received = new java.util.concurrent.atomic.AtomicReference<com.sun.net.httpserver.Headers>();
+        HttpServer upstream = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        upstream.createContext("/fhir", exchange -> {
+            received.set(exchange.getRequestHeaders());
+            byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        upstream.start();
+        try {
+            String base = "http://127.0.0.1:" + upstream.getAddress().getPort() + "/fhir";
+            serverProperties = new ServerProperties(base, null);
+            outboundAuth = new OutboundAuthService(serverProperties);
+            controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth);
+
+            var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
+            request.addHeader("X-Fwd-Accept", "application/json");
+            var response = new MockHttpServletResponse();
+
+            controller.proxy(base + "/metadata", false, "read", null, request, response);
+
+            assertEquals(200, response.getStatus());
+            assertEquals(List.of("application/json"), received.get().get("Accept"));
+        } finally {
+            upstream.stop(0);
+        }
     }
 
     @Test

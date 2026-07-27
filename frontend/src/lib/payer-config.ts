@@ -1,4 +1,9 @@
-import { normalizeServerUrl, type PayerServer } from "./fhir-config";
+import {
+  normalizeServerUrl,
+  type PayerServer,
+  sanitizeCustomHeaders,
+  sanitizePayerAuthMode,
+} from "./fhir-config";
 
 const DEFAULT_PAYER_SERVERS: PayerServer[] = [
   {
@@ -10,6 +15,7 @@ const DEFAULT_PAYER_SERVERS: PayerServer[] = [
 ];
 
 const PAYER_STORAGE_KEY = "payer-server";
+const PAYER_HEADERS_STORAGE_PREFIX = "payer-server-headers:";
 
 function isValidPayerServer(server: unknown): server is PayerServer {
   return (
@@ -44,7 +50,17 @@ export function getStoredPayerServer(): PayerServer {
     try {
       const parsed = JSON.parse(stored);
       if (isValidPayerServer(parsed)) {
-        return parsed;
+        const headers = sanitizeCustomHeaders(
+          (parsed as { headers?: unknown }).headers,
+        );
+        const authMode = sanitizePayerAuthMode(
+          (parsed as { authMode?: unknown }).authMode,
+        );
+        return {
+          ...parsed,
+          ...(headers ? { headers } : { headers: undefined }),
+          ...(authMode ? { authMode } : { authMode: undefined }),
+        };
       }
     } catch {
       // Fall through to default
@@ -69,6 +85,32 @@ export function getPayerByUrl(url: string): PayerServer | undefined {
   return getPayerServers().find(matches);
 }
 
+export function getStoredPayerHeaders(url: string) {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  try {
+    const stored = localStorage.getItem(
+      `${PAYER_HEADERS_STORAGE_PREFIX}${normalizeServerUrl(url)}`,
+    );
+    return sanitizeCustomHeaders(stored ? JSON.parse(stored) : undefined) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function setStoredPayerHeaders(
+  url: string,
+  headers: PayerServer["headers"],
+): void {
+  const key = `${PAYER_HEADERS_STORAGE_PREFIX}${normalizeServerUrl(url)}`;
+  if (headers?.length) {
+    localStorage.setItem(key, JSON.stringify(headers));
+  } else {
+    localStorage.removeItem(key);
+  }
+}
+
 export function setStoredPayerServer(server: PayerServer): void {
   if (typeof window !== "undefined") {
     localStorage.setItem(
@@ -81,7 +123,10 @@ export function setStoredPayerServer(server: PayerServer): void {
           ? { requiresAuth: server.requiresAuth }
           : {}),
         ...(server.bypassPayorCheck ? { bypassPayorCheck: true } : {}),
+        ...(server.authMode ? { authMode: server.authMode } : {}),
+        ...(server.headers?.length ? { headers: server.headers } : {}),
       }),
     );
+    setStoredPayerHeaders(server.fhirUrl, server.headers);
   }
 }

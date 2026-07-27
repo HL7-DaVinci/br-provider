@@ -13,6 +13,7 @@ import org.hl7.davinci.security.OutboundTargetValidator;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SecurityUtil;
 import org.hl7.davinci.security.UdapClientRegistration;
+import org.hl7.davinci.util.ForwardedHeaderUtil;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import jakarta.servlet.http.HttpServletRequest;
 
 /**
  * Discovery endpoint for FHIR servers. Validates the target is a FHIR server
@@ -54,12 +56,14 @@ public class ServerDiscoveryController {
      */
     @GetMapping("/discover")
     public ResponseEntity<Map<String, Object>> discover(
-            @RequestParam("url") String fhirServerUrl) {
+            @RequestParam("url") String fhirServerUrl,
+            HttpServletRequest request) {
         String normalizedUrl = UrlMatchUtil.normalizeUrl(fhirServerUrl);
         Map<String, Object> response = new LinkedHashMap<>();
 
         // Validate the URL points to a FHIR server before anything else
-        String validationError = validateFhirServer(normalizedUrl);
+        String validationError = validateFhirServer(
+            normalizedUrl, ForwardedHeaderUtil.extract(request).headers());
         if (validationError != null) {
             response.put("fhirServer", false);
             response.put("error", validationError);
@@ -86,19 +90,19 @@ public class ServerDiscoveryController {
      * Fetches the CapabilityStatement at {baseUrl}/metadata to confirm the URL
      * is a valid FHIR server. Returns null on success, or an error message on failure.
      */
-    private String validateFhirServer(String baseUrl) {
+    private String validateFhirServer(String baseUrl, Map<String, String> headers) {
         try {
             outboundTargetValidator.validate(baseUrl);
 
             HttpClient client = SecurityUtil.getHttpClient(securityProperties);
-            HttpRequest request = HttpRequest.newBuilder()
+            HttpRequest.Builder request = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/metadata"))
                 .header("Accept", "application/fhir+json, application/json")
                 .GET()
-                .timeout(Duration.ofSeconds(10))
-                .build();
+                .timeout(Duration.ofSeconds(10));
+            headers.forEach(request::setHeader);
 
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = client.send(request.build(), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200) {
                 logger.debug("FHIR metadata check returned HTTP {} for {}", response.statusCode(), baseUrl);
                 return "CapabilityStatement request returned HTTP " + response.statusCode();

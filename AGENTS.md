@@ -176,6 +176,9 @@ This server is the **Identity Provider (IdP)** in a UDAP Tiered OAuth flow. The 
 ### Auth bypass (development)
 The `X-Bypass-Auth` header can skip authentication (configured via `security.bypass-header`).
 
+### Custom header forwarding
+The settings dialog can attach per-server custom headers to outbound FHIR and CDS requests. Direct requests to open servers carry them as-is. Proxied requests carry them as `X-Fwd-<Name>`. `ForwardedHeaderUtil` strips the prefix and the BFF proxies forward them upstream. A forwarded `Authorization` header suppresses the proxy's own token injection for that request. The payer "Bypass payor-handled check" toggle rides this same pipeline as `X-Bypass-Payor-Check`.
+
 ---
 
 ## Configuration

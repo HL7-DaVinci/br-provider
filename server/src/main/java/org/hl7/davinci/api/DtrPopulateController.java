@@ -6,6 +6,7 @@ import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.CertificateHolder;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SpaAuthController;
+import org.hl7.davinci.util.ForwardedHeaderUtil;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.hl7.fhir.r4.model.Bundle;
 import org.hl7.fhir.r4.model.OperationOutcome;
@@ -37,6 +38,7 @@ import ca.uhn.fhir.rest.api.server.IRepositoryFactory;
 import ca.uhn.fhir.rest.api.server.SystemRequestDetails;
 import ca.uhn.fhir.rest.client.api.IGenericClient;
 import ca.uhn.fhir.rest.client.interceptor.BearerTokenAuthInterceptor;
+import ca.uhn.fhir.rest.client.interceptor.SimpleRequestHeaderInterceptor;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 
@@ -183,9 +185,12 @@ public class DtrPopulateController {
         SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder);
         String token = SpaAuthController.getTokenForServer(session, activeBase);
         IGenericClient client = fhirContext.newRestfulGenericClient(activeBase);
-        if (token != null) {
+        var forwarded = ForwardedHeaderUtil.extract(request);
+        if (token != null && !forwarded.hasAuthorization()) {
             client.registerInterceptor(new BearerTokenAuthInterceptor(token));
         }
+        forwarded.headers().forEach((name, value) ->
+            client.registerInterceptor(new SimpleRequestHeaderInterceptor(name, value)));
         return new RestRepository(client);
     }
 

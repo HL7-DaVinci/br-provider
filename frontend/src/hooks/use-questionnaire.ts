@@ -454,7 +454,11 @@ export function useProviderPopulate(params: {
           body: JSON.stringify(body),
           credentials: "same-origin",
         },
-        { payerUrl: "", operationName: "$populate" },
+        {
+          payerUrl: "",
+          providerUrl: params.providerFhirUrl,
+          operationName: "$populate",
+        },
       );
       const data = await res.json().catch(() => null);
 

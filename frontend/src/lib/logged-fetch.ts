@@ -1,4 +1,4 @@
-import { credentialsFor } from "./api";
+import { applyCustomHeaders, credentialsFor, providerHeadersFor } from "./api";
 import { networkLogStore } from "./network-log-store";
 import { getPayerByUrl } from "./payer-config";
 
@@ -7,6 +7,8 @@ export interface LoggedFetchMeta {
   payerUrl: string;
   /** Human-readable operation label shown in the dev tools drawer */
   operationName: string;
+  /** Provider URL whose custom headers should ride a provider-bound BFF call. */
+  providerUrl?: string;
 }
 
 /**
@@ -49,16 +51,21 @@ export async function loggedFetch(
   try {
     // Credentials follow the transport: include for the same-origin BFF, omit for a direct
     // bypass call to an open server (absolute URL) so it works with wildcard CORS.
+    const direct = /^https?:\/\//.test(url);
+    // The bypass toggle rides the same forwarding pipeline as user-set custom
+    // headers. Appending it last means it wins over a manually typed duplicate.
+    const payerHeaders = payer?.bypassPayorCheck
+      ? [
+          ...(payer.headers ?? []),
+          { name: "X-Bypass-Payor-Check", value: "true" },
+        ]
+      : (payer?.headers ?? []);
+    const customHeaders = meta.providerUrl
+      ? providerHeadersFor(meta.providerUrl)
+      : payerHeaders;
+    const requestInit = applyCustomHeaders(init, customHeaders, !direct);
     response = await fetch(input, {
-      ...init,
-      ...(payer?.bypassPayorCheck
-        ? {
-            headers: {
-              ...(init?.headers as Record<string, string>),
-              "X-Bypass-Payor-Check": "true",
-            },
-          }
-        : {}),
+      ...requestInit,
       credentials: credentialsFor(url),
     });
   } catch (error) {

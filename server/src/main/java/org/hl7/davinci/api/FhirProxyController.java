@@ -17,6 +17,7 @@ import org.hl7.davinci.security.OutboundAuthService;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SecurityUtil;
 import org.hl7.davinci.security.SpaAuthController;
+import org.hl7.davinci.util.ForwardedHeaderUtil;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,10 +46,8 @@ public class FhirProxyController {
 
     private static final Logger logger = LoggerFactory.getLogger(FhirProxyController.class);
 
-    // x-bypass-payor-check is this stack's own payer test header (see payer PlanDefinitionService);
-    // it is only sent when the user enables the payor check bypass setting for a payer.
     private static final Set<String> FORWARDED_HEADERS = Set.of(
-        "accept", "content-type", "prefer", "if-match", "if-none-match", "x-bypass-payor-check"
+        "accept", "content-type", "prefer", "if-match", "if-none-match"
     );
 
     /** Headers that must not be forwarded through a proxy. */
@@ -86,6 +85,7 @@ public class FhirProxyController {
             @RequestParam("url") String targetUrl,
             @RequestParam(name = "payer", required = false, defaultValue = "false") boolean payerAuth,
             @RequestParam(name = "op", required = false, defaultValue = "read") String op,
+            @RequestParam(name = "auth", required = false) String authHint,
             HttpServletRequest request,
             HttpServletResponse response) throws Exception {
 
@@ -114,6 +114,7 @@ public class FhirProxyController {
         }
 
         HttpRequest.Builder reqBuilder = HttpRequest.newBuilder().uri(target);
+        ForwardedHeaderUtil.ForwardedHeaders forwarded = ForwardedHeaderUtil.extract(request);
 
         try {
             // Auth strategy determined by caller intent (payer param), not URL matching.
@@ -123,7 +124,9 @@ public class FhirProxyController {
             String payerBaseUrl = null;
             List<String> payerScopes = null;
 
-            if (payerAuth) {
+            if (forwarded.hasAuthorization()) {
+                logger.debug("Forwarded Authorization present; skipping token injection for {}", targetUrl);
+            } else if (payerAuth) {
                 payerBaseUrl = resolvePayerBaseUrl(targetUrl, session);
                 try {
                     payerScopes = ProxyUtil.payerScopesForOp(op);
@@ -131,7 +134,10 @@ public class FhirProxyController {
                     response.sendError(HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
                     return;
                 }
-                switch (outboundAuth.modeFor(payerBaseUrl)) {
+                OutboundAuthService.Mode mode = "b2b".equals(authHint)
+                    ? OutboundAuthService.Mode.UDAP_B2B
+                    : outboundAuth.modeFor(payerBaseUrl);
+                switch (mode) {
                     case OPEN -> logger.debug("Payer proxy: {} is open; forwarding without a token", payerBaseUrl);
                     case UDAP_B2B -> {
                         token = b2bTokenService.getTokenForServer(payerBaseUrl, payerScopes);
@@ -160,18 +166,23 @@ public class FhirProxyController {
                 reqBuilder.header("Authorization", "Bearer " + token);
             }
 
-            // Forward allowed headers from the SPA request transparently
+            // Forward allowed headers from the SPA request transparently, skipping any
+            // that a custom X-Fwd-* header already shadows to avoid duplicate values upstream
             for (String headerName : FORWARDED_HEADERS) {
+                if (forwarded.contains(headerName)) {
+                    continue;
+                }
                 String value = request.getHeader(headerName);
                 if (value != null) {
                     reqBuilder.header(headerName, value);
                 }
             }
-            if (request.getHeader("Accept") == null) {
+            if (request.getHeader("Accept") == null && !forwarded.contains("Accept")) {
                 reqBuilder.header("Accept", "application/fhir+json");
             }
             // Prevent the shared HttpClient from caching upstream responses
             reqBuilder.header("Cache-Control", "no-store");
+            forwarded.headers().forEach(reqBuilder::header);
 
             String method = request.getMethod();
             if ("POST".equals(method) || "PUT".equals(method) || "PATCH".equals(method)) {
