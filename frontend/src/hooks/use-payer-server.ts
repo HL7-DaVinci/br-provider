@@ -14,12 +14,15 @@ export interface UsePayerServerResult {
   setPayerServer: (server: PayerServer) => Promise<void>;
 }
 
-async function pushActivePayer(fhirUrl: string): Promise<void> {
+async function pushActivePayer(
+  fhirUrl: string,
+  clientId?: string,
+): Promise<void> {
   const res = await fetch("/auth/active-payer", {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fhirUrl }),
+    body: JSON.stringify({ fhirUrl, clientId }),
   });
   if (!res.ok) {
     throw new Error(`active-payer sync failed: ${res.status}`);
@@ -36,7 +39,7 @@ function ensureBootSync(): Promise<void> {
   if (bootSyncPromise !== null) return bootSyncPromise;
   const stored = getStoredPayerServer();
   bootSyncPromise = stored.fhirUrl
-    ? pushActivePayer(stored.fhirUrl).catch((err) => {
+    ? pushActivePayer(stored.fhirUrl, stored.clientId).catch((err) => {
         console.error("active-payer boot sync failed", err);
       })
     : Promise.resolve();
@@ -86,7 +89,7 @@ const payerServerStore = {
   },
 
   async setPayerServer(server: PayerServer): Promise<void> {
-    await pushActivePayer(server.fhirUrl);
+    await pushActivePayer(server.fhirUrl, server.clientId);
     setStoredPayerServer(server);
     payerServerStore.emit();
   },

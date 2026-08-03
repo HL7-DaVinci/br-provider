@@ -19,6 +19,7 @@ public class SmartTokenResponseCustomizer
         "patient",
         "encounter",
         "fhirContext",
+        "appContext",
         "need_patient_banner",
         "smart_style_url"
     );

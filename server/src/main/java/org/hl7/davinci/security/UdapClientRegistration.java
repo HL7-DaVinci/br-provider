@@ -321,12 +321,7 @@ public class UdapClientRegistration {
             baseUrl += "/";
         }
 
-        // Redirect to the SPA's callback route (uses externalBaseUrl in dev mode)
-        String externalBaseUrl = securityProperties.getExternalBaseUrl();
-        String callbackBase = (externalBaseUrl != null && !externalBaseUrl.isBlank())
-            ? externalBaseUrl.replaceAll("/+$", "") + "/"
-            : baseUrl;
-        String regRedirectUri = callbackBase + "callback";
+        String regRedirectUri = buildRedirectUri(securityProperties);
 
         JWTClaimsSet softwareStatementClaims = new JWTClaimsSet.Builder()
             .issuer(baseUrl)
@@ -406,4 +401,22 @@ public class UdapClientRegistration {
     public String getTokenEndpoint() { return tokenEndpoint; }
     public String getRedirectUri() { return redirectUri; }
     public boolean isRegistered() { return registered; }
+
+    /**
+     * Builds the SPA's OAuth callback redirect URI from server config, using
+     * externalBaseUrl when set (dev mode) and falling back to serverBaseUrl.
+     * Shared by UDAP DCR and the SMART authorization branch, neither of
+     * which requires a live UDAP registration to compute this URI.
+     */
+    public static String buildRedirectUri(SecurityProperties securityProperties) {
+        String baseUrl = securityProperties.getServerBaseUrl();
+        if (!baseUrl.endsWith("/")) {
+            baseUrl += "/";
+        }
+        String externalBaseUrl = securityProperties.getExternalBaseUrl();
+        String callbackBase = (externalBaseUrl != null && !externalBaseUrl.isBlank())
+            ? externalBaseUrl.replaceAll("/+$", "") + "/"
+            : baseUrl;
+        return callbackBase + "callback";
+    }
 }

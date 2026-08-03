@@ -169,12 +169,34 @@ public class TokenValidator {
 
     /**
      * Checks if the token issuer matches this server. Spring Authorization Server
-     * uses the request URL as the issuer, so we normalize for comparison.
+     * uses the request URL as the issuer, so a token minted through an alternate
+     * allowed host (for example host.docker.internal) carries that host in its
+     * issuer. Accept any issuer that matches the configured base by scheme and
+     * port with a host listed in allowedLocalHosts.
      */
     private boolean isLocalIssuer(String tokenIssuer, String localBase) {
         if (tokenIssuer == null || localBase == null) return false;
         String normalized = tokenIssuer.replaceAll("/+$", "");
-        return normalized.equals(localBase.replaceAll("/+$", ""));
+        String base = localBase.replaceAll("/+$", "");
+        if (normalized.equals(base)) {
+            return true;
+        }
+        try {
+            URI issuerUri = new URI(normalized);
+            URI baseUri = new URI(base);
+            if (issuerUri.getPort() != baseUri.getPort()
+                    || !nullSafe(issuerUri.getScheme()).equalsIgnoreCase(nullSafe(baseUri.getScheme()))) {
+                return false;
+            }
+            String issuerHost = issuerUri.getHost();
+            if (issuerHost == null) {
+                return false;
+            }
+            return securityProperties.getAllowedLocalHosts().stream()
+                .anyMatch(allowed -> allowed.equalsIgnoreCase(issuerHost));
+        } catch (URISyntaxException e) {
+            return false;
+        }
     }
 
     private JWKSource<SecurityContext> getLocalJwkSource() throws JOSEException {

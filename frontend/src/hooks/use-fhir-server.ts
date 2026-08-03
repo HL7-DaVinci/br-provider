@@ -51,6 +51,11 @@ export function awaitActiveServerSync(): Promise<void> {
   return ensureBootSync();
 }
 
+/** Adopts a server as the active selection outside the settings dialog. */
+export function adoptActiveFhirServer(url: string): Promise<void> {
+  return serverUrlStore.setServerUrl(url);
+}
+
 const serverUrlStore = {
   listeners: new Set<() => void>(),
 
@@ -189,6 +194,10 @@ interface ServerDiscoveryResult {
   authorizationEndpoint?: string;
   registered?: boolean;
   tieredOauthSupported?: boolean;
+  smartEnabled?: boolean;
+  smartAuthorizationEndpoint?: string | null;
+  smartCapabilities?: string[];
+  userLoginConfigured?: boolean;
 }
 
 /**

@@ -29,6 +29,18 @@ export function useCreateEncounter(patientId: string) {
           code: "AMB",
           display: "ambulatory",
         },
+        type: [
+          {
+            coding: [
+              {
+                system: "http://snomed.info/sct",
+                code: "185349003",
+                display: "Encounter for check up (procedure)",
+              },
+            ],
+            text: "Encounter for check up",
+          },
+        ],
         subject: { reference: `Patient/${patientId}` },
         participant: practitionerId
           ? [{ individual: { reference: `Practitioner/${practitionerId}` } }]

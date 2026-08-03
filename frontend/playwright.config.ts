@@ -20,6 +20,9 @@ import { defineConfig, devices } from "@playwright/test";
  *    CANDLE_FHIR_URL    candle FHIR base (default http://localhost:5826/fhir/r4)
  *    E2E_WAIT_TIMEOUT   seconds the preflight waits for services (default 15)
  *    E2E_REQUIRE_CANDLE set to fail the preflight when candle is down
+ *    E2E_STUB_HOST      hostname the provider server uses to reach stub
+ *      servers the tests start in-process. Defaults to localhost. Stack
+ *      mode sets host.docker.internal because the provider runs in Docker
  *    E2E_BROWSER_CHANNEL  run an installed system browser (chrome or msedge)
  *      instead of downloading Playwright's chromium. Use this where the
  *      browser CDN is unreachable. Edge ships with Windows.

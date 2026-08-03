@@ -140,12 +140,24 @@ public class CdsHooksProxyController {
 
             hookRequest.put("fhirServer", fhirServerBase);
 
+            // CRD conformance: clients must state the CRD version they expect.
+            Object extension = hookRequest.get("extension");
+            if (!(extension instanceof Map)) {
+                extension = new LinkedHashMap<String, Object>();
+                hookRequest.put("extension", extension);
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> extensionMap = (Map<String, Object>) extension;
+            extensionMap.putIfAbsent("davinci-crd.requestedVersion", "2.2");
+
             if (accessToken != null) {
+                String grantedScope = (session != null)
+                    ? (String) session.getAttribute(SpaAuthController.SESSION_GRANTED_SCOPE) : null;
                 Map<String, Object> fhirAuth = new LinkedHashMap<>();
                 fhirAuth.put("access_token", accessToken);
                 fhirAuth.put("token_type", "Bearer");
                 fhirAuth.put("expires_in", 300);
-                fhirAuth.put("scope", securityProperties.getScope());
+                fhirAuth.put("scope", grantedScope != null ? grantedScope : securityProperties.getScope());
                 fhirAuth.put("subject", resolveSubject(session));
                 hookRequest.put("fhirAuthorization", fhirAuth);
             }

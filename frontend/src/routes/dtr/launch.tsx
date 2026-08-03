@@ -1,8 +1,8 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { AlertCircle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
+import { startExternalDtrLaunch } from "@/lib/dtr-launch";
 
 interface DtrLaunchSearch {
   iss: string;
@@ -19,14 +19,12 @@ export const Route = createFileRoute("/dtr/launch")({
 
 /**
  * SMART EHR launch handler for DTR.
- * Receives iss (FHIR server URL) and launch (launch token) search params.
- *
- * For this reference implementation, instead of the full SMART OAuth2 flow,
- * we consume the launch token to load context and navigate to the DTR form.
+ * Receives iss (FHIR server URL) and launch (launch token) search params,
+ * exchanges the launch token for an authorize URL, and redirects the window
+ * into the SMART OAuth2 flow. The callback route resumes into /dtr.
  */
 function DtrLaunchPage() {
   const { iss, launch } = Route.useSearch();
-  const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   // Prevents StrictMode double-mount from consuming the one-time launch token
@@ -47,45 +45,21 @@ function DtrLaunchPage() {
     setIsLoading(true);
 
     try {
-      const response = await fetch(
-        `/api/smart/context?launch=${encodeURIComponent(launch)}`,
-        {
-          credentials: "same-origin",
-        },
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          response.status === 404
-            ? "This SMART launch token is invalid, expired, or has already been used."
-            : `Failed to load SMART launch context (${response.status}).`,
-        );
-      }
-
-      const context = await response.json();
-      navigate({
-        to: "/dtr",
-        search: {
-          iss,
-          patientId: context.patientId ?? "",
-          encounterId: context.encounterId ?? "",
-          fhirContext: context.fhirContext?.join(",") ?? "",
-          coverageAssertionId: context.coverageAssertionId ?? undefined,
-          questionnaire: serializeQuestionnaireSearch(context.questionnaire),
-          appContext: context.appContext ?? undefined,
-        },
-      });
+      const authorizeUrl = await startExternalDtrLaunch(iss, launch);
+      // Leaves isLoading true: window.location.assign is a full-page
+      // navigation, and flipping isLoading here would flash the "Launch
+      // Failed" fallback for the round-trip before the browser leaves.
+      window.location.assign(authorizeUrl);
     } catch (err) {
       fetchedRef.current = false;
+      setIsLoading(false);
       setError(
         err instanceof Error
           ? err.message
           : "Failed to launch the DTR application.",
       );
-    } finally {
-      setIsLoading(false);
     }
-  }, [iss, launch, navigate]);
+  }, [iss, launch]);
 
   useEffect(() => {
     void loadLaunchContext();

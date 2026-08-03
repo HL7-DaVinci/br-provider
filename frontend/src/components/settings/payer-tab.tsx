@@ -41,18 +41,19 @@ const AUTH_MODE_LABELS: Record<PayerAuthMode, string> = {
   auto: "Auto-detect",
   open: "Open (no authentication)",
   "udap-b2b": "UDAP B2B",
+  "smart-backend": "SMART Backend Services",
 };
 
 export function PayerTab({ onClose }: { onClose: () => void }) {
   const { payerServer, payerServers, cdsUrl, fhirUrl, setPayerServer } =
     usePayerServer();
-  const status = usePayerStatus(fhirUrl);
 
   const [pendingPayer, setPendingPayer] = useState("");
   const [showCustomPayer, setShowCustomPayer] = useState(false);
   const [customPayerCdsUrl, setCustomPayerCdsUrl] = useState("");
   const [customPayerFhirUrl, setCustomPayerFhirUrl] = useState("");
   const [customAuthMode, setCustomAuthMode] = useState<PayerAuthMode>("auto");
+  const [clientId, setClientId] = useState(payerServer.clientId ?? "");
   const [bypassPayorCheck, setBypassPayorCheck] = useState(
     payerServer.bypassPayorCheck ?? false,
   );
@@ -62,6 +63,13 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
   const [recents, setRecents] = useState(getPayerRecents);
 
   const isPayerPreset = payerServers.some((s) => s.name === pendingPayer);
+  // The status panel follows the selection being made, not the server still
+  // active, so the endpoints shown always belong to the name in the dropdown.
+  const selectedPayer =
+    payerServers.find((s) => s.name === pendingPayer) ?? payerServer;
+  const selectedFhirUrl = showCustomPayer ? fhirUrl : selectedPayer.fhirUrl;
+  const selectedCdsUrl = showCustomPayer ? cdsUrl : selectedPayer.cdsUrl;
+  const status = usePayerStatus(selectedFhirUrl);
   const switchingPayer =
     (isPayerPreset && pendingPayer !== payerServer.name) ||
     (showCustomPayer &&
@@ -80,6 +88,7 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
       setShowCustomPayer(true);
       setPendingPayer("");
       setCustomAuthMode("auto");
+      setClientId("");
       setHeaders([]);
       return;
     }
@@ -91,12 +100,16 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
       setCustomPayerCdsUrl(recent.cdsUrl);
       setCustomPayerFhirUrl(recent.fhirUrl);
       setCustomAuthMode(recent.authMode ?? "auto");
+      setClientId(recent.clientId ?? "");
       setBypassPayorCheck(recent.bypassPayorCheck ?? false);
       setHeaders(recent.headers ?? []);
       return;
     }
     setShowCustomPayer(false);
     const preset = payerServers.find((s) => s.name === value);
+    setClientId(
+      preset?.name === payerServer.name ? (payerServer.clientId ?? "") : "",
+    );
     const storedHeaders = preset ? getStoredPayerHeaders(preset.fhirUrl) : [];
     setHeaders(
       preset?.name === payerServer.name
@@ -123,10 +136,25 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
     !showCustomPayer &&
     (pendingPayer === "" || pendingPayer === payerServer.name);
 
+  const effectiveAuthMode = showCustomPayer
+    ? customAuthMode
+    : resolvePayerAuthMode(selectedPayer);
+
+  // SMART Backend Services cannot register dynamically, so it is unusable
+  // without a client ID the payer already knows. A preset can carry one in
+  // app.payer-servers, which the frontend cannot see, so only a custom payer
+  // has to supply it here.
+  const clientIdMissing =
+    showCustomPayer && customAuthMode === "smart-backend" && !clientId.trim();
+
+  const clientIdChanged = clientId.trim() !== (payerServer.clientId ?? "");
+
   const canSave =
     !headerError &&
+    !clientIdMissing &&
     (switchingPayer ||
-      (editingActivePayer && (bypassPayorCheckChanged || headersChanged)));
+      (editingActivePayer &&
+        (bypassPayorCheckChanged || headersChanged || clientIdChanged)));
 
   const handleSave = async () => {
     const saveHeaders = validCustomHeaders(headers);
@@ -143,6 +171,10 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
     if (base) {
       const next: PayerServer = {
         ...base,
+        clientId:
+          effectiveAuthMode === "smart-backend" && clientId.trim()
+            ? clientId.trim()
+            : undefined,
         bypassPayorCheck: bypassPayorCheck || undefined,
         headers: saveHeaders.length > 0 ? saveHeaders : undefined,
       };
@@ -155,6 +187,7 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
           cdsUrl: next.cdsUrl,
           fhirUrl: next.fhirUrl,
           ...(next.authMode ? { authMode: next.authMode } : {}),
+          ...(next.clientId ? { clientId: next.clientId } : {}),
           ...(bypassPayorCheck ? { bypassPayorCheck: true } : {}),
           ...(next.headers ? { headers: next.headers } : {}),
         });
@@ -234,15 +267,7 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
 
       {!showCustomPayer && (
         <p className="text-xs text-muted-foreground">
-          Authentication:{" "}
-          {
-            AUTH_MODE_LABELS[
-              resolvePayerAuthMode(
-                payerServers.find((s) => s.name === pendingPayer) ??
-                  payerServer,
-              )
-            ]
-          }
+          Authentication: {AUTH_MODE_LABELS[effectiveAuthMode]}
         </p>
       )}
 
@@ -306,6 +331,31 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
         </div>
       )}
 
+      {effectiveAuthMode === "smart-backend" && (
+        <div className="space-y-1">
+          <Label
+            htmlFor="payer-client-id"
+            className="text-xs text-muted-foreground"
+          >
+            Client ID
+          </Label>
+          <Input
+            id="payer-client-id"
+            placeholder="client-id registered with this payer"
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            className="h-8 text-xs"
+          />
+          <p className="text-xs text-muted-foreground">
+            Register the JWKS at{" "}
+            <code className="text-[0.7rem]">/api/security/jwks</code> with the
+            payer, then enter the client ID it assigned.
+            {!showCustomPayer &&
+              " Leave blank when the server config already sets one."}
+          </p>
+        </div>
+      )}
+
       <div className="flex items-start gap-2">
         <Checkbox
           id="bypass-payor-check"
@@ -332,8 +382,8 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
         latency={status.latency}
         error={status.error}
         onTest={status.refetch}
-        url={fhirUrl}
-        secondaryUrl={cdsUrl}
+        url={selectedFhirUrl}
+        secondaryUrl={selectedCdsUrl}
       />
 
       <DialogFooter className="mt-auto">

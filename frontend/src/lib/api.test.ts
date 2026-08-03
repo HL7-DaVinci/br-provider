@@ -159,6 +159,25 @@ describe("authMode routing", () => {
     expect(url).toContain("auth=b2b");
   });
 
+  it("adds auth=smart-backend for a payer with authMode smart-backend", () => {
+    window.APP_CONFIG = {
+      payerServers: [
+        {
+          name: "SMART Backend Payer",
+          cdsUrl: "http://payer.test/cds",
+          fhirUrl: "http://payer.test/fhir",
+          authMode: "smart-backend",
+        },
+      ],
+    };
+    const url = fhirProxyUrl("http://payer.test/fhir/Claim/$submit", {
+      payer: true,
+      op: "submit",
+    });
+    expect(url).toContain("/api/fhir-proxy?");
+    expect(url).toContain("auth=smart-backend");
+  });
+
   it("omits auth for auto payers", () => {
     window.APP_CONFIG = {
       payerServers: [

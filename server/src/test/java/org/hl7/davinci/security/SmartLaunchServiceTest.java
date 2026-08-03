@@ -35,6 +35,44 @@ class SmartLaunchServiceTest {
     }
 
     @Test
+    void ehrLaunchContext_carriesAppContextThrough() {
+        SmartLaunchService service = new SmartLaunchService();
+        String launch = service.createLaunchContext(
+            "patient-1", null, List.of(), null, null, "{\"custom\":true}");
+
+        SmartLaunchService.ResolvedLaunchContext resolved = service.resolveForToken(
+            launch, Set.of("launch"), practitionerUser(), null);
+
+        assertEquals("{\"custom\":true}", resolved.appContext());
+    }
+
+    @Test
+    void ehrLaunchContext_synthesizesAppContextFromDiscreteValues() {
+        SmartLaunchService service = new SmartLaunchService();
+        String launch = service.createLaunchContext(
+            "patient-1", null, List.of(), "assertion-1", List.of("http://example.org/q"), null);
+
+        SmartLaunchService.ResolvedLaunchContext resolved = service.resolveForToken(
+            launch, Set.of("launch"), practitionerUser(), null);
+
+        assertEquals(
+            "{\"coverageAssertionId\":\"assertion-1\",\"questionnaire\":\"http://example.org/q\"}",
+            resolved.appContext());
+    }
+
+    @Test
+    void ehrLaunchContext_withoutMetadata_hasNoAppContext() {
+        SmartLaunchService service = new SmartLaunchService();
+        String launch = service.createLaunchContext(
+            "patient-1", null, List.of(), null, null, null);
+
+        SmartLaunchService.ResolvedLaunchContext resolved = service.resolveForToken(
+            launch, Set.of("launch"), practitionerUser(), null);
+
+        assertNull(resolved.appContext());
+    }
+
+    @Test
     void standalonePatientLaunch_usesPatientUserSelfContext() {
         SmartLaunchService service = new SmartLaunchService();
 

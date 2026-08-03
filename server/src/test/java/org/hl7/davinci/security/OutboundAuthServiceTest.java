@@ -14,6 +14,7 @@ class OutboundAuthServiceTest {
     static final String UNDECLARED_PAYER = "http://undeclared-payer.test/fhir";
     static final String OPEN_PROVIDER = "http://open-provider.test/fhir";
     static final String RUNTIME_SERVER = "http://runtime.test/fhir/r4";
+    static final String SMART_BACKEND_PAYER = "http://smart-backend-payer.test/fhir";
 
     ServerProperties serverProperties;
     OutboundAuthService service;
@@ -25,7 +26,8 @@ class OutboundAuthServiceTest {
         serverProperties.getPayerServers().addAll(List.of(
             payerServer(OPEN_PAYER, false),
             payerServer(AUTH_PAYER, true),
-            payerServer(UNDECLARED_PAYER, null)));
+            payerServer(UNDECLARED_PAYER, null),
+            smartBackendPayerServer(SMART_BACKEND_PAYER)));
         service = new OutboundAuthService(serverProperties);
     }
 
@@ -40,6 +42,14 @@ class OutboundAuthServiceTest {
         var s = new ServerProperties.PayerServer();
         s.setFhirUrl(fhirUrl);
         s.setRequiresAuth(requiresAuth);
+        return s;
+    }
+
+    static ServerProperties.PayerServer smartBackendPayerServer(String fhirUrl) {
+        var s = new ServerProperties.PayerServer();
+        s.setFhirUrl(fhirUrl);
+        s.setRequiresAuth(true);
+        s.setAuthType("smart-backend");
         return s;
     }
 
@@ -97,5 +107,10 @@ class OutboundAuthServiceTest {
     void undeclaredConfiguredPayer_canLearn() {
         service.recordAuthRequired(UNDECLARED_PAYER);
         assertEquals(OutboundAuthService.Mode.UDAP_B2B, service.modeFor(UNDECLARED_PAYER));
+    }
+
+    @Test
+    void configuredSmartBackendPayer_isSmartBackend() {
+        assertEquals(OutboundAuthService.Mode.SMART_BACKEND, service.modeFor(SMART_BACKEND_PAYER));
     }
 }

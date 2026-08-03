@@ -85,14 +85,17 @@ function RootComponent() {
   // effect on every render (its props are recreated by JSX even when their
   // contents are stable), which races with auth-state churn during a
   // server-switch + signOut and overflows React's update budget.
-  const isCallbackRoute = matchRoute({ to: "/callback" });
+  // /callback and /dtr/launch complete their own auth flows and must
+  // stay reachable before a session exists.
+  const isAuthFlowRoute =
+    matchRoute({ to: "/callback" }) || matchRoute({ to: "/dtr/launch" });
   const isPublicRoute = matchRoute({ to: "/" }) || matchRoute({ to: "/login" });
   const needsLoginRedirect =
     authEnabled &&
     !isRestoringSession &&
     !isAuthenticated &&
     !isPublicRoute &&
-    !isCallbackRoute;
+    !isAuthFlowRoute;
   const isPatientSide =
     pathname === "/patient" || pathname.startsWith("/patient/");
   const isPractitionerSide =
@@ -104,7 +107,7 @@ function RootComponent() {
     isAuthenticated &&
     fhirUserType &&
     !isPublicRoute &&
-    !isCallbackRoute
+    !isAuthFlowRoute
       ? fhirUserType === "Patient" && isPractitionerSide
         ? "/patient"
         : fhirUserType === "Practitioner" && isPatientSide
@@ -124,8 +127,8 @@ function RootComponent() {
     }
   }, [wrongSideRedirect, navigate]);
 
-  // Callback page has its own full-page layout; render without app shell
-  if (isCallbackRoute) {
+  // Auth flow pages have their own full-page layout without the app shell
+  if (isAuthFlowRoute) {
     return <Outlet />;
   }
 

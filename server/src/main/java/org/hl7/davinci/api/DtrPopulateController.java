@@ -5,6 +5,7 @@ import java.util.List;
 import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.CertificateHolder;
 import org.hl7.davinci.security.SecurityProperties;
+import org.hl7.davinci.security.SmartClientKeyService;
 import org.hl7.davinci.security.SpaAuthController;
 import org.hl7.davinci.util.ForwardedHeaderUtil;
 import org.hl7.davinci.util.UrlMatchUtil;
@@ -79,6 +80,7 @@ public class DtrPopulateController {
     private final ServerProperties serverProperties;
     private final SecurityProperties securityProperties;
     private final CertificateHolder certificateHolder;
+    private final SmartClientKeyService smartClientKeyService;
 
     public DtrPopulateController(
             FhirContext fhirContext,
@@ -86,13 +88,15 @@ public class DtrPopulateController {
             EvaluationSettings evaluationSettings,
             ServerProperties serverProperties,
             SecurityProperties securityProperties,
-            CertificateHolder certificateHolder) {
+            CertificateHolder certificateHolder,
+            SmartClientKeyService smartClientKeyService) {
         this.fhirContext = fhirContext;
         this.repositoryFactory = repositoryFactory;
         this.evaluationSettings = evaluationSettings;
         this.serverProperties = serverProperties;
         this.securityProperties = securityProperties;
         this.certificateHolder = certificateHolder;
+        this.smartClientKeyService = smartClientKeyService;
     }
 
     @PostMapping(value = "/populate", consumes = "application/fhir+json", produces = "application/fhir+json")
@@ -182,7 +186,7 @@ public class DtrPopulateController {
             return repositoryFactory.create(new SystemRequestDetails());
         }
         HttpSession session = request != null ? request.getSession(false) : null;
-        SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder);
+        SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder, smartClientKeyService);
         String token = SpaAuthController.getTokenForServer(session, activeBase);
         IGenericClient client = fhirContext.newRestfulGenericClient(activeBase);
         var forwarded = ForwardedHeaderUtil.extract(request);

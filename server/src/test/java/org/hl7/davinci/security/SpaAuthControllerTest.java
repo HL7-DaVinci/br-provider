@@ -1,10 +1,17 @@
 package org.hl7.davinci.security;
 
+import java.io.IOException;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Base64;
+import java.util.Date;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import com.sun.net.httpserver.HttpServer;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -18,6 +25,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpSession;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SpaAuthControllerTest {
@@ -28,7 +36,10 @@ class SpaAuthControllerTest {
     private static final String SECOND_SERVER = "https://other.example.org/fhir";
 
     StubUdapClientRegistration udapClient;
+    StubSmartClientDiscoveryService smartDiscovery;
+    StubOutboundTargetValidator outboundTargetValidator;
     CertificateHolder certificateHolder;
+    SmartClientKeyService smartClientKeyService;
     SecurityProperties securityProperties;
     ServerProperties serverProperties;
     SpaAuthController controller;
@@ -38,21 +49,25 @@ class SpaAuthControllerTest {
         securityProperties = new SecurityProperties();
         securityProperties.setServerBaseUrl("http://localhost:8080");
         certificateHolder = testCertificateHolder();
+        smartClientKeyService = new SmartClientKeyService();
+        smartClientKeyService.init();
         var secondProvider = new ServerProperties.ProviderServer();
         secondProvider.setName("second");
         secondProvider.setUrl(SECOND_SERVER);
         serverProperties = new ServerProperties(LOCAL_SERVER, java.util.List.of(secondProvider));
         udapClient = new StubUdapClientRegistration(
             securityProperties, certificateHolder, new OutboundTargetValidator(securityProperties));
+        smartDiscovery = new StubSmartClientDiscoveryService(securityProperties);
+        outboundTargetValidator = new StubOutboundTargetValidator(securityProperties);
         controller = new SpaAuthController(
             udapClient, certificateHolder, securityProperties, serverProperties,
             new StubUserDetailsService(),
-            new OutboundTargetValidator(securityProperties));
+            outboundTargetValidator, smartDiscovery, smartClientKeyService);
     }
 
     @Test
     void login_redirectsToAuthorizeEndpoint() throws Exception {
-        ResponseEntity<?> response = controller.login(null, null);
+        ResponseEntity<?> response = controller.login(null, null, null, null);
 
         assertEquals(302, response.getStatusCode().value());
         String location = response.getHeaders().getLocation().toString();
@@ -128,7 +143,8 @@ class SpaAuthControllerTest {
 
         SpaAuthController uninitializedController = new SpaAuthController(
             udapClient, uninitializedCertHolder, securityProperties, serverProperties,
-            new StubUserDetailsService(), new OutboundTargetValidator(securityProperties));
+            new StubUserDetailsService(), new OutboundTargetValidator(securityProperties), smartDiscovery,
+            smartClientKeyService);
 
         var request = new MockHttpServletRequest();
         String state = "pending-state";
@@ -144,16 +160,16 @@ class SpaAuthControllerTest {
 
     @Test
     void login_storesUniqueStatePerCall() throws Exception {
-        controller.login(null, null);
-        controller.login(null, null);
+        controller.login(null, null, null, null);
+        controller.login(null, null, null, null);
 
         assertEquals(2, controller.getPendingFlows().size());
     }
 
     @Test
     void login_reregistersOnEveryCall() throws Exception {
-        controller.login(null, null);
-        controller.login(null, null);
+        controller.login(null, null, null, null);
+        controller.login(null, null, null, null);
 
         assertEquals(2, udapClient.getRefreshCallCount());
     }
@@ -163,7 +179,7 @@ class SpaAuthControllerTest {
         udapClient.setHasCachedRegistration(true);
         udapClient.setFailRegistration(true);
 
-        ResponseEntity<?> response = controller.login(null, null);
+        ResponseEntity<?> response = controller.login(null, null, null, null);
 
         assertEquals(302, response.getStatusCode().value());
         String location = response.getHeaders().getLocation().toString();
@@ -173,7 +189,7 @@ class SpaAuthControllerTest {
 
     @Test
     void login_snapshotsClientIntoPendingFlow() throws Exception {
-        controller.login(null, null);
+        controller.login(null, null, null, null);
 
         SpaAuthController.PendingFlow flow =
             controller.getPendingFlows().values().iterator().next();
@@ -187,7 +203,7 @@ class SpaAuthControllerTest {
         securityProperties.setExternalBaseUrl(null);
         udapClient.setFailRegistration(true);
 
-        ResponseEntity<?> response = controller.login(null, null);
+        ResponseEntity<?> response = controller.login(null, null, null, null);
 
         assertEquals(302, response.getStatusCode().value());
         assertEquals("/login?error=auth_server_unavailable",
@@ -208,14 +224,205 @@ class SpaAuthControllerTest {
 
     @Test
     void buildTokenParams_includesUdapVersion() throws Exception {
-        Map<String, String> tokenParams = controller.buildTokenParams(
+        SpaAuthController.TokenRequestSpec spec = controller.buildTokenRequest(
             new SpaAuthController.PendingFlow("verifier", "http://localhost:3000/callback", Instant.now()),
             "auth-code");
 
-        assertEquals("authorization_code", tokenParams.get("grant_type"));
-        assertEquals("1", tokenParams.get("udap"));
-        assertEquals("test-client-id", tokenParams.get("client_id"));
-        assertNotNull(tokenParams.get("client_assertion"));
+        assertEquals("authorization_code", spec.params().get("grant_type"));
+        assertEquals("1", spec.params().get("udap"));
+        assertEquals("test-client-id", spec.params().get("client_id"));
+        assertNotNull(spec.params().get("client_assertion"));
+        assertNull(spec.basicAuthHeader());
+    }
+
+    @Test
+    void smartPublicExchangeUsesCodeVerifierNoAssertion() throws Exception {
+        SpaAuthController.PendingFlow flow = new SpaAuthController.PendingFlow(
+            "verifier", "http://localhost:3000/callback", Instant.now(),
+            "https://ehr.example.com/fhir", "https://ehr.example.com/token",
+            "spa-client", "smart-none", null, null, null);
+        SpaAuthController.TokenRequestSpec spec = controller.buildTokenRequest(flow, "abc");
+        assertEquals("authorization_code", spec.params().get("grant_type"));
+        assertEquals("verifier", spec.params().get("code_verifier"));
+        assertEquals("spa-client", spec.params().get("client_id"));
+        assertNull(spec.params().get("client_assertion"));
+        assertNull(spec.basicAuthHeader());
+    }
+
+    @Test
+    void smartBasicExchangeOmitsClientIdAndSetsBasicHeader() throws Exception {
+        SpaAuthController.PendingFlow flow = new SpaAuthController.PendingFlow(
+            "verifier", "http://localhost:3000/callback", Instant.now(),
+            "https://ehr.example.com/fhir", "https://ehr.example.com/token",
+            "spa-client", "smart-basic", "s3cret", null, null);
+        SpaAuthController.TokenRequestSpec spec = controller.buildTokenRequest(flow, "abc");
+        assertNull(spec.params().get("client_id"));
+        String expected = "Basic " + Base64.getEncoder()
+            .encodeToString("spa-client:s3cret".getBytes(StandardCharsets.UTF_8));
+        assertEquals(expected, spec.basicAuthHeader());
+    }
+
+    @Test
+    void resolveSmartAuthMethodHonorsOnlyWhitelistedValues() {
+        var server = new ServerProperties.ProviderServer();
+        assertEquals("smart-none", controller.resolveSmartAuthMethod(null, null));
+        assertEquals("smart-none", controller.resolveSmartAuthMethod(server, null));
+
+        server.setUserAuthMethod("basic");
+        assertEquals("smart-basic", controller.resolveSmartAuthMethod(server, null));
+
+        server.setUserAuthMethod("private_key_jwt");
+        assertEquals("smart-private-key-jwt", controller.resolveSmartAuthMethod(server, null));
+
+        server.setUserAuthMethod("basic_auth");
+        assertEquals("smart-none", controller.resolveSmartAuthMethod(server, null));
+
+        server.setUserClientSecret("s3cret");
+        assertEquals("smart-basic", controller.resolveSmartAuthMethod(server, null));
+
+        server.setUserAuthMethod("none");
+        assertEquals("smart-none", controller.resolveSmartAuthMethod(server, null));
+    }
+
+    @Test
+    void resolveSmartAuthMethodInfersBasicFromSecretWhenMethodOmitted() {
+        var server = new ServerProperties.ProviderServer();
+        server.setUserClientSecret("s3cret");
+
+        assertEquals("smart-basic", controller.resolveSmartAuthMethod(server, null));
+    }
+
+    @Test
+    void storeServerToken_replacementBundleClearsStaleRefreshMetadata() {
+        var session = new MockHttpSession();
+        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "old-token", "old-id-token",
+            3600L, "old-refresh", "https://old-token-endpoint", "old-client", "udap");
+
+        SpaAuthController.storeServerToken(session, "https://ehr.example.com/fhir",
+            "new-token", null, null, null, "https://ehr.example.com/token", "new-client", "smart-none");
+
+        assertNull(session.getAttribute(SpaAuthController.SESSION_REFRESH_TOKEN));
+        assertNull(session.getAttribute(SpaAuthController.SESSION_ID_TOKEN));
+        assertNull(session.getAttribute(SpaAuthController.SESSION_TOKEN_EXPIRES_AT));
+        assertEquals("https://ehr.example.com/token",
+            session.getAttribute(SpaAuthController.SESSION_TOKEN_ENDPOINT));
+        assertEquals("new-client", session.getAttribute(SpaAuthController.SESSION_CLIENT_ID));
+    }
+
+    @Test
+    void getTokenForServer_nearExpiryWithoutRefreshToken_returnsNull() {
+        var session = new MockHttpSession();
+        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "tok", null, 10L, null);
+
+        assertNull(SpaAuthController.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
+    }
+
+    @Test
+    void getTokenForServer_nearExpiryWithRefreshToken_returnsToken() {
+        var session = new MockHttpSession();
+        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "tok", null, 10L, "refresh-1");
+
+        assertEquals("tok",
+            SpaAuthController.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
+    }
+
+    @Test
+    void buildSmartContextIncludesAppContext() {
+        Map<String, Object> tokens = Map.of(
+            "patient", "pat-1",
+            "appContext", "{\"coverageAssertionId\":\"ca-1\"}");
+
+        Map<String, Object> smartContext = SpaAuthController.buildSmartContext(tokens);
+
+        assertEquals("pat-1", smartContext.get("patient"));
+        assertEquals("{\"coverageAssertionId\":\"ca-1\"}", smartContext.get("appContext"));
+    }
+
+    @Test
+    void smartAsymmetricExchangeCarriesSignedAssertion() throws Exception {
+        SpaAuthController.PendingFlow flow = new SpaAuthController.PendingFlow(
+            "verifier", "http://localhost:3000/callback", Instant.now(),
+            "https://ehr.example.com/fhir", "https://ehr.example.com/token",
+            "spa-client", "smart-private-key-jwt", null, null, null);
+        SpaAuthController.TokenRequestSpec spec = controller.buildTokenRequest(flow, "abc");
+        assertNull(spec.params().get("client_id"));
+        SignedJWT assertion = SignedJWT.parse(spec.params().get("client_assertion"));
+        assertEquals("spa-client", assertion.getJWTClaimsSet().getIssuer());
+        assertEquals(List.of("https://ehr.example.com/token"),
+            assertion.getJWTClaimsSet().getAudience());
+    }
+
+    @Test
+    void udapExchangeUnchanged() throws Exception {
+        SpaAuthController.TokenRequestSpec spec = controller.buildTokenRequest(
+            new SpaAuthController.PendingFlow("verifier", "http://localhost:3000/callback", Instant.now()),
+            "abc");
+
+        assertEquals("1", spec.params().get("udap"));
+        assertEquals("test-client-id", spec.params().get("client_id"));
+        assertNotNull(spec.params().get("client_assertion"));
+        assertNull(spec.basicAuthHeader());
+    }
+
+    @Test
+    void parseFhirContextHandlesObjectArrayShape() {
+        List<Map<String, Object>> raw = List.of(
+            Map.of("reference", "Coverage/cov1", "role", "launch"),
+            Map.of("canonical", "http://payer.example.com/Questionnaire/q1", "type", "Questionnaire"));
+        assertEquals(List.of("Coverage/cov1", "http://payer.example.com/Questionnaire/q1"),
+            SpaAuthController.parseFhirContext(raw));
+    }
+
+    @Test
+    void parseFhirContextHandlesLegacyStringArray() {
+        assertEquals(List.of("Coverage/cov1"),
+            SpaAuthController.parseFhirContext(List.of("Coverage/cov1")));
+    }
+
+    @Test
+    void parseFhirContextIgnoresGarbage() {
+        assertTrue(SpaAuthController.parseFhirContext("not-a-list").isEmpty());
+        assertTrue(SpaAuthController.parseFhirContext(null).isEmpty());
+    }
+
+    @Test
+    void exchangeToken_smartFlow_capturesLaunchContext() throws Exception {
+        HttpServer tokenServer = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        tokenServer.createContext("/token", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            String body = """
+                {"access_token":"at","patient":"Patient/123",
+                 "fhirContext":[{"reference":"Coverage/cov1"},"Encounter/enc1"]}
+                """;
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        tokenServer.start();
+        try {
+            String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
+            String smartServer = "https://ehr.example.com/fhir";
+            String state = "smart-context-state-" + UUID.randomUUID();
+            controller.getPendingFlows().put(state, new SpaAuthController.PendingFlow(
+                "verifier", "http://localhost:3000/callback", Instant.now(),
+                smartServer, tokenEndpoint, "spa-client", "smart-ehr-launch", null, "launch-abc", null));
+
+            var request = new MockHttpServletRequest();
+            Map<String, String> body = Map.of("code", "abc", "state", state);
+
+            ResponseEntity<Map<String, Object>> response = controller.exchangeToken(body, request);
+
+            assertEquals(200, response.getStatusCode().value());
+            @SuppressWarnings("unchecked")
+            Map<String, Object> smartContext = (Map<String, Object>) response.getBody().get("smartContext");
+            assertNotNull(smartContext);
+            assertEquals("Patient/123", smartContext.get("patient"));
+            assertEquals(List.of("Coverage/cov1", "Encounter/enc1"), smartContext.get("fhirContext"));
+        } finally {
+            tokenServer.stop(0);
+        }
     }
 
     @Test
@@ -269,18 +476,20 @@ class SpaAuthControllerTest {
     }
 
     @Test
-    void login_withServer_noRegistration_returns400() throws Exception {
-        ResponseEntity<?> response = controller.login("https://unknown.fhir.org/fhir", null);
+    void login_withServer_noUdapNoSmartClientConfigured_fallsBackToSmartError() throws Exception {
+        // No UDAP support (stub's default branch) and no ProviderServer
+        // configured for this URL: falls through to SMART, which succeeds
+        // discovery but has no client_id to use.
+        ResponseEntity<?> response = controller.login("https://unknown.example.org/fhir", null, null, null);
 
-        assertEquals(400, response.getStatusCode().value());
-        @SuppressWarnings("unchecked")
-        Map<String, Object> body = (Map<String, Object>) response.getBody();
-        assertEquals("registration_required", body.get("error"));
+        assertEquals(302, response.getStatusCode().value());
+        assertTrue(response.getHeaders().getLocation().toString()
+            .contains("error=smart_client_not_configured"));
     }
 
     @Test
     void login_withServer_withRegistration_redirectsToCustomIssuer() throws Exception {
-        ResponseEntity<?> response = controller.login("https://custom.fhir.org/fhir", null);
+        ResponseEntity<?> response = controller.login("https://custom.fhir.org/fhir", null, null, null);
 
         assertEquals(302, response.getStatusCode().value());
         String location = response.getHeaders().getLocation().toString();
@@ -294,7 +503,7 @@ class SpaAuthControllerTest {
     void login_withServer_rediscoveryRestoresMissingRegistration() throws Exception {
         udapClient.setCustomRegistrationCached(false);
 
-        ResponseEntity<?> response = controller.login("https://custom.fhir.org/fhir", null);
+        ResponseEntity<?> response = controller.login("https://custom.fhir.org/fhir", null, null, null);
 
         assertEquals(302, response.getStatusCode().value());
         assertEquals(1, udapClient.getDiscoverCallCount());
@@ -305,7 +514,7 @@ class SpaAuthControllerTest {
     @Test
     void login_withServerAndIdp_includesIdpAndUdapScope() throws Exception {
         ResponseEntity<?> response = controller.login(
-            "https://custom.fhir.org/fhir", "https://my-idp.org");
+            "https://custom.fhir.org/fhir", "https://my-idp.org", null, null);
 
         assertEquals(302, response.getStatusCode().value());
         String location = response.getHeaders().getLocation().toString();
@@ -314,6 +523,157 @@ class SpaAuthControllerTest {
             "Should include URL-encoded idp parameter, got: " + location);
         assertTrue(location.contains("udap"), "Scope should include udap for Tiered OAuth");
         assertEquals(1, controller.getPendingFlows().size());
+    }
+
+    @Test
+    void smartAuthorizeUrlCarriesPkceAudAndState() throws Exception {
+        String smartServer = "https://ehr.example.com/fhir";
+        var smartProvider = new ServerProperties.ProviderServer();
+        smartProvider.setName("smart-ehr");
+        smartProvider.setUrl(smartServer);
+        smartProvider.setUserClientId("spa-client");
+        ServerProperties smartServerProperties = new ServerProperties(
+            LOCAL_SERVER, java.util.List.of(smartProvider));
+        SpaAuthController smartController = new SpaAuthController(
+            udapClient, certificateHolder, securityProperties, smartServerProperties,
+            new StubUserDetailsService(), outboundTargetValidator, smartDiscovery, smartClientKeyService);
+
+        ResponseEntity<?> response = smartController.login(smartServer, null, "smart", null);
+
+        assertEquals(302, response.getStatusCode().value());
+        String redirect = response.getHeaders().getLocation().toString();
+        assertTrue(redirect.startsWith("https://ehr.example.com/oauth/authorize?"));
+        assertTrue(redirect.contains("response_type=code"));
+        assertTrue(redirect.contains("client_id=spa-client"));
+        assertTrue(redirect.contains(
+            "aud=" + URLEncoder.encode(smartServer, StandardCharsets.UTF_8)));
+        assertTrue(redirect.contains("code_challenge_method=S256"));
+        assertTrue(redirect.contains("code_challenge="));
+        assertTrue(redirect.contains("state="));
+        assertFalse(redirect.contains("idp="));
+    }
+
+    @Test
+    void runtimeClientIdOverridesConfig() throws Exception {
+        // No ProviderServer configured for this URL in the default setUp().
+        ResponseEntity<?> response = controller.login(
+            "https://ehr.example.com/fhir", null, "smart", "runtime-client");
+
+        assertEquals(302, response.getStatusCode().value());
+        assertTrue(response.getHeaders().getLocation().toString()
+            .contains("client_id=runtime-client"));
+    }
+
+    @Test
+    void smartLoginWithoutClientIdFails() throws Exception {
+        ResponseEntity<?> response = controller.login(
+            "https://bare.example.com/fhir", null, "smart", null);
+
+        assertEquals(302, response.getStatusCode().value());
+        assertTrue(response.getHeaders().getLocation().toString()
+            .contains("error=smart_client_not_configured"));
+    }
+
+    @Test
+    void smartLoginRejectsServerWithoutS256() throws Exception {
+        smartDiscovery.setSupportsS256(false);
+
+        ResponseEntity<?> response = controller.login(
+            "https://weak.example.com/fhir", null, "smart", "c");
+
+        assertEquals(302, response.getStatusCode().value());
+        assertTrue(response.getHeaders().getLocation().toString()
+            .contains("error=smart_server_unsupported"));
+    }
+
+    @Test
+    void smartLoginDiscoveryFailureRedirectsWithError() throws Exception {
+        smartDiscovery.setShouldFail(true);
+
+        ResponseEntity<?> response = controller.login(
+            "https://down.example.com/fhir", null, "smart", "c");
+
+        assertEquals(302, response.getStatusCode().value());
+        assertTrue(response.getHeaders().getLocation().toString()
+            .contains("error=smart_discovery_failed"));
+    }
+
+    @Test
+    void smartLoginRejectsValidatorBlockedTokenEndpoint() throws Exception {
+        // The stub's discovered token_endpoint for this server. The SSRF
+        // gate must reject it even though the authorization_endpoint is fine.
+        outboundTargetValidator.rejectUrl("https://blocked.example.com/oauth/token");
+
+        ResponseEntity<?> response = controller.login(
+            "https://blocked.example.com/fhir", null, "smart", "c");
+
+        assertEquals(302, response.getStatusCode().value());
+        assertTrue(response.getHeaders().getLocation().toString()
+            .contains("error=smart_server_unsupported"));
+    }
+
+    @Test
+    void ehrLaunchBuildsAuthorizeUrlWithLaunchAndAud() throws Exception {
+        ResponseEntity<Map<String, Object>> response = controller.smartEhrLaunch(
+            Map.of("iss", "https://inferno.example.com/fhir", "launch", "abc123",
+                   "clientId", "session-tag"), new MockHttpServletRequest());
+
+        assertEquals(200, response.getStatusCode().value());
+        String url = (String) response.getBody().get("authorizeUrl");
+        assertTrue(url.contains("launch=abc123"));
+        assertTrue(url.contains("scope=" + URLEncoder.encode(
+            "launch openid fhirUser patient/*.rs patient/QuestionnaireResponse.cu",
+            StandardCharsets.UTF_8)));
+        assertTrue(url.contains(
+            "aud=" + URLEncoder.encode("https://inferno.example.com/fhir", StandardCharsets.UTF_8)));
+        assertTrue(url.contains("code_challenge_method=S256"));
+        assertTrue(url.contains("client_id=session-tag"));
+    }
+
+    @Test
+    void ehrLaunchRejectsMissingParams() throws Exception {
+        var request = new MockHttpServletRequest();
+
+        ResponseEntity<Map<String, Object>> response = controller.smartEhrLaunch(
+            Map.of("launch", "abc123"), request);
+
+        assertEquals(400, response.getStatusCode().value());
+        assertEquals("invalid_request", response.getBody().get("error"));
+
+        response = controller.smartEhrLaunch(
+            Map.of("iss", "https://inferno.example.com/fhir"), request);
+
+        assertEquals(400, response.getStatusCode().value());
+        assertEquals("invalid_request", response.getBody().get("error"));
+    }
+
+    @Test
+    void ehrLaunchRejectsBlockedTarget() throws Exception {
+        outboundTargetValidator.rejectUrl("https://blocked-ehr.example.com/fhir");
+        var request = new MockHttpServletRequest();
+
+        ResponseEntity<Map<String, Object>> response = controller.smartEhrLaunch(
+            Map.of("iss", "https://blocked-ehr.example.com/fhir", "launch", "abc123"), request);
+
+        assertEquals(400, response.getStatusCode().value());
+        assertTrue(((String) response.getBody().get("error_description"))
+            .contains("Target rejected by test stub"));
+        assertEquals(0, smartDiscovery.getDiscoverCallCount());
+    }
+
+    @Test
+    void ehrLaunchCapabilityGateFailure_leavesActiveServerUnchanged() throws Exception {
+        smartDiscovery.setSupportsS256(false);
+        var request = new MockHttpServletRequest();
+        var session = request.getSession(true);
+        SpaAuthController.setActiveServer(session, LOCAL_SERVER);
+
+        ResponseEntity<Map<String, Object>> response = controller.smartEhrLaunch(
+            Map.of("iss", "https://weak.example.com/fhir", "launch", "abc123"), request);
+
+        assertEquals(400, response.getStatusCode().value());
+        assertEquals("smart_server_unsupported", response.getBody().get("error"));
+        assertEquals(LOCAL_SERVER, session.getAttribute(SpaAuthController.SESSION_SERVER_URL));
     }
 
     @Test
@@ -424,6 +784,14 @@ class SpaAuthControllerTest {
     }
 
     @Test
+    void storeServerTokenRecordsAuthMethod() {
+        MockHttpSession session = new MockHttpSession();
+        SpaAuthController.storeServerToken(session, "https://ehr.example.com/fhir",
+            "at", null, 3600L, "rt", "https://ehr.example.com/token", "spa-client", "smart-none");
+        assertEquals("smart-none", session.getAttribute(SpaAuthController.SESSION_AUTH_METHOD));
+    }
+
+    @Test
     void refreshTokenIfNeeded_keepsTokenScopedToOriginalServerWhenActiveServerChanged() throws Exception {
         AtomicReference<String> tokenRequestBody = new AtomicReference<>();
         HttpServer tokenServer = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
@@ -447,7 +815,8 @@ class SpaAuthControllerTest {
                 1L, "old-refresh", tokenEndpoint, "refresh-client");
             SpaAuthController.setActiveServer(session, SECOND_SERVER);
 
-            SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder);
+            SpaAuthController.refreshTokenIfNeeded(
+                session, securityProperties, certificateHolder, smartClientKeyService);
 
             assertTrue(tokenRequestBody.get().contains("refresh_token=old-refresh"));
             assertEquals("new-token",
@@ -467,10 +836,206 @@ class SpaAuthControllerTest {
     }
 
     @Test
+    void refreshTokenIfNeeded_smartNone_sendsClientIdNoAssertionNoBasicHeader() throws Exception {
+        AtomicReference<String> tokenRequestBody = new AtomicReference<>();
+        AtomicReference<String> authHeader = new AtomicReference<>();
+        HttpServer tokenServer = startRefreshStub(tokenRequestBody, authHeader);
+        tokenServer.start();
+        try {
+            String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
+            MockHttpSession session = new MockHttpSession();
+            SpaAuthController.storeServerToken(session, "https://ehr.example.com/fhir", "old-token", null,
+                1L, "old-refresh", tokenEndpoint, "spa-client", "smart-none");
+
+            SpaAuthController.refreshTokenIfNeeded(
+                session, securityProperties, certificateHolder, smartClientKeyService);
+
+            Map<String, String> form = parseForm(tokenRequestBody.get());
+            assertEquals("spa-client", form.get("client_id"));
+            assertNull(form.get("client_assertion"));
+            assertNull(authHeader.get());
+            assertEquals("new-token", session.getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN));
+        } finally {
+            tokenServer.stop(0);
+        }
+    }
+
+    @Test
+    void refreshTokenIfNeeded_smartBasic_rebuildsBasicHeaderOmitsClientId() throws Exception {
+        AtomicReference<String> tokenRequestBody = new AtomicReference<>();
+        AtomicReference<String> authHeader = new AtomicReference<>();
+        HttpServer tokenServer = startRefreshStub(tokenRequestBody, authHeader);
+        tokenServer.start();
+        try {
+            String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
+            MockHttpSession session = new MockHttpSession();
+            SpaAuthController.storeServerToken(session, "https://ehr.example.com/fhir", "old-token", null,
+                1L, "old-refresh", tokenEndpoint, "spa-client", "smart-basic");
+            session.setAttribute(SpaAuthController.SESSION_CLIENT_SECRET, "s3cret");
+
+            SpaAuthController.refreshTokenIfNeeded(
+                session, securityProperties, certificateHolder, smartClientKeyService);
+
+            Map<String, String> form = parseForm(tokenRequestBody.get());
+            assertNull(form.get("client_id"));
+            String expected = "Basic " + Base64.getEncoder()
+                .encodeToString("spa-client:s3cret".getBytes(StandardCharsets.UTF_8));
+            assertEquals(expected, authHeader.get());
+        } finally {
+            tokenServer.stop(0);
+        }
+    }
+
+    @Test
+    void refreshTokenIfNeeded_smartPrivateKeyJwt_signsAssertionWithStoredAlg() throws Exception {
+        AtomicReference<String> tokenRequestBody = new AtomicReference<>();
+        AtomicReference<String> authHeader = new AtomicReference<>();
+        HttpServer tokenServer = startRefreshStub(tokenRequestBody, authHeader);
+        tokenServer.start();
+        try {
+            String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
+            MockHttpSession session = new MockHttpSession();
+            SpaAuthController.storeServerToken(session, "https://ehr.example.com/fhir", "old-token", null,
+                1L, "old-refresh", tokenEndpoint, "spa-client", "smart-private-key-jwt");
+            session.setAttribute(SpaAuthController.SESSION_TOKEN_ALG, "ES384");
+
+            SpaAuthController.refreshTokenIfNeeded(
+                session, securityProperties, certificateHolder, smartClientKeyService);
+
+            Map<String, String> form = parseForm(tokenRequestBody.get());
+            assertNull(form.get("client_id"));
+            SignedJWT assertion = SignedJWT.parse(form.get("client_assertion"));
+            assertEquals(JWSAlgorithm.ES384, assertion.getHeader().getAlgorithm());
+        } finally {
+            tokenServer.stop(0);
+        }
+    }
+
+    private static HttpServer startRefreshStub(
+            AtomicReference<String> tokenRequestBody, AtomicReference<String> authHeader) throws IOException {
+        HttpServer tokenServer = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        tokenServer.createContext("/token", exchange -> {
+            tokenRequestBody.set(new String(
+                exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            authHeader.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            byte[] body = """
+                {"access_token":"new-token","refresh_token":"new-refresh","expires_in":3600}
+                """.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        return tokenServer;
+    }
+
+    private static Map<String, String> parseForm(String body) {
+        Map<String, String> result = new java.util.LinkedHashMap<>();
+        for (String pair : body.split("&")) {
+            String[] kv = pair.split("=", 2);
+            result.put(
+                java.net.URLDecoder.decode(kv[0], StandardCharsets.UTF_8),
+                kv.length > 1 ? java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8) : null);
+        }
+        return result;
+    }
+
+    @Test
+    void exchangeToken_smartFlow_expiredIdToken_dropsClaims() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+            .claim("name", "Dr. Smith")
+            .claim("fhirUser", "Practitioner/1")
+            .expirationTime(Date.from(Instant.now().minusSeconds(60)))
+            .build();
+        SignedJWT idToken = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).build(), claims);
+        idToken.sign(new RSASSASigner(certificateHolder.getSigningKey()));
+
+        Map<String, Object> result = exchangeSmartFlowWithIdToken(idToken);
+
+        assertEquals(true, result.get("authenticated"));
+        @SuppressWarnings("unchecked")
+        Map<String, String> userinfo = (Map<String, String>) result.get("userinfo");
+        assertTrue(userinfo.isEmpty());
+    }
+
+    @Test
+    void exchangeToken_smartFlow_issuerMismatch_dropsClaims() throws Exception {
+        smartDiscovery.setIssuer("https://correct-issuer.example.com");
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+            .claim("name", "Dr. Smith")
+            .issuer("https://wrong-issuer.example.com")
+            .expirationTime(Date.from(Instant.now().plusSeconds(300)))
+            .build();
+        SignedJWT idToken = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).build(), claims);
+        idToken.sign(new RSASSASigner(certificateHolder.getSigningKey()));
+
+        Map<String, Object> result = exchangeSmartFlowWithIdToken(idToken);
+
+        assertEquals(true, result.get("authenticated"));
+        @SuppressWarnings("unchecked")
+        Map<String, String> userinfo = (Map<String, String>) result.get("userinfo");
+        assertTrue(userinfo.isEmpty());
+    }
+
+    @Test
+    void exchangeToken_smartFlow_jwksUriFailsSsrfValidation_dropsClaims() throws Exception {
+        smartDiscovery.setJwksUri("http://blocked.example.com/jwks");
+        outboundTargetValidator.rejectUrl("http://blocked.example.com/jwks");
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+            .claim("name", "Dr. Smith")
+            .expirationTime(Date.from(Instant.now().plusSeconds(300)))
+            .build();
+        SignedJWT idToken = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).build(), claims);
+        idToken.sign(new RSASSASigner(certificateHolder.getSigningKey()));
+
+        Map<String, Object> result = exchangeSmartFlowWithIdToken(idToken);
+
+        assertEquals(true, result.get("authenticated"));
+        @SuppressWarnings("unchecked")
+        Map<String, String> userinfo = (Map<String, String>) result.get("userinfo");
+        assertTrue(userinfo.isEmpty());
+    }
+
+    /**
+     * Runs exchangeToken through a stub token endpoint returning the given
+     * id_token for a smart-none custom-server flow, returning the response body.
+     */
+    private Map<String, Object> exchangeSmartFlowWithIdToken(SignedJWT idToken) throws Exception {
+        HttpServer tokenServer = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        tokenServer.createContext("/token", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            String body = "{\"access_token\":\"at\",\"id_token\":\"" + idToken.serialize() + "\"}";
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        tokenServer.start();
+        try {
+            String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
+            String smartServer = "https://ehr.example.com/fhir";
+            String state = "smart-id-token-state-" + UUID.randomUUID();
+            controller.getPendingFlows().put(state, new SpaAuthController.PendingFlow(
+                "verifier", "http://localhost:3000/callback", Instant.now(),
+                smartServer, tokenEndpoint, "spa-client", "smart-none", null, null, null));
+
+            var request = new MockHttpServletRequest();
+            Map<String, String> body = Map.of("code", "abc", "state", state);
+
+            ResponseEntity<Map<String, Object>> response = controller.exchangeToken(body, request);
+            assertEquals(200, response.getStatusCode().value());
+            return response.getBody();
+        } finally {
+            tokenServer.stop(0);
+        }
+    }
+
+    @Test
     void setActivePayer_publicHostPassesSsrfCheck_storesNormalized() {
         var request = new MockHttpServletRequest();
         var body = new SpaAuthController.ActivePayerRequest(
-            "https://br-payer.davinci.hl7.org/fhir/");
+            "https://br-payer.davinci.hl7.org/fhir/", null);
 
         ResponseEntity<Void> response = controller.setActivePayer(body, request);
 
@@ -480,9 +1045,34 @@ class SpaAuthControllerTest {
     }
 
     @Test
+    void setActivePayer_withClientId_storesItForBackendServices() {
+        var request = new MockHttpServletRequest();
+        var body = new SpaAuthController.ActivePayerRequest(
+            "https://br-payer.davinci.hl7.org/fhir", " payer-client ");
+
+        ResponseEntity<Void> response = controller.setActivePayer(body, request);
+
+        assertEquals(204, response.getStatusCode().value());
+        assertEquals("payer-client",
+            request.getSession(false).getAttribute(SpaAuthController.SESSION_PAYER_CLIENT_ID));
+    }
+
+    @Test
+    void setActivePayer_blankClientId_clearsAnyStoredValue() {
+        var request = new MockHttpServletRequest();
+        request.getSession(true).setAttribute(SpaAuthController.SESSION_PAYER_CLIENT_ID, "stale");
+        var body = new SpaAuthController.ActivePayerRequest(
+            "https://br-payer.davinci.hl7.org/fhir", "  ");
+
+        controller.setActivePayer(body, request);
+
+        assertNull(request.getSession(false).getAttribute(SpaAuthController.SESSION_PAYER_CLIENT_ID));
+    }
+
+    @Test
     void setActivePayer_missingFhirUrl_returns400() {
         var request = new MockHttpServletRequest();
-        var body = new SpaAuthController.ActivePayerRequest(null);
+        var body = new SpaAuthController.ActivePayerRequest(null, null);
 
         ResponseEntity<Void> response = controller.setActivePayer(body, request);
 
@@ -492,7 +1082,7 @@ class SpaAuthControllerTest {
     @Test
     void setActivePayer_privateIp_returns400() {
         var request = new MockHttpServletRequest();
-        var body = new SpaAuthController.ActivePayerRequest("http://10.0.0.1/fhir");
+        var body = new SpaAuthController.ActivePayerRequest("http://10.0.0.1/fhir", null);
 
         ResponseEntity<Void> response = controller.setActivePayer(body, request);
 
@@ -632,6 +1222,93 @@ class SpaAuthControllerTest {
         @Override
         public FhirUserDetails getFhirUser(String username) {
             return null;
+        }
+    }
+
+    /**
+     * Network-free stand-in for SMART discovery. Succeeds for any URL by
+     * default, deriving authorize/token endpoints from the URL's origin.
+     * Tests toggle {@link #setSupportsS256} or {@link #setShouldFail} for
+     * the unsupported-server and discovery-failure cases.
+     */
+    private static class StubSmartClientDiscoveryService extends SmartClientDiscoveryService {
+        private boolean supportsS256 = true;
+        private boolean shouldFail = false;
+        private String issuer;
+        private String jwksUri;
+        private int discoverCallCount = 0;
+
+        StubSmartClientDiscoveryService(SecurityProperties securityProperties) {
+            super(securityProperties, new OutboundTargetValidator(securityProperties));
+        }
+
+        @Override
+        public SmartConfiguration discover(String fhirBaseUrl) throws Exception {
+            discoverCallCount++;
+            if (shouldFail) {
+                throw new IllegalStateException("SMART configuration fetch failed for " + fhirBaseUrl);
+            }
+            URI uri = URI.create(fhirBaseUrl);
+            String origin = uri.getScheme() + "://" + uri.getAuthority();
+            return new SmartConfiguration(
+                origin + "/oauth/authorize",
+                origin + "/oauth/token",
+                List.of(),
+                List.of("authorization_code"),
+                supportsS256 ? List.of("S256") : List.of("plain"),
+                List.of(),
+                List.of(),
+                issuer,
+                jwksUri);
+        }
+
+        void setSupportsS256(boolean supportsS256) {
+            this.supportsS256 = supportsS256;
+        }
+
+        void setShouldFail(boolean shouldFail) {
+            this.shouldFail = shouldFail;
+        }
+
+        void setIssuer(String issuer) {
+            this.issuer = issuer;
+        }
+
+        void setJwksUri(String jwksUri) {
+            this.jwksUri = jwksUri;
+        }
+
+        int getDiscoverCallCount() {
+            return discoverCallCount;
+        }
+    }
+
+    /**
+     * Real SSRF checks still apply to private IPs and unresolvable hosts.
+     * Fixture hosts under {@code .example.*} do not resolve in DNS, so they
+     * are waved through without a real lookup. {@link #rejectUrl} blocks a
+     * single target, for SSRF-gate tests on the SMART discovery endpoints.
+     */
+    private static class StubOutboundTargetValidator extends OutboundTargetValidator {
+        private String rejectedUrl;
+
+        StubOutboundTargetValidator(SecurityProperties securityProperties) {
+            super(securityProperties);
+        }
+
+        @Override
+        public URI validate(String rawUrl) {
+            if (rawUrl != null && rawUrl.equals(rejectedUrl)) {
+                throw new IllegalArgumentException("Target rejected by test stub: " + rawUrl);
+            }
+            if (rawUrl != null && rawUrl.contains(".example.")) {
+                return URI.create(rawUrl);
+            }
+            return super.validate(rawUrl);
+        }
+
+        void rejectUrl(String url) {
+            this.rejectedUrl = url;
         }
     }
 

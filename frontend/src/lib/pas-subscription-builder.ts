@@ -37,7 +37,7 @@ export function buildPasSubscription({
       extension: [
         {
           url: BACKPORT_FILTER_CRITERIA,
-          valueString: `orgIdentifier=${orgIdentifier}`,
+          valueString: `org-identifier=${orgIdentifier}`,
         },
       ],
     },

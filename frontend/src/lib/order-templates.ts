@@ -35,7 +35,7 @@ const TEMPLATES: OrderTemplate[] = [
   {
     id: "dme-e0424",
     code: "E0424",
-    display: "Stationary Oxygen System",
+    display: "Stationary compressed gas 02",
     description:
       "Payer requires prior authorization and provides a questionnaire to complete",
     category: "DME",

@@ -256,8 +256,21 @@ function PasPage() {
 
   const [isLaunchingDtr, setIsLaunchingDtr] = useState(false);
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!resolvedCoverageId) return;
+
+    // Register the per-payer Subscription before the first $submit. Payers
+    // route pended-decision notifications through it, and some refuse a
+    // pended submission when no Subscription exists yet.
+    let subscriptionFailed = false;
+    try {
+      await ensureSubscription.mutateAsync(payerFhirUrl);
+    } catch {
+      // Non-fatal here: an approval or denial resolves without notifications.
+      // A pended response still needs the channel, so this retries after the
+      // submit rather than blocking it.
+      subscriptionFailed = true;
+    }
 
     pasSubmit.mutate(
       {
@@ -271,6 +284,9 @@ function PasPage() {
       },
       {
         onSuccess: (result: PasSubmitResult) => {
+          if (subscriptionFailed) {
+            ensureSubscription.mutate(payerFhirUrl);
+          }
           setClaimResponse(result.claimResponse);
           setDocTasks(result.documentationTasks);
           // Persist the ClaimResponse + Task(s) so PA status survives navigation and the inbound
@@ -291,13 +307,6 @@ function PasPage() {
           })();
           if (result.documentationTasks.length > 0) {
             persistDocTasks.mutate(result.documentationTasks);
-          }
-          // Pended PA: subscribe to the payer for the final-decision notification (PAS SHALL).
-          if (
-            isPendedClaimResponse(result.claimResponse) ||
-            result.claimResponse.outcome === "partial"
-          ) {
-            ensureSubscription.mutate(payerFhirUrl);
           }
         },
       },
@@ -565,9 +574,13 @@ function PasPage() {
           <Button
             size="lg"
             onClick={handleSubmit}
-            disabled={pasSubmit.isPending || !resolvedCoverageId}
+            disabled={
+              pasSubmit.isPending ||
+              ensureSubscription.isPending ||
+              !resolvedCoverageId
+            }
           >
-            {pasSubmit.isPending ? (
+            {pasSubmit.isPending || ensureSubscription.isPending ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 Submitting...

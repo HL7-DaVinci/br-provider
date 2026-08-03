@@ -33,10 +33,15 @@ import org.springframework.security.oauth2.server.authorization.config.annotatio
 import org.springframework.security.oauth2.server.authorization.config.annotation.web.configurers.OAuth2AuthorizationServerConfigurer;
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2AuthorizationCodeRequestAuthenticationValidator;
 import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
+import org.springframework.security.oauth2.core.OAuth2Token;
+import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
+import org.springframework.security.oauth2.server.authorization.token.DelegatingOAuth2TokenGenerator;
 import org.springframework.security.oauth2.server.authorization.token.JwtEncodingContext;
+import org.springframework.security.oauth2.server.authorization.token.JwtGenerator;
+import org.springframework.security.oauth2.server.authorization.token.OAuth2AccessTokenGenerator;
 import org.springframework.security.oauth2.server.authorization.token.OAuth2TokenCustomizer;
+import org.springframework.security.oauth2.server.authorization.token.OAuth2TokenGenerator;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
 import org.springframework.security.oauth2.server.authorization.web.authentication.OAuth2AccessTokenResponseAuthenticationSuccessHandler;
 import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
 import org.springframework.security.web.context.SecurityContextHolderFilter;
@@ -50,28 +55,54 @@ public class AuthorizationServerConfig {
     private final SmartAuthorizationRequestValidator smartAuthorizationRequestValidator;
     private final SmartPatientLaunchContextFilter smartPatientLaunchContextFilter;
     private final SmartTokenResponseCustomizer smartTokenResponseCustomizer;
+    private final PublicClientRefreshTokenAuthentication publicClientRefreshTokenAuthentication;
+    private final ExpiringRequestCache expiringRequestCache;
 
     public AuthorizationServerConfig(
             SecurityProperties securityProperties,
             FhirUserDetailsService userDetailsService,
             SmartAuthorizationRequestValidator smartAuthorizationRequestValidator,
             SmartPatientLaunchContextFilter smartPatientLaunchContextFilter,
-            SmartTokenResponseCustomizer smartTokenResponseCustomizer) {
+            SmartTokenResponseCustomizer smartTokenResponseCustomizer,
+            PublicClientRefreshTokenAuthentication publicClientRefreshTokenAuthentication,
+            ExpiringRequestCache expiringRequestCache) {
         this.securityProperties = securityProperties;
         this.userDetailsService = userDetailsService;
         this.smartAuthorizationRequestValidator = smartAuthorizationRequestValidator;
         this.smartPatientLaunchContextFilter = smartPatientLaunchContextFilter;
         this.smartTokenResponseCustomizer = smartTokenResponseCustomizer;
+        this.publicClientRefreshTokenAuthentication = publicClientRefreshTokenAuthentication;
+        this.expiringRequestCache = expiringRequestCache;
     }
 
     /**
      * Returns the login page URL. When external-base-url is set (dev mode with
      * SPA on a different port), redirects to the SPA's login page so the user
      * sees the React login form instead of a bare 404 on the backend port.
+     * The SPA host follows the host the request came in on when it is an
+     * allowed local host, so a flow entered through an alternate host such as
+     * host.docker.internal keeps one cookie host for login and resume.
      */
-    private String loginUrl() {
+    private String loginUrl(jakarta.servlet.http.HttpServletRequest request) {
         String ext = securityProperties.getExternalBaseUrl();
-        return (ext != null && !ext.isBlank()) ? ext.replaceAll("/+$", "") + "/login" : "/login";
+        if (ext == null || ext.isBlank()) {
+            return "/login";
+        }
+        String base = ext.replaceAll("/+$", "");
+        String requestHost = request.getServerName();
+        if (requestHost != null && securityProperties.getAllowedLocalHosts().stream()
+                .anyMatch(requestHost::equalsIgnoreCase)) {
+            try {
+                URI extUri = new URI(base);
+                if (extUri.getHost() != null && !requestHost.equalsIgnoreCase(extUri.getHost())) {
+                    base = new URI(extUri.getScheme(), null, requestHost,
+                        extUri.getPort(), extUri.getPath(), null, null).toString();
+                }
+            } catch (URISyntaxException ignored) {
+                // Fall back to the configured external base URL.
+            }
+        }
+        return base + "/login";
     }
 
     @Bean
@@ -79,6 +110,9 @@ public class AuthorizationServerConfig {
     public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http) throws Exception {
         OAuth2AuthorizationServerConfiguration.applyDefaultSecurity(http);
         http.getConfigurer(OAuth2AuthorizationServerConfigurer.class)
+            .clientAuthentication(client -> client
+                .authenticationConverter(publicClientRefreshTokenAuthentication)
+                .authenticationProvider(publicClientRefreshTokenAuthentication))
             .authorizationEndpoint(authorization -> authorization.authenticationProviders(providers -> {
                 for (var provider : providers) {
                     if (provider instanceof OAuth2AuthorizationCodeRequestAuthenticationProvider codeProvider) {
@@ -96,12 +130,19 @@ public class AuthorizationServerConfig {
             })
             .oidc(Customizer.withDefaults());
 
+        // Only a browser navigation gets the HTML login redirect. A wildcard
+        // Accept header comes from API clients such as the token endpoint's
+        // callers, which require an OAuth2 JSON error instead.
+        MediaTypeRequestMatcher browserNavigation = new MediaTypeRequestMatcher(MediaType.TEXT_HTML);
+        browserNavigation.setIgnoredMediaTypes(Set.of(MediaType.ALL));
+
         http.exceptionHandling(exceptions -> exceptions
             .defaultAuthenticationEntryPointFor(
-                new LoginUrlAuthenticationEntryPoint(loginUrl()),
-                new MediaTypeRequestMatcher(MediaType.TEXT_HTML)
+                (request, response, authException) -> response.sendRedirect(loginUrl(request)),
+                browserNavigation
             )
         );
+        http.requestCache(cache -> cache.requestCache(expiringRequestCache));
         http.addFilterAfter(smartPatientLaunchContextFilter, SecurityContextHolderFilter.class);
         return http.build();
     }
@@ -173,6 +214,7 @@ public class AuthorizationServerConfig {
                 .loginPage("/login")
                 .defaultSuccessUrl("/auth/login", false))
             .userDetailsService(userDetailsService)
+            .requestCache(cache -> cache.requestCache(expiringRequestCache))
             .csrf(csrf -> csrf
                 .ignoringRequestMatchers("/login", "/oauth2/register", "/fhir/**", "/auth/**", "/api/**")
             );
@@ -192,16 +234,36 @@ public class AuthorizationServerConfig {
         return OAuth2AuthorizationServerConfiguration.jwtDecoder(jwkSource);
     }
 
+    /**
+     * Replaces the default token generator so public SMART clients granted
+     * offline_access or online_access receive a refresh token.
+     */
+    @Bean
+    public OAuth2TokenGenerator<? extends OAuth2Token> tokenGenerator(
+            JWKSource<SecurityContext> jwkSource,
+            OAuth2TokenCustomizer<JwtEncodingContext> tokenCustomizer) {
+        JwtGenerator jwtGenerator = new JwtGenerator(new NimbusJwtEncoder(jwkSource));
+        jwtGenerator.setJwtCustomizer(tokenCustomizer);
+        return new DelegatingOAuth2TokenGenerator(
+            jwtGenerator,
+            new OAuth2AccessTokenGenerator(),
+            new SmartRefreshTokenGenerator());
+    }
+
     @Bean
     public PasswordEncoder passwordEncoder() {
         return PasswordEncoderFactories.createDelegatingPasswordEncoder();
     }
 
+    /**
+     * No fixed issuer: Spring resolves the issuer from each request URL, so
+     * clients that reach this server through an alternate allowed host (for
+     * example host.docker.internal from a container) get discovery documents
+     * and token issuer claims that are reachable from their network.
+     */
     @Bean
     public AuthorizationServerSettings authorizationServerSettings() {
-        return AuthorizationServerSettings.builder()
-            .issuer(securityProperties.getServerBaseUrl())
-            .build();
+        return AuthorizationServerSettings.builder().build();
     }
 
     @Bean
@@ -250,6 +312,9 @@ public class AuthorizationServerConfig {
                     if (!launchContext.fhirContextReferences().isEmpty()) {
                         context.getClaims().claim("fhirContext",
                             fhirContextClaim(launchContext.fhirContextReferences()));
+                    }
+                    if (launchContext.appContext() != null && !launchContext.appContext().isBlank()) {
+                        context.getClaims().claim("appContext", launchContext.appContext());
                     }
                     context.getClaims().claim("need_patient_banner", launchContext.needPatientBanner());
                 }

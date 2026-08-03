@@ -3,10 +3,13 @@ package org.hl7.davinci.security;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
 /**
@@ -19,6 +22,7 @@ import org.springframework.stereotype.Service;
 public class SmartLaunchService {
 
     private static final long LAUNCH_TTL_SECONDS = 300;
+    private static final ObjectMapper objectMapper = new ObjectMapper();
     public static final String SELECTED_PATIENT_CONTEXT_PARAMETER = "smart_patient_context";
 
     private final ConcurrentHashMap<String, LaunchContext> launchContexts = new ConcurrentHashMap<>();
@@ -81,6 +85,7 @@ public class SmartLaunchService {
                 ctx.patientId(),
                 ctx.encounterId(),
                 safeList(ctx.fhirContextReferences()),
+                appContextFor(ctx),
                 true
             );
         }
@@ -95,7 +100,7 @@ public class SmartLaunchService {
             if (patientId == null || patientId.isBlank()) {
                 return null;
             }
-            return new ResolvedLaunchContext(patientId, null, List.of(), true);
+            return new ResolvedLaunchContext(patientId, null, List.of(), null, true);
         }
 
         return null;
@@ -126,6 +131,28 @@ public class SmartLaunchService {
             return null;
         }
         return context.patientId();
+    }
+
+    /** Discrete DTR launch values ride inside appContext when none was supplied. */
+    private static String appContextFor(LaunchContext ctx) {
+        if (ctx.appContext() != null && !ctx.appContext().isBlank()) {
+            return ctx.appContext();
+        }
+        Map<String, Object> synthesized = new LinkedHashMap<>();
+        if (ctx.coverageAssertionId() != null && !ctx.coverageAssertionId().isBlank()) {
+            synthesized.put("coverageAssertionId", ctx.coverageAssertionId());
+        }
+        if (ctx.questionnaire() != null && !ctx.questionnaire().isEmpty()) {
+            synthesized.put("questionnaire", String.join(",", ctx.questionnaire()));
+        }
+        if (synthesized.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(synthesized);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static boolean requiresPatientContext(Set<String> scopes) {
@@ -182,6 +209,7 @@ public class SmartLaunchService {
         String patientId,
         String encounterId,
         List<String> fhirContextReferences,
+        String appContext,
         boolean needPatientBanner
     ) {}
 }

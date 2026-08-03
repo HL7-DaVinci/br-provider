@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class OutboundAuthService {
 
-    public enum Mode { OPEN, UDAP_B2B, UNKNOWN }
+    public enum Mode { OPEN, UDAP_B2B, SMART_BACKEND, UNKNOWN }
 
     private final ServerProperties serverProperties;
     private final Map<String, Mode> learned = new ConcurrentHashMap<>();
@@ -46,13 +46,17 @@ public class OutboundAuthService {
         for (ServerProperties.PayerServer payer : serverProperties.getPayerServers()) {
             if (payer.getFhirUrl() != null && UrlMatchUtil.matchesBaseUrl(
                     normalized, UrlMatchUtil.normalizeUrl(payer.getFhirUrl()))) {
-                return fromFlag(payer.getRequiresAuth());
+                return "smart-backend".equals(payer.getAuthType())
+                    ? Mode.SMART_BACKEND
+                    : fromFlag(payer.getRequiresAuth());
             }
         }
         for (ServerProperties.ProviderServer provider : serverProperties.getProviderServers()) {
             if (provider.getUrl() != null && UrlMatchUtil.matchesBaseUrl(
                     normalized, UrlMatchUtil.normalizeUrl(provider.getUrl()))) {
-                return fromFlag(provider.getRequiresAuth());
+                return "smart-backend".equals(provider.getAuthType())
+                    ? Mode.SMART_BACKEND
+                    : fromFlag(provider.getRequiresAuth());
             }
         }
         return null;

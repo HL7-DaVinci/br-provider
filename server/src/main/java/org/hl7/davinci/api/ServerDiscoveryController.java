@@ -9,9 +9,11 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.OutboundTargetValidator;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SecurityUtil;
+import org.hl7.davinci.security.SmartClientDiscoveryService;
 import org.hl7.davinci.security.UdapClientRegistration;
 import org.hl7.davinci.util.ForwardedHeaderUtil;
 import org.hl7.davinci.util.UrlMatchUtil;
@@ -40,13 +42,19 @@ public class ServerDiscoveryController {
     private final UdapClientRegistration udapClient;
     private final OutboundTargetValidator outboundTargetValidator;
     private final SecurityProperties securityProperties;
+    private final SmartClientDiscoveryService smartClientDiscoveryService;
+    private final ServerProperties serverProperties;
 
     public ServerDiscoveryController(UdapClientRegistration udapClient,
             OutboundTargetValidator outboundTargetValidator,
-            SecurityProperties securityProperties) {
+            SecurityProperties securityProperties,
+            SmartClientDiscoveryService smartClientDiscoveryService,
+            ServerProperties serverProperties) {
         this.udapClient = udapClient;
         this.outboundTargetValidator = outboundTargetValidator;
         this.securityProperties = securityProperties;
+        this.smartClientDiscoveryService = smartClientDiscoveryService;
+        this.serverProperties = serverProperties;
     }
 
     /**
@@ -65,6 +73,16 @@ public class ServerDiscoveryController {
         String validationError = validateFhirServer(
             normalizedUrl, ForwardedHeaderUtil.extract(request).headers());
         if (validationError != null) {
+            // Some SMART-secured servers refuse unauthenticated CapabilityStatement
+            // requests. A smart-configuration that supports user login is enough
+            // proof of a usable FHIR base.
+            if (putSmartConfiguration(response, normalizedUrl)
+                    && Boolean.TRUE.equals(response.get("smartEnabled"))) {
+                response.put("fhirServer", true);
+                response.put("udapEnabled", false);
+                return ResponseEntity.ok(response);
+            }
+            response.clear();
             response.put("fhirServer", false);
             response.put("error", validationError);
             response.put("udapEnabled", false);
@@ -83,7 +101,27 @@ public class ServerDiscoveryController {
             response.put("tieredOauthSupported", result.tieredOauthSupported());
         }
 
+        putSmartConfiguration(response, normalizedUrl);
+
         return ResponseEntity.ok(response);
+    }
+
+    private boolean putSmartConfiguration(Map<String, Object> response, String normalizedUrl) {
+        try {
+            SmartClientDiscoveryService.SmartConfiguration smartConfig =
+                smartClientDiscoveryService.discover(normalizedUrl);
+            // Backend-services-only SMART metadata cannot host a user login.
+            response.put("smartEnabled", smartConfig.supportsUserLogin());
+            response.put("smartAuthorizationEndpoint", smartConfig.authorizationEndpoint());
+            response.put("smartCapabilities", smartConfig.capabilities());
+            ServerProperties.ProviderServer configured = serverProperties.findProviderByUrl(normalizedUrl);
+            response.put("userLoginConfigured", configured != null && configured.getUserClientId() != null);
+            return true;
+        } catch (Exception e) {
+            logger.debug("SMART configuration probe failed for {}: {}", normalizedUrl, e.getMessage());
+            response.put("smartEnabled", false);
+            return false;
+        }
     }
 
     /**

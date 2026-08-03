@@ -61,12 +61,12 @@ public class CdsClientJwtService {
 
             // RS384 is RECOMMENDED by the CDS Hooks spec for client JWTs
             JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.RS384)
-                .keyID(certificateHolder.getSigningKey().getKeyID())
+                .keyID(certificateHolder.getCdsClientKey().getKeyID())
                 .type(JOSEObjectType.JWT)
                 .build();
 
             SignedJWT jwt = new SignedJWT(header, claims);
-            jwt.sign(new RSASSASigner(certificateHolder.getSigningKey()));
+            jwt.sign(new RSASSASigner(certificateHolder.getCdsClientKey()));
 
             return jwt.serialize();
         } catch (Exception e) {

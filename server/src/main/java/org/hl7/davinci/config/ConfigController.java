@@ -35,6 +35,7 @@ public class ConfigController {
         + "payerServers: " + serializePayerServers() + ", "
         + "apiBaseUrl: \"" + apiBaseUrl + "\", "
         + providerOrgIdentifierFragment()
+        + pasNotificationUrlFragment()
         + "providerOrgIdentifierSystem: \"" + serverProperties.getProviderOrgIdentifierSystem() + "\", "
         + "payerOrgIdentifier: \"" + serverProperties.getPayerOrgIdentifier() + "\", "
         + "authEnabled: " + securityProperties.isEnableAuthentication()
@@ -48,6 +49,15 @@ public class ConfigController {
       return "";
     }
     return "providerOrgIdentifier: \"" + identifier + "\", ";
+  }
+
+  /** Emitted only when configured. Absent, the frontend derives it from the API base. */
+  private String pasNotificationUrlFragment() {
+    String url = serverProperties.getPasNotificationUrl();
+    if (url == null || url.isBlank()) {
+      return "";
+    }
+    return "pasNotificationUrl: \"" + url + "\", ";
   }
 
   private String serializeProviderServers() {

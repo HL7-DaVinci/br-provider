@@ -3,11 +3,13 @@ import {
   clearStoredCustomOpenServer,
   getPasNotificationUrl,
   getServerByRequestUrl,
+  getStoredCustomAuthTarget,
   getStoredServerHeaders,
   isStoredCustomOpenServer,
   resolvePayerAuthMode,
   sanitizeCustomHeaders,
   sanitizePayerAuthMode,
+  setStoredCustomAuthTarget,
   setStoredCustomOpenServer,
   setStoredServerHeaders,
 } from "./fhir-config";
@@ -197,13 +199,56 @@ describe("resolvePayerAuthMode", () => {
   it("defaults to auto", () => {
     expect(resolvePayerAuthMode(base)).toBe("auto");
   });
+
+  it("honors an explicit smart-backend authMode", () => {
+    expect(resolvePayerAuthMode({ ...base, authMode: "smart-backend" })).toBe(
+      "smart-backend",
+    );
+  });
 });
 
 describe("sanitizePayerAuthMode", () => {
   it("accepts known modes and rejects everything else", () => {
     expect(sanitizePayerAuthMode("udap-b2b")).toBe("udap-b2b");
+    expect(sanitizePayerAuthMode("smart-backend")).toBe("smart-backend");
     expect(sanitizePayerAuthMode("smart")).toBeUndefined();
     expect(sanitizePayerAuthMode(42)).toBeUndefined();
+  });
+});
+
+describe("stored custom auth target", () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("round-trips authMode and clientId", () => {
+    setStoredCustomAuthTarget(
+      "https://custom.example.com/fhir/",
+      undefined,
+      undefined,
+      "smart",
+      "my-client-id",
+    );
+    expect(getStoredCustomAuthTarget()).toEqual({
+      serverUrl: "https://custom.example.com/fhir",
+      authMode: "smart",
+      clientId: "my-client-id",
+    });
+  });
+
+  it("drops an unknown authMode while keeping the rest of the object", () => {
+    localStorage.setItem(
+      "fhir-custom-auth-target",
+      JSON.stringify({
+        serverUrl: "https://custom.example.com/fhir",
+        authMode: "bogus",
+        clientId: "keep-me",
+      }),
+    );
+    expect(getStoredCustomAuthTarget()).toEqual({
+      serverUrl: "https://custom.example.com/fhir",
+      clientId: "keep-me",
+    });
   });
 });
 

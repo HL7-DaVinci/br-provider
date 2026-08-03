@@ -1,3 +1,4 @@
+import type { SmartLaunchContext } from "@/lib/dtr-launch";
 import {
   getServerByUrl,
   getStoredCustomAuthTarget,
@@ -5,10 +6,20 @@ import {
 } from "@/lib/fhir-config";
 
 const USERINFO_KEY = "spa_userinfo";
-const callbackRequests = new Map<string, Promise<void>>();
+
+interface CallbackResult {
+  smartContext?: SmartLaunchContext;
+  serverUrl?: string;
+}
+
+const callbackRequests = new Map<string, Promise<CallbackResult>>();
 
 export function clearAuthStorage(): void {
   sessionStorage.removeItem(USERINFO_KEY);
+}
+
+interface SmartLoginOption {
+  clientId?: string;
 }
 
 // Redirects to the server which initiates the OAuth2 flow.
@@ -20,17 +31,31 @@ function resolveLoginTarget(
 ): {
   serverUrl?: string;
   idp?: string;
+  smart?: SmartLoginOption;
 } {
   if (serverUrl) {
     return { serverUrl, idp };
   }
 
   const selectedServerUrl = getStoredServerUrl();
+  const storedCustomAuthTarget = getStoredCustomAuthTarget();
+
+  // A preset server can be SMART-secured too, so a stored SMART target for the
+  // selected server wins over the primary FAST flow.
+  if (
+    storedCustomAuthTarget?.serverUrl === selectedServerUrl &&
+    storedCustomAuthTarget.authMode === "smart"
+  ) {
+    return {
+      serverUrl: storedCustomAuthTarget.serverUrl,
+      smart: { clientId: storedCustomAuthTarget.clientId },
+    };
+  }
+
   if (getServerByUrl(selectedServerUrl)) {
     return {};
   }
 
-  const storedCustomAuthTarget = getStoredCustomAuthTarget();
   if (storedCustomAuthTarget?.serverUrl !== selectedServerUrl) {
     return {};
   }
@@ -38,24 +63,38 @@ function resolveLoginTarget(
   return storedCustomAuthTarget;
 }
 
-export function buildLoginPath(serverUrl?: string, idp?: string): string {
+export function buildLoginPath(
+  serverUrl?: string,
+  idp?: string,
+  smart?: SmartLoginOption,
+): string {
   const target = resolveLoginTarget(serverUrl, idp);
+  const effectiveSmart = smart ?? target.smart;
   const params = new URLSearchParams();
   if (target.serverUrl) params.set("server", target.serverUrl);
   if (target.idp) params.set("idp", target.idp);
+  if (effectiveSmart) {
+    params.set("mode", "smart");
+    if (effectiveSmart.clientId)
+      params.set("clientId", effectiveSmart.clientId);
+  }
   const query = params.toString();
   return query ? `/auth/login?${query}` : "/auth/login";
 }
 
-export function startLogin(serverUrl?: string, idp?: string): void {
-  window.location.href = buildLoginPath(serverUrl, idp);
+export function startLogin(
+  serverUrl?: string,
+  idp?: string,
+  smart?: SmartLoginOption,
+): void {
+  window.location.href = buildLoginPath(serverUrl, idp, smart);
 }
 
 // Called by the callback route after receiving the authorization code
 export async function handleCallback(
   code: string,
   state: string,
-): Promise<void> {
+): Promise<CallbackResult> {
   const requestKey = `${code}:${state}`;
   const existingRequest = callbackRequests.get(requestKey);
   if (existingRequest) {
@@ -73,15 +112,17 @@ export async function handleCallback(
       const err = await response.json();
       throw new Error(err.error_description || "Token exchange failed");
     }
-    const { authenticated, userinfo } = await response.json();
+    const { authenticated, userinfo, smartContext, serverUrl } =
+      await response.json();
     if (authenticated && userinfo) {
       sessionStorage.setItem(USERINFO_KEY, JSON.stringify(userinfo));
     }
+    return { smartContext, serverUrl };
   })();
 
   callbackRequests.set(requestKey, request);
   try {
-    await request;
+    return await request;
   } catch (error) {
     callbackRequests.delete(requestKey);
     throw error;

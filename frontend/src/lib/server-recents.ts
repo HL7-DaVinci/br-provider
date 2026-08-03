@@ -15,7 +15,8 @@ import {
 export interface ProviderRecent {
   url: string;
   idp?: string;
-  authMode?: "open" | "udap";
+  authMode?: "open" | "udap" | "smart";
+  clientId?: string;
   headers?: CustomHeader[];
 }
 
@@ -24,6 +25,7 @@ export interface PayerRecent {
   cdsUrl: string;
   fhirUrl: string;
   authMode?: PayerAuthMode;
+  clientId?: string;
   bypassPayorCheck?: boolean;
   headers?: CustomHeader[];
 }
@@ -62,8 +64,13 @@ function parseProviderRecent(entry: unknown): ProviderRecent | null {
   return {
     url: normalizeServerUrl(raw.url),
     ...(typeof raw.idp === "string" && raw.idp ? { idp: raw.idp } : {}),
-    ...(raw.authMode === "open" || raw.authMode === "udap"
+    ...(raw.authMode === "open" ||
+    raw.authMode === "udap" ||
+    raw.authMode === "smart"
       ? { authMode: raw.authMode }
+      : {}),
+    ...(typeof raw.clientId === "string" && raw.clientId
+      ? { clientId: raw.clientId }
       : {}),
     ...(headers ? { headers } : {}),
   };
@@ -88,6 +95,9 @@ function parsePayerRecent(entry: unknown): PayerRecent | null {
     cdsUrl: normalizeServerUrl(raw.cdsUrl),
     fhirUrl: normalizeServerUrl(raw.fhirUrl),
     ...(authMode ? { authMode } : {}),
+    ...(typeof raw.clientId === "string" && raw.clientId
+      ? { clientId: raw.clientId }
+      : {}),
     ...(raw.bypassPayorCheck === true ? { bypassPayorCheck: true } : {}),
     ...(headers ? { headers } : {}),
   };

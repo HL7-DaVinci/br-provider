@@ -58,6 +58,7 @@ class DtrPopulateControllerTest {
             EvaluationSettings.getDefault(),
             serverProperties,
             securityProperties,
+            null,
             null);
     }
 
@@ -102,6 +103,7 @@ class DtrPopulateControllerTest {
             EvaluationSettings.getDefault(),
             serverProperties,
             securityProperties,
+            null,
             null);
 
         var session = new MockHttpSession();

@@ -57,6 +57,12 @@ const ERROR_MESSAGES: Record<string, string> = {
   auth_server_unavailable:
     "The authorization server is not reachable. Make sure it is running and try again.",
   login_failed: "Unable to start the sign-in process. Please try again.",
+  smart_discovery_failed:
+    "Could not read the server's SMART configuration. Check the server URL and try again.",
+  smart_server_unsupported:
+    "This server's SMART configuration is missing required support (PKCE with S256, authorization_code grant).",
+  smart_client_not_configured:
+    "No client ID is configured for this server. Add one in settings or provide one at login.",
 };
 
 export const Route = createFileRoute("/login")({

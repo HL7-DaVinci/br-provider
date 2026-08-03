@@ -35,7 +35,7 @@ class FhirProxyControllerTest {
         securityProperties.setSslVerify(false);
         serverProperties = new ServerProperties(LOCAL_SERVER, null);
         outboundAuth = new OutboundAuthService(serverProperties);
-        controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth);
+        controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth, null);
     }
 
     // --- Scheme validation (400) ---
@@ -211,7 +211,7 @@ class FhirProxyControllerTest {
         external.setName("External");
         external.setUrl("https://external.fhir.org/fhir");
         var props = new ServerProperties(LOCAL_SERVER, List.of(external));
-        var ctrl = new FhirProxyController(securityProperties, props, null, null, new OutboundAuthService(props));
+        var ctrl = new FhirProxyController(securityProperties, props, null, null, new OutboundAuthService(props), null);
 
         var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
         var response = new MockHttpServletResponse();
@@ -236,8 +236,8 @@ class FhirProxyControllerTest {
         serverProperties.setPayerServers(List.of(payer));
 
         B2BTokenService b2bTokenService = mock(B2BTokenService.class);
-        when(b2bTokenService.getTokenForServer(any(), any())).thenReturn(null);
-        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+        when(b2bTokenService.getTokenForServer(any(), any(), any(), any())).thenReturn(null);
+        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth, null);
 
         HttpServletRequest request = mock(HttpServletRequest.class);
         HttpServletResponse response = mock(HttpServletResponse.class);
@@ -256,8 +256,8 @@ class FhirProxyControllerTest {
         serverProperties.setPayerServers(List.of(payer));
 
         B2BTokenService b2bTokenService = mock(B2BTokenService.class);
-        when(b2bTokenService.getTokenForServer(any(), any())).thenReturn(null);
-        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+        when(b2bTokenService.getTokenForServer(any(), any(), any(), any())).thenReturn(null);
+        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth, null);
 
         HttpServletRequest request = mock(HttpServletRequest.class);
         when(request.getHeader(securityProperties.getBypassHeader())).thenReturn("true");
@@ -280,7 +280,7 @@ class FhirProxyControllerTest {
         serverProperties.setPayerServers(List.of(payer));
 
         B2BTokenService b2bTokenService = mock(B2BTokenService.class);
-        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth, null);
 
         HttpServletRequest request = mock(HttpServletRequest.class);
         HttpServletResponse response = mock(HttpServletResponse.class);
@@ -288,7 +288,7 @@ class FhirProxyControllerTest {
         ctrl.proxy("https://payer.test/fhir/Patient", true, "read", null, request, response);
 
         verify(response, never()).sendError(eq(502), contains("B2B token"));
-        verify(b2bTokenService, never()).getTokenForServer(any(), any());
+        verify(b2bTokenService, never()).getTokenForServer(any(), any(), any(), any());
     }
 
     // --- Optimistic payer auth (mode UNKNOWN) ---
@@ -321,7 +321,7 @@ class FhirProxyControllerTest {
             var response = new MockHttpServletResponse();
 
             B2BTokenService b2bTokenService = mock(B2BTokenService.class);
-            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth, null);
 
             ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", null, request, response);
 
@@ -329,7 +329,7 @@ class FhirProxyControllerTest {
             assertEquals(1, capturedAuthHeaders.size());
             assertNull(capturedAuthHeaders.get(0));
             assertEquals(OutboundAuthService.Mode.OPEN, outboundAuth.modeFor(stubBase));
-            verify(b2bTokenService, never()).getTokenForServer(any(), any());
+            verify(b2bTokenService, never()).getTokenForServer(any(), any(), any(), any());
         } finally {
             stub.stop(0);
         }
@@ -347,8 +347,8 @@ class FhirProxyControllerTest {
             var response = new MockHttpServletResponse();
 
             B2BTokenService b2bTokenService = mock(B2BTokenService.class);
-            when(b2bTokenService.getTokenForServer(eq(stubBase), any())).thenReturn("tok-123");
-            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+            when(b2bTokenService.getTokenForServer(eq(stubBase), any(), any(), any())).thenReturn("tok-123");
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth, null);
 
             ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", null, request, response);
 
@@ -356,7 +356,7 @@ class FhirProxyControllerTest {
             assertEquals(2, capturedAuthHeaders.size());
             assertNull(capturedAuthHeaders.get(0));
             assertEquals("Bearer tok-123", capturedAuthHeaders.get(1));
-            verify(b2bTokenService, times(1)).getTokenForServer(eq(stubBase), any());
+            verify(b2bTokenService, times(1)).getTokenForServer(eq(stubBase), any(), any(), any());
             assertEquals(OutboundAuthService.Mode.UDAP_B2B, outboundAuth.modeFor(stubBase));
         } finally {
             stub.stop(0);
@@ -375,8 +375,8 @@ class FhirProxyControllerTest {
             var response = new MockHttpServletResponse();
 
             B2BTokenService b2bTokenService = mock(B2BTokenService.class);
-            when(b2bTokenService.getTokenForServer(eq(stubBase), any())).thenReturn(null);
-            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+            when(b2bTokenService.getTokenForServer(eq(stubBase), any(), any(), any())).thenReturn(null);
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth, null);
 
             ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", null, request, response);
 
@@ -402,14 +402,212 @@ class FhirProxyControllerTest {
             var response = new MockHttpServletResponse();
 
             B2BTokenService b2bTokenService = mock(B2BTokenService.class);
-            when(b2bTokenService.getTokenForServer(eq(stubBase), any())).thenReturn("tok-9");
-            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+            when(b2bTokenService.getTokenForServer(eq(stubBase), any(), any(), any())).thenReturn("tok-9");
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth, null);
 
             ctrl.proxy(stubBase + "/fhir/Claim/$submit", true, "pas-submit", null, request, response);
 
             assertEquals(200, response.getStatus());
             assertEquals(1, capturedAuthHeaders.size());
             assertEquals("Bearer tok-9", capturedAuthHeaders.get(0));
+        } finally {
+            stub.stop(0);
+        }
+    }
+
+    @Test
+    void smartBackendHintWithoutToken_returns502WithConfigGuidance() throws Exception {
+        securityProperties.setEnableAuthentication(true);
+        String payerBase = "http://payer.test/fhir";
+        var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
+        var session = request.getSession(true);
+        session.setAttribute(SpaAuthController.SESSION_PAYER_FHIR_URL, payerBase);
+        var response = new MockHttpServletResponse();
+
+        B2BTokenService b2bTokenService = mock(B2BTokenService.class);
+        when(b2bTokenService.getTokenForServer(any(), any(), any(), any())).thenReturn(null);
+        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth, null);
+
+        ctrl.proxy(payerBase + "/Patient", true, "read", "smart-backend", request, response);
+
+        assertEquals(502, response.getStatus());
+        assertTrue(response.getErrorMessage().contains("app.payer-servers"));
+        verify(b2bTokenService).getTokenForServer(eq(payerBase), any(), eq("smart-backend"), any());
+    }
+
+    @Test
+    void payerRequestWithSmartBackendHint_attachesBearerToken() throws Exception {
+        List<String> capturedAuthHeaders = new java.util.ArrayList<>();
+        HttpServer stub = startStub(attempt -> 200, capturedAuthHeaders);
+        try {
+            String stubBase = "http://localhost:" + stub.getAddress().getPort() + "/fhir";
+            var payer = new ServerProperties.PayerServer();
+            payer.setFhirUrl(stubBase);
+            payer.setAuthType("smart-backend");
+            serverProperties.setPayerServers(List.of(payer));
+
+            B2BTokenService b2bTokenService = mock(B2BTokenService.class);
+            when(b2bTokenService.getTokenForServer(eq(stubBase), any(), any(), any())).thenReturn("smart-backend-token");
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth, null);
+
+            var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
+            var response = new MockHttpServletResponse();
+
+            ctrl.proxy(stubBase + "/Patient", true, "read", "smart-backend", request, response);
+
+            assertEquals(200, response.getStatus());
+            assertEquals(1, capturedAuthHeaders.size());
+            assertEquals("Bearer smart-backend-token", capturedAuthHeaders.get(0));
+            verify(b2bTokenService).getTokenForServer(eq(stubBase), any(), eq("smart-backend"), any());
+        } finally {
+            stub.stop(0);
+        }
+    }
+
+    // --- Session token rejected early (reactive refresh) ---
+
+    /** Records every Authorization value, so an appended header shows up as two. */
+    static HttpServer startAuthCapturingStub(java.util.function.Function<Integer, Integer> statusForAttempt,
+            List<String> capturedAuthHeaders) throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        AtomicInteger attempts = new AtomicInteger();
+        server.createContext("/fhir", exchange -> {
+            List<String> values = exchange.getRequestHeaders().get("Authorization");
+            capturedAuthHeaders.add(values == null ? null : String.join(" | ", values));
+            int status = statusForAttempt.apply(attempts.incrementAndGet());
+            byte[] body = "{\"resourceType\":\"Bundle\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(status, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        return server;
+    }
+
+    static HttpServer startTokenStub(HttpServer server, int status, String body) {
+        server.createContext("/token", exchange -> {
+            byte[] out = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(status, out.length);
+            exchange.getResponseBody().write(out);
+            exchange.close();
+        });
+        return server;
+    }
+
+    private static void primeRefreshableSession(MockHttpServletRequest request, String base, String tokenUrl) {
+        var session = request.getSession(true);
+        session.setAttribute(SpaAuthController.SESSION_SERVER_URL, base);
+        session.setAttribute(SpaAuthController.SESSION_TOKEN_SERVER_URL, base);
+        session.setAttribute(SpaAuthController.SESSION_ACCESS_TOKEN, "stale-token");
+        session.setAttribute(SpaAuthController.SESSION_REFRESH_TOKEN, "refresh-1");
+        session.setAttribute(SpaAuthController.SESSION_TOKEN_ENDPOINT, tokenUrl);
+        session.setAttribute(SpaAuthController.SESSION_CLIENT_ID, "cid");
+        session.setAttribute(SpaAuthController.SESSION_AUTH_METHOD, "smart-none");
+    }
+
+    @Test
+    void providerSessionToken401_refreshesAndRetriesOnceWithTheNewToken() throws Exception {
+        List<String> capturedAuthHeaders = new java.util.ArrayList<>();
+        HttpServer stub = startAuthCapturingStub(attempt -> attempt == 1 ? 401 : 200, capturedAuthHeaders);
+        startTokenStub(stub, 200, "{\"access_token\":\"fresh-token\",\"expires_in\":3600}");
+        stub.start();
+        try {
+            String base = "http://localhost:" + stub.getAddress().getPort() + "/fhir";
+            String tokenUrl = "http://localhost:" + stub.getAddress().getPort() + "/token";
+
+            var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
+            primeRefreshableSession(request, base, tokenUrl);
+            var response = new MockHttpServletResponse();
+
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth, null);
+            ctrl.proxy(base + "/Patient", false, "read", null, request, response);
+
+            assertEquals(200, response.getStatus());
+            assertEquals(2, capturedAuthHeaders.size());
+            assertEquals("Bearer stale-token", capturedAuthHeaders.get(0));
+            // A single value proves the stale header was dropped, not appended to.
+            assertEquals("Bearer fresh-token", capturedAuthHeaders.get(1));
+            assertEquals("fresh-token",
+                request.getSession().getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN));
+        } finally {
+            stub.stop(0);
+        }
+    }
+
+    @Test
+    void providerSessionToken401_refreshFails_returnsTheOriginal401WithoutRetrying() throws Exception {
+        List<String> capturedAuthHeaders = new java.util.ArrayList<>();
+        HttpServer stub = startAuthCapturingStub(attempt -> 401, capturedAuthHeaders);
+        startTokenStub(stub, 400, "{\"error\":\"invalid_grant\"}");
+        stub.start();
+        try {
+            String base = "http://localhost:" + stub.getAddress().getPort() + "/fhir";
+            String tokenUrl = "http://localhost:" + stub.getAddress().getPort() + "/token";
+
+            var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
+            primeRefreshableSession(request, base, tokenUrl);
+            var response = new MockHttpServletResponse();
+
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth, null);
+            ctrl.proxy(base + "/Patient", false, "read", null, request, response);
+
+            assertEquals(401, response.getStatus());
+            assertEquals(1, capturedAuthHeaders.size());
+            assertNull(request.getSession().getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN));
+        } finally {
+            stub.stop(0);
+        }
+    }
+
+    @Test
+    void providerSessionToken403_isNotRetried() throws Exception {
+        List<String> capturedAuthHeaders = new java.util.ArrayList<>();
+        HttpServer stub = startAuthCapturingStub(attempt -> 403, capturedAuthHeaders);
+        startTokenStub(stub, 200, "{\"access_token\":\"fresh-token\",\"expires_in\":3600}");
+        stub.start();
+        try {
+            String base = "http://localhost:" + stub.getAddress().getPort() + "/fhir";
+            String tokenUrl = "http://localhost:" + stub.getAddress().getPort() + "/token";
+
+            var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
+            primeRefreshableSession(request, base, tokenUrl);
+            var response = new MockHttpServletResponse();
+
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth, null);
+            ctrl.proxy(base + "/Patient", false, "read", null, request, response);
+
+            assertEquals(403, response.getStatus());
+            assertEquals(1, capturedAuthHeaders.size());
+            assertEquals("stale-token",
+                request.getSession().getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN));
+        } finally {
+            stub.stop(0);
+        }
+    }
+
+    @Test
+    void payerRequestUsesSessionTokenWhenPayerMatchesTokenServer() throws Exception {
+        List<String> capturedAuthHeaders = new java.util.ArrayList<>();
+        HttpServer stub = startStub(attempt -> 200, capturedAuthHeaders);
+        try {
+            String stubBase = "http://localhost:" + stub.getAddress().getPort() + "/fhir";
+
+            var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
+            var session = request.getSession(true);
+            session.setAttribute(SpaAuthController.SESSION_PAYER_FHIR_URL, stubBase);
+            session.setAttribute(SpaAuthController.SESSION_TOKEN_SERVER_URL, stubBase);
+            session.setAttribute(SpaAuthController.SESSION_ACCESS_TOKEN, "launch-token");
+            var response = new MockHttpServletResponse();
+
+            B2BTokenService b2bTokenService = mock(B2BTokenService.class);
+            var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth, null);
+
+            ctrl.proxy(stubBase + "/Patient", true, "read", null, request, response);
+
+            assertEquals(200, response.getStatus());
+            assertEquals(1, capturedAuthHeaders.size());
+            assertEquals("Bearer launch-token", capturedAuthHeaders.get(0));
+            verify(b2bTokenService, never()).getTokenForServer(any(), any(), any(), any());
         } finally {
             stub.stop(0);
         }
@@ -423,7 +621,7 @@ class FhirProxyControllerTest {
         serverProperties.setPayerServers(List.of(payer));
 
         B2BTokenService b2bTokenService = mock(B2BTokenService.class);
-        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth);
+        var ctrl = new FhirProxyController(securityProperties, serverProperties, b2bTokenService, null, outboundAuth, null);
 
         HttpServletRequest request = mock(HttpServletRequest.class);
         HttpServletResponse response = mock(HttpServletResponse.class);
@@ -431,7 +629,7 @@ class FhirProxyControllerTest {
         ctrl.proxy("https://payer.test/fhir/Patient", true, "nonsense", null, request, response);
 
         verify(response).sendError(eq(400), any());
-        verify(b2bTokenService, never()).getTokenForServer(any(), any());
+        verify(b2bTokenService, never()).getTokenForServer(any(), any(), any(), any());
     }
 
     // --- Forwarded header passthrough (X-Fwd-*) ---
@@ -453,7 +651,7 @@ class FhirProxyControllerTest {
             String base = "http://127.0.0.1:" + upstream.getAddress().getPort() + "/fhir";
             serverProperties = new ServerProperties(base, null);
             outboundAuth = new OutboundAuthService(serverProperties);
-            controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth);
+            controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth, null);
 
             var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
             request.addHeader("X-Fwd-X-Api-Key", "abc");
@@ -483,7 +681,7 @@ class FhirProxyControllerTest {
             String base = "http://127.0.0.1:" + upstream.getAddress().getPort() + "/fhir";
             serverProperties = new ServerProperties(base, null);
             outboundAuth = new OutboundAuthService(serverProperties);
-            controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth);
+            controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth, null);
 
             var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
             var session = request.getSession(true);
@@ -516,7 +714,7 @@ class FhirProxyControllerTest {
             String base = "http://127.0.0.1:" + upstream.getAddress().getPort() + "/fhir";
             serverProperties = new ServerProperties(base, null);
             outboundAuth = new OutboundAuthService(serverProperties);
-            controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth);
+            controller = new FhirProxyController(securityProperties, serverProperties, null, null, outboundAuth, null);
 
             var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
             request.addHeader("X-Fwd-Accept", "application/json");

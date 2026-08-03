@@ -20,6 +20,7 @@ import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +46,9 @@ public class B2BTokenService {
     private final CertificateHolder certificateHolder;
     private final SecurityProperties securityProperties;
     private final OutboundTargetValidator outboundTargetValidator;
+    private final ServerProperties serverProperties;
+    private final SmartClientKeyService smartClientKeyService;
+    private final SmartClientDiscoveryService smartClientDiscoveryService;
 
     /** Cached access tokens keyed by "targetBaseUrl|scopes". */
     private final ConcurrentHashMap<String, CachedToken> tokenCache = new ConcurrentHashMap<>();
@@ -63,10 +67,16 @@ public class B2BTokenService {
     public B2BTokenService(
             CertificateHolder certificateHolder,
             SecurityProperties securityProperties,
-            OutboundTargetValidator outboundTargetValidator) {
+            OutboundTargetValidator outboundTargetValidator,
+            ServerProperties serverProperties,
+            SmartClientKeyService smartClientKeyService,
+            SmartClientDiscoveryService smartClientDiscoveryService) {
         this.certificateHolder = certificateHolder;
         this.securityProperties = securityProperties;
         this.outboundTargetValidator = outboundTargetValidator;
+        this.serverProperties = serverProperties;
+        this.smartClientKeyService = smartClientKeyService;
+        this.smartClientDiscoveryService = smartClientDiscoveryService;
     }
 
     /**
@@ -78,29 +88,91 @@ public class B2BTokenService {
      * @return bearer access token, or null if unavailable
      */
     public String getTokenForServer(String targetBaseUrl, List<String> scopes) {
-        if (!certificateHolder.ensureInitialized()) {
-            logger.warn("Certificate not initialized, cannot obtain B2B token");
-            return null;
+        return getTokenForServer(targetBaseUrl, scopes, null);
+    }
+
+    /**
+     * Variant that honors the caller's requested auth flow over the target's
+     * configured auth-type. "smart-backend" forces SMART Backend Services and
+     * fails when no client-id is configured for the target, since that flow
+     * cannot register dynamically. "b2b" forces UDAP client credentials.
+     * Null routes by configuration.
+     */
+    public String getTokenForServer(String targetBaseUrl, List<String> scopes, String requestedAuth) {
+        return getTokenForServer(targetBaseUrl, scopes, requestedAuth, null);
+    }
+
+    /**
+     * Variant that takes a client id for a target absent from app.payer-servers,
+     * so a payer configured in the settings dialog can use SMART Backend
+     * Services. A configured client-id wins over this one.
+     */
+    public String getTokenForServer(String targetBaseUrl, List<String> scopes, String requestedAuth,
+            String sessionClientId) {
+        String scopeString = String.join(" ", scopes);
+
+        ServerProperties.B2bAuthConfig authConfig = serverProperties.findB2bAuthConfig(targetBaseUrl);
+        if ((authConfig == null || authConfig.clientId() == null)
+                && sessionClientId != null && !sessionClientId.isBlank()) {
+            String authType = authConfig != null ? authConfig.authType() : "smart-backend";
+            String tokenUrl = authConfig != null ? authConfig.tokenUrl() : null;
+            authConfig = new ServerProperties.B2bAuthConfig(authType, tokenUrl, sessionClientId);
         }
 
-        String scopeString = String.join(" ", scopes);
-        String cacheKey = targetBaseUrl + "|" + scopeString;
+        // The cache is process-wide, so the client id keeps one session's token
+        // from being handed to a session that named a different client.
+        String clientKey = authConfig != null && authConfig.clientId() != null ? authConfig.clientId() : "";
+        String cacheKey = targetBaseUrl + "|" + scopeString + "|" + clientKey;
 
         CachedToken cached = tokenCache.get(cacheKey);
         if (cached != null && !cached.isExpired()) {
             return cached.accessToken();
         }
 
+        if ("smart-backend".equals(requestedAuth)) {
+            if (authConfig == null || authConfig.clientId() == null) {
+                logger.warn("SMART Backend Services requested for {} but no client-id is available; "
+                    + "set one in the settings dialog or in app.payer-servers", targetBaseUrl);
+                return null;
+            }
+            try {
+                return requestBackendServicesToken(targetBaseUrl, authConfig, scopeString, cacheKey);
+            } catch (Exception e) {
+                logger.error("Failed to obtain SMART Backend Services token for {}: {}",
+                    targetBaseUrl, e.getMessage());
+                return null;
+            }
+        }
+
+        boolean forceUdap = "b2b".equals(requestedAuth);
+        if (!forceUdap && authConfig != null && "none".equals(authConfig.authType())) {
+            return null;
+        }
+
+        if (!forceUdap && authConfig != null && "smart-backend".equals(authConfig.authType())) {
+            try {
+                return requestBackendServicesToken(targetBaseUrl, authConfig, scopeString, cacheKey);
+            } catch (Exception e) {
+                logger.error("Failed to obtain SMART Backend Services token for {}: {}",
+                    targetBaseUrl, e.getMessage());
+                return null;
+            }
+        }
+
+        if (!certificateHolder.ensureInitialized()) {
+            logger.warn("Certificate not initialized, cannot obtain B2B token");
+            return null;
+        }
+
         try {
-            String token = requestToken(targetBaseUrl, scopeString);
-            return token;
+            return requestToken(targetBaseUrl, scopeString, cacheKey);
         } catch (Exception e) {
             logger.error("Failed to obtain B2B token for {}: {}", targetBaseUrl, e.getMessage());
             return null;
         }
     }
 
-    private String requestToken(String targetBaseUrl, String scopeString) throws Exception {
+    private String requestToken(String targetBaseUrl, String scopeString, String cacheKey) throws Exception {
         String normalizedTarget = UrlMatchUtil.normalizeUrl(targetBaseUrl);
 
         // 1. Discover UDAP metadata and perform DCR if needed
@@ -119,6 +191,16 @@ public class B2BTokenService {
             response = sendTokenRequest(registration, scopeString);
         }
 
+        return parseAndCacheToken(response, targetBaseUrl, cacheKey);
+    }
+
+    /**
+     * Caches the token with its expiry, minus the early-expiry buffer that
+     * {@link CachedToken#isExpired()} applies. Shared by the UDAP and SMART
+     * Backend Services flows.
+     */
+    private String parseAndCacheToken(
+            HttpResponse<String> response, String targetBaseUrl, String cacheKey) throws Exception {
         if (response.statusCode() != 200) {
             throw new RuntimeException("Token request failed: HTTP " + response.statusCode()
                 + " " + response.body());
@@ -139,11 +221,82 @@ public class B2BTokenService {
             expiresIn = num.longValue();
         }
 
-        String cacheKey = targetBaseUrl + "|" + scopeString;
         tokenCache.put(cacheKey, new CachedToken(accessToken, Instant.now().plusSeconds(expiresIn)));
         logger.debug("B2B token cached for {} (expires in {}s)", targetBaseUrl, expiresIn);
 
         return accessToken;
+    }
+
+    /**
+     * Requests a token via the SMART Backend Services flow: a private_key_jwt
+     * client assertion exchanged for a client_credentials grant. Unlike UDAP,
+     * this never performs DCR. The client id is pre-registered with the target.
+     */
+    private String requestBackendServicesToken(
+            String targetBaseUrl, ServerProperties.B2bAuthConfig authConfig,
+            String scopeString, String cacheKey) throws Exception {
+        String clientId = authConfig.clientId();
+        if (clientId == null) {
+            logger.warn("SMART Backend Services auth configured for {} without a clientId; skipping",
+                targetBaseUrl);
+            return null;
+        }
+
+        String tokenEndpoint = authConfig.tokenUrl();
+        List<String> signingAlgs = List.of();
+        if (tokenEndpoint == null || tokenEndpoint.isBlank()) {
+            SmartClientDiscoveryService.SmartConfiguration config = smartClientDiscoveryService.discover(targetBaseUrl);
+            tokenEndpoint = config.tokenEndpoint();
+            signingAlgs = config.tokenEndpointAuthSigningAlgs();
+        } else {
+            try {
+                signingAlgs = smartClientDiscoveryService.discover(targetBaseUrl).tokenEndpointAuthSigningAlgs();
+            } catch (Exception e) {
+                logger.warn("SMART configuration discovery failed for {}, defaulting to RS384: {}",
+                    targetBaseUrl, e.getMessage());
+            }
+        }
+
+        outboundTargetValidator.validate(tokenEndpoint);
+        JWSAlgorithm alg = selectAssertionAlgorithm(signingAlgs);
+
+        HttpRequest request = buildBackendServicesRequest(clientId, tokenEndpoint, scopeString, alg);
+        HttpResponse<String> response = SecurityUtil.getHttpClient(securityProperties)
+            .send(request, HttpResponse.BodyHandlers.ofString());
+
+        return parseAndCacheToken(response, targetBaseUrl, cacheKey);
+    }
+
+    /**
+     * Builds the client_credentials token request signed with a private_key_jwt
+     * assertion. Confidential asymmetric clients must not send client_id in the form.
+     */
+    HttpRequest buildBackendServicesRequest(
+            String clientId, String tokenEndpoint, String scopeString, JWSAlgorithm alg) throws Exception {
+        String clientAssertion = smartClientKeyService.buildClientAssertion(clientId, tokenEndpoint, alg);
+
+        String formBody = "grant_type=" + encode("client_credentials")
+            + "&scope=" + encode(scopeString)
+            + "&client_assertion_type=" + encode("urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+            + "&client_assertion=" + encode(clientAssertion);
+
+        return HttpRequest.newBuilder()
+            .uri(URI.create(tokenEndpoint))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .POST(HttpRequest.BodyPublishers.ofString(formBody))
+            .timeout(Duration.ofSeconds(15))
+            .build();
+    }
+
+    /** RS384 unless the server advertises support for ES384 only. */
+    private static JWSAlgorithm selectAssertionAlgorithm(List<String> signingAlgs) {
+        if (signingAlgs == null || signingAlgs.isEmpty() || signingAlgs.contains(JWSAlgorithm.RS384.getName())) {
+            return JWSAlgorithm.RS384;
+        }
+        if (signingAlgs.contains(JWSAlgorithm.ES384.getName())) {
+            return JWSAlgorithm.ES384;
+        }
+        return JWSAlgorithm.RS384;
     }
 
     /**

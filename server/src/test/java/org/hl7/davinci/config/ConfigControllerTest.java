@@ -49,6 +49,36 @@ class ConfigControllerTest {
   }
 
   @Test
+  void providerUserCredentialsNeverReachConfigJs() {
+    ServerProperties.ProviderServer ehr = new ServerProperties.ProviderServer();
+    ehr.setName("SMART EHR");
+    ehr.setUrl("https://ehr.example.com/fhir");
+    ehr.setUserClientId("spa-client");
+    ehr.setUserClientSecret("s3cret");
+    ServerProperties props = new ServerProperties("http://localhost:8080/fhir", List.of(ehr));
+    String js = new ConfigController(props, new SecurityProperties()).getConfig();
+    assertFalse(js.contains("s3cret"));
+    assertFalse(js.contains("userClientSecret"));
+  }
+
+  @Test
+  void payerAuthConfigNeverReachesConfigJs() {
+    ServerProperties.PayerServer payer = new ServerProperties.PayerServer();
+    payer.setName("Smart Payer");
+    payer.setCdsUrl("https://payer.example.com/cds-services");
+    payer.setFhirUrl("https://payer.example.com/fhir");
+    payer.setAuthType("smart-backend");
+    payer.setTokenUrl("https://payer.example.com/oauth/token");
+    payer.setClientId("provider-ri");
+    ServerProperties props = new ServerProperties("http://localhost:8080/fhir", List.of());
+    props.setPayerServers(List.of(payer));
+    String js = new ConfigController(props, new SecurityProperties()).getConfig();
+    assertFalse(js.contains("tokenUrl"));
+    assertFalse(js.contains("provider-ri"));
+    assertFalse(js.contains("authType"));
+  }
+
+  @Test
   void emitsRequiresAuthFlag() {
     ServerProperties.ProviderServer open = new ServerProperties.ProviderServer();
     open.setName("Inferno");

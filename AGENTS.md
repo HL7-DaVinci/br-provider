@@ -179,6 +179,9 @@ The `X-Bypass-Auth` header can skip authentication (configured via `security.byp
 ### Custom header forwarding
 The settings dialog can attach per-server custom headers to outbound FHIR and CDS requests. Direct requests to open servers carry them as-is. Proxied requests carry them as `X-Fwd-<Name>`. `ForwardedHeaderUtil` strips the prefix and the BFF proxies forward them upstream. A forwarded `Authorization` header suppresses the proxy's own token injection for that request. The payer "Bypass payor-handled check" toggle rides this same pipeline as `X-Bypass-Payor-Check`.
 
+### SMART client support
+Separately from the IdP role above, this server also acts as a SMART client against external targets. Three modes, all BFF-held (tokens never reach the browser): (1) provider/EHR user login via `authorization_code` + PKCE, public or confidential (symmetric secret or `private_key_jwt`); (2) SMART Backend Services for payer targets (`auth-type: smart-backend`), asymmetric-only `client_credentials` signed with keys published at `GET /api/security/jwks`; (3) `/dtr/launch` as a real SMART EHR-launch client when an external system launches DTR with `iss`+`launch`. In the FHIR proxy's payer branch, a session token matching the active payer base always wins over minting a new UDAP B2B or SMART Backend Services token, so an EHR-launch token that also covers the payer role (as Inferno's DTR SMART App suite simulates) gets reused instead of replaced.
+
 ---
 
 ## Configuration

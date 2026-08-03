@@ -43,12 +43,24 @@ describe("provider recents", () => {
     localStorage.setItem(
       "fhir-server-recents",
       JSON.stringify([
-        { url: "http://ok.test/fhir", authMode: "smart", headers: "junk" },
+        { url: "http://ok.test/fhir", authMode: "bogus", headers: "junk" },
         { notAUrl: true },
         "junk",
       ]),
     );
     expect(getProviderRecents()).toEqual([{ url: "http://ok.test/fhir" }]);
+  });
+
+  it("keeps a smart auth mode and clientId on read", () => {
+    localStorage.setItem(
+      "fhir-server-recents",
+      JSON.stringify([
+        { url: "http://ok.test/fhir", authMode: "smart", clientId: "abc123" },
+      ]),
+    );
+    expect(getProviderRecents()).toEqual([
+      { url: "http://ok.test/fhir", authMode: "smart", clientId: "abc123" },
+    ]);
   });
 });
 

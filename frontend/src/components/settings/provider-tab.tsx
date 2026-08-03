@@ -72,19 +72,28 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
       ? (storedAuthTarget.idp ?? "")
       : "",
   );
+  const [clientId, setClientId] = useState(
+    isCustomServer && storedAuthTarget?.serverUrl === serverUrl
+      ? (storedAuthTarget.clientId ?? "")
+      : "",
+  );
   const [headers, setHeaders] = useState<CustomHeader[]>(activeHeaders);
   const [recents, setRecents] = useState(getProviderRecents);
 
   // Whether a preset server has been selected but not yet saved
-  const pendingPreset =
-    !!pendingUrl && presetServers.some((s) => s.url === pendingUrl);
+  const pendingPresetServer = pendingUrl
+    ? presetServers.find((s) => s.url === pendingUrl)
+    : undefined;
+  const pendingPreset = !!pendingPresetServer;
   const showCustom = (showCustomInput || isCustomServer) && !pendingPreset;
 
-  // Discovery runs against the probed URL, not the active server
+  // Discovery runs against the probed URL, not the active server.
+  // Presets are probed too so a SMART-secured preset routes through
+  // SMART login instead of the primary sign-in flow.
   const isPendingCustom = !!pendingUrl && !pendingPreset;
   const { data: discovery, isLoading: isDiscovering } = useServerDiscovery(
     pendingUrl,
-    isPendingCustom,
+    isPendingCustom || pendingPreset,
     validCustomHeaders(headers),
   );
 
@@ -93,10 +102,28 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
   const needsAuth =
     isPendingCustom && discovery?.udapEnabled && discovery.registered;
 
+  // SMART is the fallback auth mode when UDAP does not apply.
+  // A UDAP-enabled preset keeps the primary sign-in flow, and a preset
+  // declared open stays open even when it publishes SMART metadata.
+  const needsSmartAuth =
+    !needsAuth &&
+    discovery?.smartEnabled === true &&
+    (isPendingCustom ||
+      (pendingPreset &&
+        !discovery.udapEnabled &&
+        pendingPresetServer?.requiresAuth !== false));
+
   // When the probe confirms a custom server is a valid FHIR server without
-  // UDAP support, login uses local identity mode instead of the UDAP flow.
+  // UDAP or SMART support, login uses local identity mode instead.
   const probedOpen =
-    isPendingCustom && discovery?.fhirServer === true && !discovery.udapEnabled;
+    isPendingCustom &&
+    discovery?.fhirServer === true &&
+    !discovery.udapEnabled &&
+    !needsSmartAuth;
+
+  const clientIdRequired =
+    needsSmartAuth && discovery?.userLoginConfigured !== true;
+  const clientIdMissing = clientIdRequired && !clientId.trim();
 
   // Connect button visible when input differs from what has been probed
   const normalizedInput = customUrlInput.trim().replace(/\/+$/, "");
@@ -118,6 +145,7 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
       setCustomUrlInput("");
       setPendingUrl("");
       setIdpUrl("");
+      setClientId("");
       setHeaders([]);
       return;
     }
@@ -128,11 +156,14 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
       setCustomUrlInput(recent.url);
       setPendingUrl(recent.url);
       setIdpUrl(recent.idp ?? "");
+      setClientId(recent.clientId ?? "");
       setHeaders(recent.headers ?? []);
       return;
     }
     setShowCustomInput(false);
     setPendingUrl(value);
+    setIdpUrl("");
+    setClientId("");
     setHeaders(
       value === serverUrl ? activeHeaders : getStoredServerHeaders(value),
     );
@@ -151,34 +182,63 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
       JSON.stringify(savedHeaders);
   const headerError = headerEditorError(headers);
 
+  // A client ID edit on the active SMART server is an in-place save.
+  const activeSmartTarget =
+    storedAuthTarget?.serverUrl === serverUrl &&
+    storedAuthTarget.authMode === "smart"
+      ? storedAuthTarget
+      : undefined;
+  const clientIdChanged =
+    !switchingServer &&
+    !!activeSmartTarget &&
+    clientId.trim() !== (activeSmartTarget.clientId ?? "");
+
   const canSave =
     !headerError &&
+    !clientIdMissing &&
     (switchingServer
-      ? !isPendingCustom || (discovery?.fhirServer === true && !isDiscovering)
-      : headersChanged);
+      ? isPendingCustom
+        ? discovery?.fhirServer === true && !isDiscovering
+        : !pendingPreset || !isDiscovering
+      : headersChanged || clientIdChanged);
 
   const handleSave = async () => {
     const saveHeaders = validCustomHeaders(headers);
     const headerArg = saveHeaders.length > 0 ? saveHeaders : undefined;
 
-    if (!switchingServer && headersChanged) {
+    if (!switchingServer && (headersChanged || clientIdChanged)) {
       // The keyed store works for preset and custom servers alike. The
       // custom-target entries stay in sync so recents prefill correctly.
       setStoredServerHeaders(serverUrl, headerArg);
-      if (storedAuthTarget?.serverUrl === serverUrl) {
-        setStoredCustomAuthTarget(serverUrl, storedAuthTarget.idp, headerArg);
+      const activeAuthTargetMatches = storedAuthTarget?.serverUrl === serverUrl;
+      const savedClientId = activeAuthTargetMatches
+        ? activeSmartTarget
+          ? clientId.trim() || undefined
+          : storedAuthTarget.clientId
+        : undefined;
+      if (activeAuthTargetMatches) {
+        setStoredCustomAuthTarget(
+          serverUrl,
+          storedAuthTarget.idp,
+          headerArg,
+          storedAuthTarget.authMode,
+          savedClientId,
+        );
       } else if (storedOpenServer?.url === serverUrl) {
         setStoredCustomOpenServer(serverUrl, headerArg);
       }
       if (isCustomServer) {
         addProviderRecent({
           url: serverUrl,
-          ...(storedAuthTarget?.serverUrl === serverUrl && storedAuthTarget.idp
+          ...(activeAuthTargetMatches && storedAuthTarget.idp
             ? { idp: storedAuthTarget.idp }
             : {}),
           ...(storedOpenServer?.url === serverUrl
             ? { authMode: "open" as const }
-            : { authMode: "udap" as const }),
+            : activeAuthTargetMatches && storedAuthTarget.authMode === "smart"
+              ? { authMode: "smart" as const }
+              : { authMode: "udap" as const }),
+          ...(savedClientId ? { clientId: savedClientId } : {}),
           ...(headerArg ? { headers: headerArg } : {}),
         });
       }
@@ -188,7 +248,16 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
 
     setStoredServerHeaders(pendingUrl, headerArg);
 
-    if (needsAuth) {
+    const trimmedClientId = clientId.trim();
+    if (needsSmartAuth) {
+      setStoredCustomAuthTarget(
+        pendingUrl,
+        undefined,
+        headerArg,
+        "smart",
+        trimmedClientId || undefined,
+      );
+    } else if (needsAuth) {
       setStoredCustomAuthTarget(pendingUrl, idpUrl || undefined, headerArg);
     } else {
       clearStoredCustomAuthTarget();
@@ -201,23 +270,32 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
     if (isPendingCustom) {
       addProviderRecent({
         url: pendingUrl,
-        ...(idpUrl ? { idp: idpUrl } : {}),
+        ...(needsSmartAuth ? {} : idpUrl ? { idp: idpUrl } : {}),
         ...(probedOpen
           ? { authMode: "open" as const }
-          : needsAuth
-            ? { authMode: "udap" as const }
-            : {}),
+          : needsSmartAuth
+            ? { authMode: "smart" as const }
+            : needsAuth
+              ? { authMode: "udap" as const }
+              : {}),
+        ...(needsSmartAuth && trimmedClientId
+          ? { clientId: trimmedClientId }
+          : {}),
         ...(headerArg ? { headers: headerArg } : {}),
       });
     }
 
-    if (isAuthenticated) {
+    if (isAuthenticated && !needsAuth && !needsSmartAuth) {
       await signOut();
     }
     await setServerUrl(pendingUrl).catch((err) => {
       console.error("setServerUrl failed", err);
     });
 
+    if (needsSmartAuth) {
+      login(pendingUrl, undefined, { clientId: trimmedClientId || undefined });
+      return;
+    }
     if (needsAuth) {
       login(pendingUrl, idpUrl || undefined);
       return;
@@ -313,12 +391,15 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
         idPrefix="provider"
       />
 
-      {isPendingCustom && (
+      {(isPendingCustom ||
+        (pendingPreset && (isDiscovering || needsSmartAuth))) && (
         <DiscoveryStatusSection
           discovery={discovery}
           isDiscovering={isDiscovering}
           idpUrl={idpUrl}
           setIdpUrl={setIdpUrl}
+          clientId={clientId}
+          setClientId={setClientId}
         />
       )}
 
@@ -345,7 +426,7 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
           Cancel
         </Button>
         <Button onClick={handleSave} disabled={!canSave || canConnect}>
-          {needsAuth ? "Save & Sign In" : "Save"}
+          {needsAuth || needsSmartAuth ? "Save & Sign In" : "Save"}
         </Button>
       </DialogFooter>
     </div>
@@ -360,11 +441,15 @@ interface DiscoveryStatusSectionProps {
         udapEnabled: boolean;
         registered?: boolean;
         tieredOauthSupported?: boolean;
+        smartEnabled?: boolean;
+        userLoginConfigured?: boolean;
       }
     | undefined;
   isDiscovering: boolean;
   idpUrl: string;
   setIdpUrl: (url: string) => void;
+  clientId: string;
+  setClientId: (id: string) => void;
 }
 
 function DiscoveryStatusSection({
@@ -372,6 +457,8 @@ function DiscoveryStatusSection({
   isDiscovering,
   idpUrl,
   setIdpUrl,
+  clientId,
+  setClientId,
 }: DiscoveryStatusSectionProps) {
   const apiBaseUrl = getApiBaseUrl();
 
@@ -391,6 +478,53 @@ function DiscoveryStatusSection({
       <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
         <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
         <span>{discovery.error || "Not a valid FHIR server"}</span>
+      </div>
+    );
+  }
+
+  if (
+    discovery.smartEnabled &&
+    !(discovery.udapEnabled && discovery.registered)
+  ) {
+    const clientIdMissing =
+      discovery.userLoginConfigured !== true && !clientId.trim();
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <CheckCircle className="h-4 w-4 text-success" />
+          Valid FHIR server
+        </div>
+        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <CheckCircle className="h-4 w-4 text-success" />
+          SMART-enabled server
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Authentication: SMART server, saving will sign you in
+        </p>
+        <div className="space-y-1">
+          <Label
+            htmlFor="smart-client-id"
+            className="text-xs text-muted-foreground"
+          >
+            Client ID
+          </Label>
+          <Input
+            id="smart-client-id"
+            placeholder="Client ID"
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            className="h-8 text-xs"
+          />
+          {discovery.userLoginConfigured ? (
+            <p className="text-xs text-muted-foreground">
+              A client ID is configured on the server for this target
+            </p>
+          ) : clientIdMissing ? (
+            <p className="text-xs text-muted-foreground">
+              Enter the client ID registered with this server
+            </p>
+          ) : null}
+        </div>
       </div>
     );
   }

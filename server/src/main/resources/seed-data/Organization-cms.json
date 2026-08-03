@@ -1,6 +1,7 @@
 {
   "resourceType": "Organization",
   "id": "cms",
+  "active": true,
   "name": "Centers for Medicare & Medicaid Services",
   "identifier": [
     {

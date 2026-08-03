@@ -52,6 +52,15 @@ function isFhirLike(data: unknown): data is Resource {
   );
 }
 
+/** Proxied request paths carry the upstream URL percent-encoded, which is unreadable. */
+function decodeUrl(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
 export const JsonViewerDialog = memo(function JsonViewerDialog({
   data,
   title,
@@ -77,9 +86,11 @@ export const JsonViewerDialog = memo(function JsonViewerDialog({
   }, [title, data]);
 
   // Default description for FHIR resources
-  const displayDescription =
-    description ??
-    (isFhirLike(data) && !title ? "Raw JSON representation" : undefined);
+  const displayDescription = description
+    ? decodeUrl(description)
+    : isFhirLike(data) && !title
+      ? "Raw JSON representation"
+      : undefined;
 
   const monacoTheme = effectiveTheme === "dark" ? "vs-dark" : "light";
 

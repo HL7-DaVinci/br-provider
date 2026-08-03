@@ -40,6 +40,8 @@ export default defineConfig({
   },
   server: {
     port: 3000,
+    host: true,
+    allowedHosts: ["host.docker.internal"],
     proxy: {
       "/login": {
         target: "http://localhost:8080",

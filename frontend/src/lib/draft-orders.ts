@@ -95,6 +95,12 @@ function buildOrderResource(
     base.id = `draft-${order.templateId}`;
   }
 
+  if (template.resourceType === "NutritionOrder") {
+    base.dateTime = new Date().toISOString();
+  } else {
+    base.authoredOn = new Date().toISOString();
+  }
+
   if (options.encounterId) {
     base.encounter = { reference: `Encounter/${options.encounterId}` };
   }
@@ -170,7 +176,7 @@ export function buildDraftOrdersBundle(
   options: Omit<BuildOrderOptions, "status" | "includeDraftId"> = {},
 ): Bundle {
   const entries = selectedOrders.map((order) => ({
-    fullUrl: `urn:uuid:draft-${order.templateId}`,
+    fullUrl: `urn:uuid:${crypto.randomUUID()}`,
     resource: buildOrderResource(order, patientId, sharedFields, {
       ...options,
       status: "draft",

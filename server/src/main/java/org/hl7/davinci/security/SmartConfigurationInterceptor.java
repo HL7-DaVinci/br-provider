@@ -72,7 +72,10 @@ public class SmartConfigurationInterceptor extends BaseInterceptor {
             "none",
             "private_key_jwt"
         ));
-        metadata.put("token_endpoint_auth_signing_alg_values_supported", List.of("RS256"));
+        metadata.put("introspection_endpoint", serverRoot + "/oauth2/introspect");
+        // Registered clients sign with RS256 (UDAP DCR) or RS384 (static SMART backend).
+        // No registration path issues an ES384 client, so it is not advertised.
+        metadata.put("token_endpoint_auth_signing_alg_values_supported", List.of("RS256", "RS384"));
         metadata.put("code_challenge_methods_supported", List.of("S256"));
         metadata.put("scopes_supported", List.copyOf(SmartScopes.supportedScopes()));
         metadata.put("capabilities", List.of(
@@ -85,7 +88,9 @@ public class SmartConfigurationInterceptor extends BaseInterceptor {
             "context-ehr-encounter",
             "context-standalone-patient",
             "permission-patient",
-            "permission-user"
+            "permission-user",
+            "permission-offline",
+            "permission-online"
         ));
         return metadata;
     }

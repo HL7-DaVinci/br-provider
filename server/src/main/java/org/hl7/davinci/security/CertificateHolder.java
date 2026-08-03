@@ -38,6 +38,7 @@ public class CertificateHolder {
     private final SecurityProperties securityProperties;
 
     private RSAKey signingKey;
+    private RSAKey cdsClientKey;
     private X509Certificate certificate;
     private List<com.nimbusds.jose.util.Base64> x509CertChain;
     // keyStore is written last in initialize() so that a reader observing keyStore != null
@@ -127,9 +128,21 @@ public class CertificateHolder {
             .x509CertChain(loadedX509CertChain)
             .build();
 
+        // Same key material under a second kid. CDS client JWTs are signed
+        // RS384, so their JWKS entry must declare RS384. Validators select
+        // the algorithm from the published JWK.
+        RSAKey loadedCdsClientKey = new RSAKey.Builder(publicKey)
+            .privateKey(privateKey)
+            .keyUse(KeyUse.SIGNATURE)
+            .algorithm(JWSAlgorithm.RS384)
+            .keyID("cds-client-signing-key")
+            .x509CertChain(loadedX509CertChain)
+            .build();
+
         this.certificate = loadedCertificate;
         this.x509CertChain = loadedX509CertChain;
         this.signingKey = loadedSigningKey;
+        this.cdsClientKey = loadedCdsClientKey;
         this.keyStore = loadedKeyStore;
 
         logger.info("Certificate loaded successfully. Subject: {}", loadedCertificate.getSubjectX500Principal());
@@ -233,11 +246,12 @@ public class CertificateHolder {
     public boolean isInitialized() { return keyStore != null; }
     public KeyStore getKeyStore() { return keyStore; }
     public RSAKey getSigningKey() { return signingKey; }
+    public RSAKey getCdsClientKey() { return cdsClientKey; }
     public X509Certificate getCertificate() { return certificate; }
     public List<com.nimbusds.jose.util.Base64> getX509CertChain() { return x509CertChain; }
     public JWKSet getJwkSet() {
         // Spring Authorization Server needs the private key available for Jwt encoding.
         // Its JWK set endpoint serializes only the public portion when responding.
-        return new JWKSet(signingKey);
+        return new JWKSet(List.of(signingKey, cdsClientKey));
     }
 }

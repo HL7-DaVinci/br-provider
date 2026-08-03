@@ -30,6 +30,8 @@ public class ServerProperties {
     private String providerOrgIdentifier;
     private String providerOrgIdentifierSystem = "http://example.org/fhir/org-identifier";
     private String payerOrgIdentifier = "1234567893";
+    /** PAS rest-hook endpoint payers notify. Unset, the frontend derives it from the API base. */
+    private String pasNotificationUrl;
 
     @Value("${hapi.fhir.server_address:http://localhost:8080/fhir}")
     private String localServerAddress;
@@ -81,6 +83,8 @@ public class ServerProperties {
 
     public String getPayerOrgIdentifier() { return payerOrgIdentifier; }
     public void setPayerOrgIdentifier(String v) { this.payerOrgIdentifier = v; }
+    public String getPasNotificationUrl() { return pasNotificationUrl; }
+    public void setPasNotificationUrl(String v) { this.pasNotificationUrl = v; }
 
     /**
      * Returns true if the target URL matches a configured payer server's FHIR URL.
@@ -105,11 +109,55 @@ public class ServerProperties {
             .orElse(targetUrl);
     }
 
+    public ProviderServer findProviderByUrl(String targetUrl) {
+        return providerServers.stream()
+            .filter(p -> UrlMatchUtil.matchesBaseUrl(targetUrl, UrlMatchUtil.normalizeUrl(p.getUrl())))
+            .findFirst()
+            .orElse(null);
+    }
+
+    public PayerServer findPayerByFhirUrl(String targetUrl) {
+        return payerServers.stream()
+            .filter(p -> UrlMatchUtil.matchesBaseUrl(targetUrl, UrlMatchUtil.normalizeUrl(p.getFhirUrl())))
+            .findFirst()
+            .orElse(null);
+    }
+
+    /** B2B auth settings for a SMART Backend Services or UDAP client credentials call to a configured target. */
+    public record B2bAuthConfig(String authType, String tokenUrl, String clientId) {}
+
+    /** Payer servers are checked before provider servers. */
+    public B2bAuthConfig findB2bAuthConfig(String targetUrl) {
+        PayerServer payer = findPayerByFhirUrl(targetUrl);
+        if (payer != null) {
+            return new B2bAuthConfig(payer.getAuthType(), payer.getTokenUrl(), blankToNull(payer.getClientId()));
+        }
+        ProviderServer provider = findProviderByUrl(targetUrl);
+        if (provider != null) {
+            return new B2bAuthConfig(provider.getAuthType(), provider.getTokenUrl(),
+                blankToNull(provider.getClientId()));
+        }
+        return null;
+    }
+
+    /** A property left empty, such as an unset placeholder, means unconfigured. */
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
+    }
+
     @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
     public static class ProviderServer {
         private String name;
         private String url;
         private Boolean requiresAuth;
+        private String userClientId;
+        private String userClientSecret;
+        private String userScopes = "openid fhirUser offline_access user/*.rs";
+        /** null when omitted so the auth method can be inferred from the secret. */
+        private String userAuthMethod;
+        private String authType = "udap";
+        private String tokenUrl;
+        private String clientId;
 
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
@@ -119,6 +167,34 @@ public class ServerProperties {
 
         public Boolean getRequiresAuth() { return requiresAuth; }
         public void setRequiresAuth(Boolean requiresAuth) { this.requiresAuth = requiresAuth; }
+
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public String getUserClientId() { return userClientId; }
+        public void setUserClientId(String userClientId) { this.userClientId = userClientId; }
+
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public String getUserClientSecret() { return userClientSecret; }
+        public void setUserClientSecret(String userClientSecret) { this.userClientSecret = userClientSecret; }
+
+        public String getUserScopes() { return userScopes; }
+        public void setUserScopes(String userScopes) { this.userScopes = userScopes; }
+
+        public String getUserAuthMethod() { return userAuthMethod; }
+        public void setUserAuthMethod(String userAuthMethod) { this.userAuthMethod = userAuthMethod; }
+
+        /** udap (default) | smart-backend | none. B2B auth for provider-to-provider calls, not the SPA user login above. */
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public String getAuthType() { return authType; }
+        public void setAuthType(String authType) { this.authType = authType; }
+
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public String getTokenUrl() { return tokenUrl; }
+        public void setTokenUrl(String tokenUrl) { this.tokenUrl = tokenUrl; }
+
+        /** Pre-registered with the target server. Asymmetric only, no client secret. */
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public String getClientId() { return clientId; }
+        public void setClientId(String clientId) { this.clientId = clientId; }
     }
 
     @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
@@ -127,6 +203,9 @@ public class ServerProperties {
         private String cdsUrl;
         private String fhirUrl;
         private Boolean requiresAuth;
+        private String authType = "udap";
+        private String tokenUrl;
+        private String clientId;
 
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
@@ -139,5 +218,29 @@ public class ServerProperties {
 
         public Boolean getRequiresAuth() { return requiresAuth; }
         public void setRequiresAuth(Boolean requiresAuth) { this.requiresAuth = requiresAuth; }
+
+        /** udap (default) | smart-backend | none. */
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public String getAuthType() { return authType; }
+        public void setAuthType(String authType) { this.authType = authType; }
+
+        /**
+         * The only auth type the settings dialog has to know about, because it
+         * is the one that needs a Client ID field. Any other type stays hidden
+         * so the dialog keeps auto-detecting.
+         */
+        @com.fasterxml.jackson.annotation.JsonProperty("authMode")
+        public String getAuthModeForClient() {
+            return "smart-backend".equals(authType) ? "smart-backend" : null;
+        }
+
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public String getTokenUrl() { return tokenUrl; }
+        public void setTokenUrl(String tokenUrl) { this.tokenUrl = tokenUrl; }
+
+        /** Pre-registered with the payer. Asymmetric only, no client secret. */
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public String getClientId() { return clientId; }
+        public void setClientId(String clientId) { this.clientId = clientId; }
     }
 }

@@ -22,7 +22,9 @@ class SmartTokenResponseCustomizerTest {
 
     @Test
     void smartContextClaimsAreMergedWithExistingOidcTokenResponseParameters() throws Exception {
-        String tokenValue = jwt(Map.of("patient", "patient-1"));
+        String tokenValue = jwt(Map.of(
+            "patient", "patient-1",
+            "appContext", "{\"coverageAssertionId\":\"ca-1\"}"));
         OAuth2AccessToken accessToken = new OAuth2AccessToken(
             OAuth2AccessToken.TokenType.BEARER,
             tokenValue,
@@ -53,6 +55,7 @@ class SmartTokenResponseCustomizerTest {
             .getAdditionalParameters();
         assertEquals("oidc-token", additionalParameters.get("id_token"));
         assertEquals("patient-1", additionalParameters.get("patient"));
+        assertEquals("{\"coverageAssertionId\":\"ca-1\"}", additionalParameters.get("appContext"));
     }
 
     private static String jwt(Map<String, Object> claims) throws Exception {

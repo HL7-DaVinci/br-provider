@@ -471,11 +471,24 @@ app:
     - name: "Local Provider Server"
       url: "http://localhost:8080/fhir"
       # requires-auth: false   # open server: SPA bypasses the BFF proxy and calls it directly
+      # user-client-id: spa-client      # SMART user login client registered with this EHR
+      # user-client-secret: change-me   # optional; presence implies auth method basic unless user-auth-method set
+      # user-auth-method: none          # none (public, default) | basic | private_key_jwt
+      # user-scopes: openid fhirUser offline_access user/*.rs
   payer-servers:
     - name: "Local Payer Server"
       cds-url: "http://localhost:8081/cds-services"
       fhir-url: "http://localhost:8081/fhir"
       requires-auth: false
+      # auth-type: smart-backend   # udap (default) | smart-backend | none
+      # client-id: provider-ri     # pre-registered with the payer; register our JWKS from /api/security/jwks
+      # token-url:                 # optional; discovered from .well-known/smart-configuration when omitted
+    # Inferno PAS Client Suite target
+    # - name: "Inferno PAS"
+    #   cds-url: "http://localhost:8081/cds-services"
+    #   fhir-url: "http://localhost/custom/davinci_pas_client_suite_v221/fhir"
+    #   auth-type: smart-backend
+    #   client-id: br-provider
   # Organization identity stamped into PAS/CDex payloads and the PAS Subscription.
   # provider-org-identifier is unset by default: the frontend derives a distinct
   # sending-system identifier per EHR server, which the PAS IG subscription routing
@@ -483,6 +496,10 @@ app:
   # provider-org-identifier: "1122334455"
   provider-org-identifier-system: "http://example.org/fhir/org-identifier"
   payer-org-identifier: "1234567893"
+  # PAS rest-hook endpoint the payer posts decision notifications to. Set it when the
+  # payer cannot reach this server at the frontend's API base, e.g. a payer in Docker
+  # notifying a host-run server.
+  # pas-notification-url: "http://host.docker.internal:8080/api/pas/notification"
 
 # -------------------------------------------------------------------------------------
 # Security Configuration
@@ -498,6 +515,10 @@ security:
   # Minimum seconds between UDAP re-registrations with the primary issuer
   registration-cooldown-seconds: 60
   ssl-verify: false
+  # Keeps the SMART client key pair stable across restarts. Targets that
+  # register a copy of the JWKS stay valid. Empty generates fresh keys.
+  # The file holds private keys, so keep it out of any shared directory.
+  smart-client-key-file: ${user.home}/.br-provider/smart-client-keys.json
   external-base-url: http://localhost:3000
   oauth-client-id: provider-client
   # hl7-b2b client assertion extension values (Da Vinci CDex B2B backend services)
@@ -549,4 +570,15 @@ security:
   smart-public-redirect-uris:
     - http://localhost:3000/callback
     - http://127.0.0.1:3000/callback
-    - http://localhost/custom/smart/redirect # local Inferno testing
+    - http://localhost/custom/smart/redirect # local Inferno testing (SMART STU1 suite)
+    - http://localhost/custom/smart_stu2/redirect # local Inferno testing (SMART STU2 suite)
+    - http://localhost/custom/smart_stu2_2/redirect # local Inferno testing (SMART STU2.2 suite)
+  # Static SMART Backend Services client for local Inferno testing. Remove or
+  # blank these to disable.
+  # smart-backend-client-id: inferno-smart-backend
+  # smart-backend-client-jwks-url: http://localhost/custom/smart_stu2_2/.well-known/jwks.json
+  # Client for the protected token introspection endpoint, used by the Inferno
+  # Token Introspection group. The client is created only when the secret is
+  # supplied at run time.
+  # smart-introspection-client-id: inferno-introspection
+  # smart-introspection-client-secret: ${SMART_INTROSPECTION_CLIENT_SECRET:}

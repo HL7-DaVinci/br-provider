@@ -124,6 +124,7 @@ export function setStoredPayerServer(server: PayerServer): void {
           : {}),
         ...(server.bypassPayorCheck ? { bypassPayorCheck: true } : {}),
         ...(server.authMode ? { authMode: server.authMode } : {}),
+        ...(server.clientId ? { clientId: server.clientId } : {}),
         ...(server.headers?.length ? { headers: server.headers } : {}),
       }),
     );

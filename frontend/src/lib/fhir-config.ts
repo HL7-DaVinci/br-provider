@@ -3,9 +3,14 @@ export interface CustomHeader {
   value: string;
 }
 
-export type PayerAuthMode = "auto" | "open" | "udap-b2b";
+export type PayerAuthMode = "auto" | "open" | "udap-b2b" | "smart-backend";
 
-const PAYER_AUTH_MODES: readonly PayerAuthMode[] = ["auto", "open", "udap-b2b"];
+const PAYER_AUTH_MODES: readonly PayerAuthMode[] = [
+  "auto",
+  "open",
+  "udap-b2b",
+  "smart-backend",
+];
 
 export const DISALLOWED_HEADER_NAMES = new Set([
   "host",
@@ -93,6 +98,8 @@ export interface CustomAuthTarget {
   serverUrl: string;
   idp?: string;
   headers?: CustomHeader[];
+  authMode?: "udap" | "smart";
+  clientId?: string;
 }
 
 export interface PayerServer {
@@ -115,10 +122,16 @@ export interface PayerServer {
   /**
    * How outbound requests to this payer authenticate. "auto" tries tokenless
    * and falls back to B2B. "open" sends direct unauthenticated requests.
-   * "udap-b2b" always injects a B2B token. Wins over requiresAuth.
-   * Extensible for future mechanisms such as SMART.
+   * "udap-b2b" always injects a UDAP B2B token. "smart-backend" always
+   * injects a SMART Backend Services token. Wins over requiresAuth.
    */
   authMode?: PayerAuthMode;
+  /**
+   * Client ID this deployment is registered under with the payer. Required by
+   * "smart-backend", which cannot register dynamically. Ignored by the other
+   * modes.
+   */
+  clientId?: string;
   headers?: CustomHeader[];
 }
 
@@ -270,11 +283,21 @@ export function getStoredCustomAuthTarget(): CustomAuthTarget | null {
         ? normalizeServerUrl(parsed.idp)
         : undefined;
     const headers = sanitizeCustomHeaders(parsed.headers);
+    const authMode =
+      parsed.authMode === "udap" || parsed.authMode === "smart"
+        ? parsed.authMode
+        : undefined;
+    const clientId =
+      typeof parsed.clientId === "string" && parsed.clientId.length > 0
+        ? parsed.clientId
+        : undefined;
 
     return {
       serverUrl,
       ...(idp ? { idp } : {}),
       ...(headers ? { headers } : {}),
+      ...(authMode ? { authMode } : {}),
+      ...(clientId ? { clientId } : {}),
     };
   } catch {
     return null;
@@ -285,6 +308,8 @@ export function setStoredCustomAuthTarget(
   serverUrl: string,
   idp?: string,
   headers?: CustomHeader[],
+  authMode?: "udap" | "smart",
+  clientId?: string,
 ): void {
   if (typeof window === "undefined") {
     return;
@@ -297,6 +322,8 @@ export function setStoredCustomAuthTarget(
       serverUrl: normalizeServerUrl(serverUrl),
       ...(normalizedIdp ? { idp: normalizedIdp } : {}),
       ...(headers?.length ? { headers } : {}),
+      ...(authMode ? { authMode } : {}),
+      ...(clientId ? { clientId } : {}),
     }),
   );
 }

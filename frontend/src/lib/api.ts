@@ -59,8 +59,11 @@ export function fhirProxyUrl(
   if (options?.payer) {
     params.set("payer", "true");
     const payer = payerForRequestUrl(fhirUrl);
-    if (payer && resolvePayerAuthMode(payer) === "udap-b2b") {
+    const payerAuthMode = payer && resolvePayerAuthMode(payer);
+    if (payerAuthMode === "udap-b2b") {
       params.set("auth", "b2b");
+    } else if (payerAuthMode === "smart-backend") {
+      params.set("auth", "smart-backend");
     }
   }
   if (options?.op) params.set("op", options.op);

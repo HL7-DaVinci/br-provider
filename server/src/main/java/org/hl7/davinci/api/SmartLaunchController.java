@@ -2,21 +2,17 @@ package org.hl7.davinci.api;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SmartLaunchService;
-import org.hl7.davinci.security.SmartLaunchService.LaunchContext;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -98,28 +94,6 @@ public class SmartLaunchController {
             "launchToken", launchToken,
             "launchUrl", launchUrl
         ));
-    }
-
-    /**
-     * Returns and consumes a previously created launch context.
-     * The token is single-use and expires after 5 minutes.
-     */
-    @GetMapping("/context")
-    public ResponseEntity<?> getLaunchContext(@RequestParam("launch") String launchToken) {
-        LaunchContext ctx = smartLaunchService.consumeLaunchContext(launchToken);
-        if (ctx == null) {
-            return ResponseEntity.notFound().build();
-        }
-        Map<String, Object> response = new HashMap<>();
-        response.put("patientId", ctx.patientId());
-        response.put("encounterId", ctx.encounterId());
-        response.put("fhirContext", ctx.fhirContextReferences());
-        response.put("coverageAssertionId", ctx.coverageAssertionId());
-        response.put("questionnaire", ctx.questionnaire());
-        if (ctx.appContext() != null) {
-            response.put("appContext", ctx.appContext());
-        }
-        return ResponseEntity.ok(response);
     }
 
     private String resolveProviderFhirUrl(String requestedProviderFhirUrl) {

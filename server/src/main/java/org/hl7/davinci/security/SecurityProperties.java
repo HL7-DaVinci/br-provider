@@ -48,6 +48,10 @@ public class SecurityProperties {
         "http://localhost:3000/callback",
         "http://127.0.0.1:3000/callback"
     ));
+    private String smartBackendClientId;
+    private String smartBackendClientJwksUrl;
+    private String smartIntrospectionClientId;
+    private String smartIntrospectionClientSecret;
     private String scope = "openid udap fhirUser profile offline_access";
     private List<String> practitionerScopes = new ArrayList<>(List.of(
         "user/*.cruds"
@@ -177,6 +181,22 @@ public class SecurityProperties {
 
     public String getSmartPublicClientName() { return smartPublicClientName; }
     public void setSmartPublicClientName(String smartPublicClientName) { this.smartPublicClientName = smartPublicClientName; }
+
+    public String getSmartBackendClientId() { return smartBackendClientId; }
+    public void setSmartBackendClientId(String smartBackendClientId) { this.smartBackendClientId = smartBackendClientId; }
+
+    public String getSmartBackendClientJwksUrl() { return smartBackendClientJwksUrl; }
+    public void setSmartBackendClientJwksUrl(String smartBackendClientJwksUrl) { this.smartBackendClientJwksUrl = smartBackendClientJwksUrl; }
+
+    public String getSmartIntrospectionClientId() { return smartIntrospectionClientId; }
+    public void setSmartIntrospectionClientId(String smartIntrospectionClientId) {
+        this.smartIntrospectionClientId = smartIntrospectionClientId;
+    }
+
+    public String getSmartIntrospectionClientSecret() { return smartIntrospectionClientSecret; }
+    public void setSmartIntrospectionClientSecret(String smartIntrospectionClientSecret) {
+        this.smartIntrospectionClientSecret = smartIntrospectionClientSecret;
+    }
 
     public List<String> getSmartPublicRedirectUris() { return smartPublicRedirectUris; }
     public void setSmartPublicRedirectUris(List<String> smartPublicRedirectUris) {

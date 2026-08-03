@@ -79,7 +79,8 @@ export function useAuth() {
     authEnabled && !localIdentityMode && !userInfo && isSessionPending;
 
   const login = useCallback(
-    (serverUrl?: string, idp?: string) => startLogin(serverUrl, idp),
+    (serverUrl?: string, idp?: string, smart?: { clientId?: string }) =>
+      startLogin(serverUrl, idp, smart),
     [],
   );
   const logoutAndRefresh = useCallback(async () => {

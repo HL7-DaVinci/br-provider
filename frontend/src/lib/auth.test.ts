@@ -164,6 +164,24 @@ describe("buildLoginPath", () => {
     );
   });
 
+  it("uses a stored SMART target even when the selected server is a preset", async () => {
+    localStorage.setItem("fhir-server-url", "http://localhost:8080/fhir");
+    localStorage.setItem(
+      "fhir-custom-auth-target",
+      JSON.stringify({
+        serverUrl: "http://localhost:8080/fhir",
+        authMode: "smart",
+        clientId: "preset-client",
+      }),
+    );
+
+    const { buildLoginPath } = await import("./auth");
+
+    expect(buildLoginPath()).toBe(
+      "/auth/login?server=http%3A%2F%2Flocalhost%3A8080%2Ffhir&mode=smart&clientId=preset-client",
+    );
+  });
+
   it("ignores a stored custom auth target when it does not match the selected server", async () => {
     localStorage.setItem("fhir-server-url", "https://other.fhir.org/fhir");
     localStorage.setItem(

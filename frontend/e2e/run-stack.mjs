@@ -89,6 +89,7 @@ try {
         BASE_URL: "http://localhost:8080",
         E2E_WAIT_TIMEOUT: "300",
         E2E_REQUIRE_CANDLE: "1",
+        E2E_STUB_HOST: "host.docker.internal",
       },
     });
 
