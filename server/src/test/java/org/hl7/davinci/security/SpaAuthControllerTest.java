@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import ca.uhn.fhir.context.FhirContext;
 import com.sun.net.httpserver.HttpServer;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -40,6 +41,7 @@ class SpaAuthControllerTest {
     StubOutboundTargetValidator outboundTargetValidator;
     CertificateHolder certificateHolder;
     SmartClientKeyService smartClientKeyService;
+    SessionTokenService sessionTokens;
     SecurityProperties securityProperties;
     ServerProperties serverProperties;
     SpaAuthController controller;
@@ -51,6 +53,7 @@ class SpaAuthControllerTest {
         certificateHolder = testCertificateHolder();
         smartClientKeyService = new SmartClientKeyService();
         smartClientKeyService.init();
+        sessionTokens = new SessionTokenService(securityProperties, certificateHolder, smartClientKeyService);
         var secondProvider = new ServerProperties.ProviderServer();
         secondProvider.setName("second");
         secondProvider.setUrl(SECOND_SERVER);
@@ -60,9 +63,10 @@ class SpaAuthControllerTest {
         smartDiscovery = new StubSmartClientDiscoveryService(securityProperties);
         outboundTargetValidator = new StubOutboundTargetValidator(securityProperties);
         controller = new SpaAuthController(
-            udapClient, certificateHolder, securityProperties, serverProperties,
+            udapClient, sessionTokens, securityProperties, serverProperties,
             new StubUserDetailsService(),
-            outboundTargetValidator, smartDiscovery, smartClientKeyService);
+            outboundTargetValidator, smartDiscovery, smartClientKeyService,
+            FhirContext.forR4Cached());
     }
 
     @Test
@@ -142,9 +146,11 @@ class SpaAuthControllerTest {
         assertFalse(uninitializedCertHolder.isInitialized());
 
         SpaAuthController uninitializedController = new SpaAuthController(
-            udapClient, uninitializedCertHolder, securityProperties, serverProperties,
+            udapClient,
+            new SessionTokenService(securityProperties, uninitializedCertHolder, smartClientKeyService),
+            securityProperties, serverProperties,
             new StubUserDetailsService(), new OutboundTargetValidator(securityProperties), smartDiscovery,
-            smartClientKeyService);
+            smartClientKeyService, FhirContext.forR4Cached());
 
         var request = new MockHttpServletRequest();
         String state = "pending-state";
@@ -212,7 +218,8 @@ class SpaAuthControllerTest {
 
     @Test
     void buildClientAssertion_includesX5cHeader() throws Exception {
-        String assertion = controller.buildClientAssertion("https://localhost:5001/connect/token");
+        String assertion = controller.buildClientAssertionFor(
+            "https://localhost:5001/connect/token", "test-client-id");
         SignedJWT jwt = SignedJWT.parse(assertion);
 
         assertNull(jwt.getHeader().getKeyID());
@@ -295,35 +302,32 @@ class SpaAuthControllerTest {
     @Test
     void storeServerToken_replacementBundleClearsStaleRefreshMetadata() {
         var session = new MockHttpSession();
-        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "old-token", "old-id-token",
-            3600L, "old-refresh", "https://old-token-endpoint", "old-client", "udap");
+        sessionTokens.storeServerToken(session, LOCAL_SERVER, "old-token", 3600L, "old-refresh", "https://old-token-endpoint", "old-client", "udap");
 
-        SpaAuthController.storeServerToken(session, "https://ehr.example.com/fhir",
-            "new-token", null, null, null, "https://ehr.example.com/token", "new-client", "smart-none");
+        sessionTokens.storeServerToken(session, "https://ehr.example.com/fhir", "new-token", null, null, "https://ehr.example.com/token", "new-client", "smart-none");
 
-        assertNull(session.getAttribute(SpaAuthController.SESSION_REFRESH_TOKEN));
-        assertNull(session.getAttribute(SpaAuthController.SESSION_ID_TOKEN));
-        assertNull(session.getAttribute(SpaAuthController.SESSION_TOKEN_EXPIRES_AT));
+        assertNull(session.getAttribute(SessionTokenService.SESSION_REFRESH_TOKEN));
+        assertNull(session.getAttribute(SessionTokenService.SESSION_TOKEN_EXPIRES_AT));
         assertEquals("https://ehr.example.com/token",
-            session.getAttribute(SpaAuthController.SESSION_TOKEN_ENDPOINT));
-        assertEquals("new-client", session.getAttribute(SpaAuthController.SESSION_CLIENT_ID));
+            session.getAttribute(SessionTokenService.SESSION_TOKEN_ENDPOINT));
+        assertEquals("new-client", session.getAttribute(SessionTokenService.SESSION_CLIENT_ID));
     }
 
     @Test
     void getTokenForServer_nearExpiryWithoutRefreshToken_returnsNull() {
         var session = new MockHttpSession();
-        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "tok", null, 10L, null);
+        sessionTokens.storeServerToken(session, LOCAL_SERVER, "tok", 10L, null);
 
-        assertNull(SpaAuthController.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
+        assertNull(sessionTokens.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
     }
 
     @Test
     void getTokenForServer_nearExpiryWithRefreshToken_returnsToken() {
         var session = new MockHttpSession();
-        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "tok", null, 10L, "refresh-1");
+        sessionTokens.storeServerToken(session, LOCAL_SERVER, "tok", 10L, "refresh-1");
 
         assertEquals("tok",
-            SpaAuthController.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
+            sessionTokens.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
     }
 
     @Test
@@ -450,7 +454,7 @@ class SpaAuthControllerTest {
     void getSession_sessionWithToken_returnsAuthenticatedWithToken() {
         var request = new MockHttpServletRequest();
         var session = request.getSession(true);
-        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "test-token", null);
+        sessionTokens.storeServerToken(session, LOCAL_SERVER, "test-token");
 
         ResponseEntity<Map<String, Object>> response = controller.getSession(request);
 
@@ -465,7 +469,7 @@ class SpaAuthControllerTest {
         var request = new MockHttpServletRequest();
         var session = request.getSession(true);
         String customServer = "https://custom.fhir.org/fhir";
-        SpaAuthController.storeServerToken(session, customServer, "custom-token", null);
+        sessionTokens.storeServerToken(session, customServer, "custom-token");
 
         ResponseEntity<Map<String, Object>> response = controller.getSession(request);
 
@@ -535,8 +539,9 @@ class SpaAuthControllerTest {
         ServerProperties smartServerProperties = new ServerProperties(
             LOCAL_SERVER, java.util.List.of(smartProvider));
         SpaAuthController smartController = new SpaAuthController(
-            udapClient, certificateHolder, securityProperties, smartServerProperties,
-            new StubUserDetailsService(), outboundTargetValidator, smartDiscovery, smartClientKeyService);
+            udapClient, sessionTokens, securityProperties, smartServerProperties,
+            new StubUserDetailsService(), outboundTargetValidator, smartDiscovery, smartClientKeyService,
+            FhirContext.forR4Cached());
 
         ResponseEntity<?> response = smartController.login(smartServer, null, "smart", null);
 
@@ -666,22 +671,22 @@ class SpaAuthControllerTest {
         smartDiscovery.setSupportsS256(false);
         var request = new MockHttpServletRequest();
         var session = request.getSession(true);
-        SpaAuthController.setActiveServer(session, LOCAL_SERVER);
+        sessionTokens.setActiveServer(session, LOCAL_SERVER);
 
         ResponseEntity<Map<String, Object>> response = controller.smartEhrLaunch(
             Map.of("iss", "https://weak.example.com/fhir", "launch", "abc123"), request);
 
         assertEquals(400, response.getStatusCode().value());
         assertEquals("smart_server_unsupported", response.getBody().get("error"));
-        assertEquals(LOCAL_SERVER, session.getAttribute(SpaAuthController.SESSION_SERVER_URL));
+        assertEquals(LOCAL_SERVER, session.getAttribute(SessionTokenService.SESSION_SERVER_URL));
     }
 
     @Test
     void getSession_withStoredUserinfo_returnsUserinfo() {
         var request = new MockHttpServletRequest();
         var session = request.getSession(true);
-        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "test-token", null);
-        session.setAttribute(SpaAuthController.SESSION_USERINFO, Map.of("name", "Dr. Test"));
+        sessionTokens.storeServerToken(session, LOCAL_SERVER, "test-token");
+        session.setAttribute(SessionTokenService.SESSION_USERINFO, Map.of("name", "Dr. Test"));
 
         ResponseEntity<Map<String, Object>> response = controller.getSession(request);
 
@@ -697,8 +702,8 @@ class SpaAuthControllerTest {
     void getSession_emptyStoredUserinfo_noUserinfoInResponse() {
         var request = new MockHttpServletRequest();
         var session = request.getSession(true);
-        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "test-token", null);
-        session.setAttribute(SpaAuthController.SESSION_USERINFO, Map.of());
+        sessionTokens.storeServerToken(session, LOCAL_SERVER, "test-token");
+        session.setAttribute(SessionTokenService.SESSION_USERINFO, Map.of());
 
         ResponseEntity<Map<String, Object>> response = controller.getSession(request);
 
@@ -716,7 +721,7 @@ class SpaAuthControllerTest {
 
         assertEquals(204, response.getStatusCode().value());
         assertEquals(LOCAL_SERVER,
-            request.getSession(false).getAttribute(SpaAuthController.SESSION_SERVER_URL));
+            request.getSession(false).getAttribute(SessionTokenService.SESSION_SERVER_URL));
     }
 
     @Test
@@ -747,48 +752,46 @@ class SpaAuthControllerTest {
         // without losing their authenticated identity.
         var request = new MockHttpServletRequest();
         var session = request.getSession(true);
-        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "old-token", "old-id-token",
-            3600L, "old-refresh", "https://old-token-endpoint", "old-client");
-        session.setAttribute(SpaAuthController.SESSION_USERINFO, Map.of("name", "Old User"));
+        sessionTokens.storeServerToken(session, LOCAL_SERVER, "old-token", 3600L, "old-refresh", "https://old-token-endpoint", "old-client", null);
+        session.setAttribute(SessionTokenService.SESSION_USERINFO, Map.of("name", "Old User"));
 
         var body = new SpaAuthController.ActiveServerRequest(SECOND_SERVER);
         ResponseEntity<Void> response = controller.setActiveServer(body, request);
 
         assertEquals(204, response.getStatusCode().value());
         assertEquals(SECOND_SERVER,
-            session.getAttribute(SpaAuthController.SESSION_SERVER_URL));
+            session.getAttribute(SessionTokenService.SESSION_SERVER_URL));
         // Token bundle preserved, but bound to LOCAL_SERVER.
         assertEquals("old-token",
-            session.getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN));
+            session.getAttribute(SessionTokenService.SESSION_ACCESS_TOKEN));
         assertEquals(LOCAL_SERVER,
-            session.getAttribute(SpaAuthController.SESSION_TOKEN_SERVER_URL));
+            session.getAttribute(SessionTokenService.SESSION_TOKEN_SERVER_URL));
         // getTokenForServer returns null for the new active server (URL
         // mismatch with the auth URL) but still works for the auth URL.
-        assertNull(SpaAuthController.getTokenForServer(session, SECOND_SERVER + "/Patient"));
+        assertNull(sessionTokens.getTokenForServer(session, SECOND_SERVER + "/Patient"));
         assertEquals("old-token",
-            SpaAuthController.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
+            sessionTokens.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
     }
 
     @Test
     void setActiveServer_sameUrl_keepsTokenBundle() {
         var request = new MockHttpServletRequest();
         var session = request.getSession(true);
-        SpaAuthController.storeServerToken(session, LOCAL_SERVER, "kept-token", null);
+        sessionTokens.storeServerToken(session, LOCAL_SERVER, "kept-token");
 
         var body = new SpaAuthController.ActiveServerRequest(LOCAL_SERVER);
         ResponseEntity<Void> response = controller.setActiveServer(body, request);
 
         assertEquals(204, response.getStatusCode().value());
         assertEquals("kept-token",
-            session.getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN));
+            session.getAttribute(SessionTokenService.SESSION_ACCESS_TOKEN));
     }
 
     @Test
     void storeServerTokenRecordsAuthMethod() {
         MockHttpSession session = new MockHttpSession();
-        SpaAuthController.storeServerToken(session, "https://ehr.example.com/fhir",
-            "at", null, 3600L, "rt", "https://ehr.example.com/token", "spa-client", "smart-none");
-        assertEquals("smart-none", session.getAttribute(SpaAuthController.SESSION_AUTH_METHOD));
+        sessionTokens.storeServerToken(session, "https://ehr.example.com/fhir", "at", 3600L, "rt", "https://ehr.example.com/token", "spa-client", "smart-none");
+        assertEquals("smart-none", session.getAttribute(SessionTokenService.SESSION_AUTH_METHOD));
     }
 
     @Test
@@ -811,25 +814,23 @@ class SpaAuthControllerTest {
             String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
             var request = new MockHttpServletRequest();
             var session = request.getSession(true);
-            SpaAuthController.storeServerToken(session, LOCAL_SERVER, "old-token", null,
-                1L, "old-refresh", tokenEndpoint, "refresh-client");
-            SpaAuthController.setActiveServer(session, SECOND_SERVER);
+            sessionTokens.storeServerToken(session, LOCAL_SERVER, "old-token", 1L, "old-refresh", tokenEndpoint, "refresh-client", null);
+            sessionTokens.setActiveServer(session, SECOND_SERVER);
 
-            SpaAuthController.refreshTokenIfNeeded(
-                session, securityProperties, certificateHolder, smartClientKeyService);
+            sessionTokens.refreshTokenIfNeeded(session);
 
             assertTrue(tokenRequestBody.get().contains("refresh_token=old-refresh"));
             assertEquals("new-token",
-                session.getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN));
+                session.getAttribute(SessionTokenService.SESSION_ACCESS_TOKEN));
             assertEquals("new-refresh",
-                session.getAttribute(SpaAuthController.SESSION_REFRESH_TOKEN));
+                session.getAttribute(SessionTokenService.SESSION_REFRESH_TOKEN));
             assertEquals(SECOND_SERVER,
-                session.getAttribute(SpaAuthController.SESSION_SERVER_URL));
+                session.getAttribute(SessionTokenService.SESSION_SERVER_URL));
             assertEquals(LOCAL_SERVER,
-                session.getAttribute(SpaAuthController.SESSION_TOKEN_SERVER_URL));
-            assertNull(SpaAuthController.getTokenForServer(session, SECOND_SERVER + "/Patient"));
+                session.getAttribute(SessionTokenService.SESSION_TOKEN_SERVER_URL));
+            assertNull(sessionTokens.getTokenForServer(session, SECOND_SERVER + "/Patient"));
             assertEquals("new-token",
-                SpaAuthController.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
+                sessionTokens.getTokenForServer(session, LOCAL_SERVER + "/Patient"));
         } finally {
             tokenServer.stop(0);
         }
@@ -844,17 +845,15 @@ class SpaAuthControllerTest {
         try {
             String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
             MockHttpSession session = new MockHttpSession();
-            SpaAuthController.storeServerToken(session, "https://ehr.example.com/fhir", "old-token", null,
-                1L, "old-refresh", tokenEndpoint, "spa-client", "smart-none");
+            sessionTokens.storeServerToken(session, "https://ehr.example.com/fhir", "old-token", 1L, "old-refresh", tokenEndpoint, "spa-client", "smart-none");
 
-            SpaAuthController.refreshTokenIfNeeded(
-                session, securityProperties, certificateHolder, smartClientKeyService);
+            sessionTokens.refreshTokenIfNeeded(session);
 
             Map<String, String> form = parseForm(tokenRequestBody.get());
             assertEquals("spa-client", form.get("client_id"));
             assertNull(form.get("client_assertion"));
             assertNull(authHeader.get());
-            assertEquals("new-token", session.getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN));
+            assertEquals("new-token", session.getAttribute(SessionTokenService.SESSION_ACCESS_TOKEN));
         } finally {
             tokenServer.stop(0);
         }
@@ -869,12 +868,10 @@ class SpaAuthControllerTest {
         try {
             String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
             MockHttpSession session = new MockHttpSession();
-            SpaAuthController.storeServerToken(session, "https://ehr.example.com/fhir", "old-token", null,
-                1L, "old-refresh", tokenEndpoint, "spa-client", "smart-basic");
-            session.setAttribute(SpaAuthController.SESSION_CLIENT_SECRET, "s3cret");
+            sessionTokens.storeServerToken(session, "https://ehr.example.com/fhir", "old-token", 1L, "old-refresh", tokenEndpoint, "spa-client", "smart-basic");
+            session.setAttribute(SessionTokenService.SESSION_CLIENT_SECRET, "s3cret");
 
-            SpaAuthController.refreshTokenIfNeeded(
-                session, securityProperties, certificateHolder, smartClientKeyService);
+            sessionTokens.refreshTokenIfNeeded(session);
 
             Map<String, String> form = parseForm(tokenRequestBody.get());
             assertNull(form.get("client_id"));
@@ -895,12 +892,10 @@ class SpaAuthControllerTest {
         try {
             String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
             MockHttpSession session = new MockHttpSession();
-            SpaAuthController.storeServerToken(session, "https://ehr.example.com/fhir", "old-token", null,
-                1L, "old-refresh", tokenEndpoint, "spa-client", "smart-private-key-jwt");
-            session.setAttribute(SpaAuthController.SESSION_TOKEN_ALG, "ES384");
+            sessionTokens.storeServerToken(session, "https://ehr.example.com/fhir", "old-token", 1L, "old-refresh", tokenEndpoint, "spa-client", "smart-private-key-jwt");
+            session.setAttribute(SessionTokenService.SESSION_TOKEN_ALG, "ES384");
 
-            SpaAuthController.refreshTokenIfNeeded(
-                session, securityProperties, certificateHolder, smartClientKeyService);
+            sessionTokens.refreshTokenIfNeeded(session);
 
             Map<String, String> form = parseForm(tokenRequestBody.get());
             assertNull(form.get("client_id"));
@@ -1041,7 +1036,7 @@ class SpaAuthControllerTest {
 
         assertEquals(204, response.getStatusCode().value());
         assertEquals("https://br-payer.davinci.hl7.org/fhir",
-            request.getSession(false).getAttribute(SpaAuthController.SESSION_PAYER_FHIR_URL));
+            request.getSession(false).getAttribute(SessionTokenService.SESSION_PAYER_FHIR_URL));
     }
 
     @Test
@@ -1054,19 +1049,19 @@ class SpaAuthControllerTest {
 
         assertEquals(204, response.getStatusCode().value());
         assertEquals("payer-client",
-            request.getSession(false).getAttribute(SpaAuthController.SESSION_PAYER_CLIENT_ID));
+            request.getSession(false).getAttribute(SessionTokenService.SESSION_PAYER_CLIENT_ID));
     }
 
     @Test
     void setActivePayer_blankClientId_clearsAnyStoredValue() {
         var request = new MockHttpServletRequest();
-        request.getSession(true).setAttribute(SpaAuthController.SESSION_PAYER_CLIENT_ID, "stale");
+        request.getSession(true).setAttribute(SessionTokenService.SESSION_PAYER_CLIENT_ID, "stale");
         var body = new SpaAuthController.ActivePayerRequest(
             "https://br-payer.davinci.hl7.org/fhir", "  ");
 
         controller.setActivePayer(body, request);
 
-        assertNull(request.getSession(false).getAttribute(SpaAuthController.SESSION_PAYER_CLIENT_ID));
+        assertNull(request.getSession(false).getAttribute(SessionTokenService.SESSION_PAYER_CLIENT_ID));
     }
 
     @Test

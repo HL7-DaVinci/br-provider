@@ -3,10 +3,7 @@ package org.hl7.davinci.api;
 import java.util.List;
 
 import org.hl7.davinci.config.ServerProperties;
-import org.hl7.davinci.security.CertificateHolder;
-import org.hl7.davinci.security.SecurityProperties;
-import org.hl7.davinci.security.SmartClientKeyService;
-import org.hl7.davinci.security.SpaAuthController;
+import org.hl7.davinci.security.SessionTokenService;
 import org.hl7.davinci.util.ForwardedHeaderUtil;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.hl7.fhir.r4.model.Bundle;
@@ -78,25 +75,19 @@ public class DtrPopulateController {
     private final IRepositoryFactory repositoryFactory;
     private final EvaluationSettings evaluationSettings;
     private final ServerProperties serverProperties;
-    private final SecurityProperties securityProperties;
-    private final CertificateHolder certificateHolder;
-    private final SmartClientKeyService smartClientKeyService;
+    private final SessionTokenService sessionTokens;
 
     public DtrPopulateController(
             FhirContext fhirContext,
             IRepositoryFactory repositoryFactory,
             EvaluationSettings evaluationSettings,
             ServerProperties serverProperties,
-            SecurityProperties securityProperties,
-            CertificateHolder certificateHolder,
-            SmartClientKeyService smartClientKeyService) {
+            SessionTokenService sessionTokens) {
         this.fhirContext = fhirContext;
         this.repositoryFactory = repositoryFactory;
         this.evaluationSettings = evaluationSettings;
         this.serverProperties = serverProperties;
-        this.securityProperties = securityProperties;
-        this.certificateHolder = certificateHolder;
-        this.smartClientKeyService = smartClientKeyService;
+        this.sessionTokens = sessionTokens;
     }
 
     @PostMapping(value = "/populate", consumes = "application/fhir+json", produces = "application/fhir+json")
@@ -173,7 +164,7 @@ public class DtrPopulateController {
      * token when present.
      *
      * Uses the user's authorization_code session token from
-     * {@link SpaAuthController#SESSION_ACCESS_TOKEN}; never the B2B
+     * {@link SessionTokenService#SESSION_ACCESS_TOKEN}; never the B2B
      * client_credentials token (DTR populate is a client action on behalf of
      * a logged-in user).
      *
@@ -186,8 +177,8 @@ public class DtrPopulateController {
             return repositoryFactory.create(new SystemRequestDetails());
         }
         HttpSession session = request != null ? request.getSession(false) : null;
-        SpaAuthController.refreshTokenIfNeeded(session, securityProperties, certificateHolder, smartClientKeyService);
-        String token = SpaAuthController.getTokenForServer(session, activeBase);
+        sessionTokens.refreshTokenIfNeeded(session);
+        String token = sessionTokens.getTokenForServer(session, activeBase);
         IGenericClient client = fhirContext.newRestfulGenericClient(activeBase);
         var forwarded = ForwardedHeaderUtil.extract(request);
         if (token != null && !forwarded.hasAuthorization()) {

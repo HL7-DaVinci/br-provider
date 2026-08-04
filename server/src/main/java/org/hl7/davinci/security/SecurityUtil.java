@@ -1,9 +1,11 @@
 package org.hl7.davinci.security;
 
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.util.List;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -57,6 +59,46 @@ public class SecurityUtil {
             trustAllClient = local;
         }
         return local;
+    }
+
+    /**
+     * True when the candidate URL matches the base URL exactly, or matches it
+     * by scheme and port (and path, when {@code comparePath} is set) with a
+     * host listed in {@code allowedHosts}. One deployment can be reached over
+     * several hostnames (localhost from a host browser, host.docker.internal
+     * from a container), so issuer and audience checks accept any allowed
+     * alias of the configured base.
+     */
+    public static boolean matchesBaseWithAllowedHost(
+            String candidate, String base, List<String> allowedHosts, boolean comparePath) {
+        if (candidate == null || base == null) {
+            return false;
+        }
+        String normalizedCandidate = candidate.replaceAll("/+$", "");
+        String normalizedBase = base.replaceAll("/+$", "");
+        if (normalizedCandidate.equals(normalizedBase)) {
+            return true;
+        }
+        try {
+            URI candidateUri = new URI(normalizedCandidate);
+            URI baseUri = new URI(normalizedBase);
+            if (candidateUri.getPort() != baseUri.getPort()
+                    || !nullSafe(candidateUri.getScheme()).equalsIgnoreCase(nullSafe(baseUri.getScheme()))
+                    || (comparePath && !nullSafe(candidateUri.getPath()).equals(nullSafe(baseUri.getPath())))) {
+                return false;
+            }
+            String candidateHost = candidateUri.getHost();
+            if (candidateHost == null) {
+                return false;
+            }
+            return allowedHosts.stream().anyMatch(allowed -> allowed.equalsIgnoreCase(candidateHost));
+        } catch (URISyntaxException e) {
+            return false;
+        }
+    }
+
+    private static String nullSafe(String value) {
+        return value == null ? "" : value;
     }
 
     public static String resolveIssuer(SecurityProperties securityProperties) {

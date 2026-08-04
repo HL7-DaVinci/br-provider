@@ -1,13 +1,12 @@
 package org.hl7.davinci.security;
 
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.Date;
 import java.util.List;
+import java.util.Set;
 import javax.net.ssl.SSLContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -20,6 +19,7 @@ import com.nimbusds.jose.proc.JWSVerificationKeySelector;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jose.util.DefaultResourceRetriever;
 import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import com.nimbusds.jwt.proc.DefaultJWTClaimsVerifier;
 import com.nimbusds.jwt.proc.DefaultJWTProcessor;
 import org.slf4j.Logger;
@@ -81,7 +81,9 @@ public class TokenValidator {
         DefaultJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
         processor.setJWSTypeVerifier((type, context) -> {});
         processor.setJWSKeySelector(new JWSVerificationKeySelector<>(JWSAlgorithm.RS256, source));
-        processor.setJWTClaimsSetVerifier(new DefaultJWTClaimsVerifier<>(null, null));
+        // The default verifier rejects expired tokens; requiring exp also
+        // rejects tokens that omit it.
+        processor.setJWTClaimsSetVerifier(new DefaultJWTClaimsVerifier<>(null, Set.of("exp")));
 
         JWTClaimsSet claims = processor.process(token, null);
 
@@ -91,10 +93,6 @@ public class TokenValidator {
         boolean isRemote = remoteIssuer != null && remoteIssuer.equals(claimedIssuer);
         if (!isLocal && !isRemote) {
             throw new JOSEException("Untrusted issuer: " + claimedIssuer);
-        }
-
-        if (claims.getExpirationTime() == null || claims.getExpirationTime().before(new Date())) {
-            throw new JOSEException("Token expired");
         }
 
         if (!isRemote) {
@@ -118,36 +116,9 @@ public class TokenValidator {
      * the request comes in on http://host.docker.internal:8080/fhir.
      */
     boolean isAudienceAllowed(String audience) {
-        String normalizedAudience = normalizeUrl(audience);
-        String normalizedBase = normalizeUrl(securityProperties.getSmartFhirBaseUrl());
-        if (normalizedAudience.equals(normalizedBase)) {
-            return true;
-        }
-        try {
-            URI audUri = new URI(normalizedAudience);
-            URI baseUri = new URI(normalizedBase);
-            if (audUri.getPort() != baseUri.getPort()
-                    || !nullSafe(audUri.getScheme()).equalsIgnoreCase(nullSafe(baseUri.getScheme()))
-                    || !nullSafe(audUri.getPath()).equals(nullSafe(baseUri.getPath()))) {
-                return false;
-            }
-            String audHost = audUri.getHost();
-            if (audHost == null) {
-                return false;
-            }
-            return securityProperties.getAllowedLocalHosts().stream()
-                .anyMatch(allowed -> allowed.equalsIgnoreCase(audHost));
-        } catch (URISyntaxException e) {
-            return false;
-        }
-    }
-
-    private static String normalizeUrl(String value) {
-        return value == null ? "" : value.replaceAll("/+$", "");
-    }
-
-    private static String nullSafe(String value) {
-        return value == null ? "" : value;
+        return SecurityUtil.matchesBaseWithAllowedHost(
+            audience, securityProperties.getSmartFhirBaseUrl(),
+            securityProperties.getAllowedLocalHosts(), true);
     }
 
     /**
@@ -156,15 +127,11 @@ public class TokenValidator {
      */
     private String peekIssuer(String token) {
         try {
-            String[] parts = token.split("\\.");
-            if (parts.length >= 2) {
-                String payload = new String(java.util.Base64.getUrlDecoder().decode(parts[1]));
-                return objectMapper.readTree(payload).path("iss").asText(null);
-            }
+            return SignedJWT.parse(token).getJWTClaimsSet().getIssuer();
         } catch (Exception e) {
             logger.debug("Failed to peek at token issuer", e);
+            return null;
         }
-        return null;
     }
 
     /**
@@ -175,28 +142,8 @@ public class TokenValidator {
      * port with a host listed in allowedLocalHosts.
      */
     private boolean isLocalIssuer(String tokenIssuer, String localBase) {
-        if (tokenIssuer == null || localBase == null) return false;
-        String normalized = tokenIssuer.replaceAll("/+$", "");
-        String base = localBase.replaceAll("/+$", "");
-        if (normalized.equals(base)) {
-            return true;
-        }
-        try {
-            URI issuerUri = new URI(normalized);
-            URI baseUri = new URI(base);
-            if (issuerUri.getPort() != baseUri.getPort()
-                    || !nullSafe(issuerUri.getScheme()).equalsIgnoreCase(nullSafe(baseUri.getScheme()))) {
-                return false;
-            }
-            String issuerHost = issuerUri.getHost();
-            if (issuerHost == null) {
-                return false;
-            }
-            return securityProperties.getAllowedLocalHosts().stream()
-                .anyMatch(allowed -> allowed.equalsIgnoreCase(issuerHost));
-        } catch (URISyntaxException e) {
-            return false;
-        }
+        return SecurityUtil.matchesBaseWithAllowedHost(
+            tokenIssuer, localBase, securityProperties.getAllowedLocalHosts(), false);
     }
 
     private JWKSource<SecurityContext> getLocalJwkSource() throws JOSEException {

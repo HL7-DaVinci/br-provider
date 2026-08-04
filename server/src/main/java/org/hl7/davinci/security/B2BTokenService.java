@@ -49,6 +49,7 @@ public class B2BTokenService {
     private final ServerProperties serverProperties;
     private final SmartClientKeyService smartClientKeyService;
     private final SmartClientDiscoveryService smartClientDiscoveryService;
+    private final UdapDcrClient dcrClient;
 
     /** Cached access tokens keyed by "targetBaseUrl|scopes". */
     private final ConcurrentHashMap<String, CachedToken> tokenCache = new ConcurrentHashMap<>();
@@ -77,6 +78,7 @@ public class B2BTokenService {
         this.serverProperties = serverProperties;
         this.smartClientKeyService = smartClientKeyService;
         this.smartClientDiscoveryService = smartClientDiscoveryService;
+        this.dcrClient = new UdapDcrClient(securityProperties, certificateHolder, outboundTargetValidator);
     }
 
     /**
@@ -258,7 +260,7 @@ public class B2BTokenService {
         }
 
         outboundTargetValidator.validate(tokenEndpoint);
-        JWSAlgorithm alg = selectAssertionAlgorithm(signingAlgs);
+        JWSAlgorithm alg = SmartClientKeyService.selectAssertionAlgorithm(signingAlgs);
 
         HttpRequest request = buildBackendServicesRequest(clientId, tokenEndpoint, scopeString, alg);
         HttpResponse<String> response = SecurityUtil.getHttpClient(securityProperties)
@@ -286,17 +288,6 @@ public class B2BTokenService {
             .POST(HttpRequest.BodyPublishers.ofString(formBody))
             .timeout(Duration.ofSeconds(15))
             .build();
-    }
-
-    /** RS384 unless the server advertises support for ES384 only. */
-    private static JWSAlgorithm selectAssertionAlgorithm(List<String> signingAlgs) {
-        if (signingAlgs == null || signingAlgs.isEmpty() || signingAlgs.contains(JWSAlgorithm.RS384.getName())) {
-            return JWSAlgorithm.RS384;
-        }
-        if (signingAlgs.contains(JWSAlgorithm.ES384.getName())) {
-            return JWSAlgorithm.ES384;
-        }
-        return JWSAlgorithm.RS384;
     }
 
     /**
@@ -339,41 +330,13 @@ public class B2BTokenService {
             return existing;
         }
 
-        // Discover UDAP metadata
-        String udapUrl = targetBaseUrl + "/.well-known/udap";
-        outboundTargetValidator.validate(udapUrl);
-
-        HttpClient client = SecurityUtil.getHttpClient(securityProperties);
-        HttpRequest discoveryRequest = HttpRequest.newBuilder()
-            .uri(URI.create(udapUrl))
-            .GET()
-            .timeout(Duration.ofSeconds(10))
-            .build();
-
-        HttpResponse<String> discoveryResponse = client.send(discoveryRequest, HttpResponse.BodyHandlers.ofString());
-        if (discoveryResponse.statusCode() != 200) {
-            throw new RuntimeException("UDAP discovery failed for " + udapUrl
-                + ": HTTP " + discoveryResponse.statusCode());
-        }
-
-        Map<String, Object> metadata = objectMapper.readValue(
-            discoveryResponse.body(), new TypeReference<>() {});
-
-        String tokenEndpoint = (String) metadata.get("token_endpoint");
-        String registrationEndpoint = (String) metadata.get("registration_endpoint");
+        UdapDcrClient.UdapMetadata metadata =
+            dcrClient.discoverMetadata(targetBaseUrl + "/.well-known/udap");
+        String tokenEndpoint = metadata.tokenEndpoint();
         if (tokenEndpoint == null) {
             throw new RuntimeException("UDAP metadata missing token_endpoint");
         }
-
-        outboundTargetValidator.validate(tokenEndpoint);
-
-        // Derive issuer for cache key (some servers omit it)
-        String issuer = (String) metadata.get("issuer");
-        if (issuer == null) {
-            URI tokenUri = URI.create(tokenEndpoint);
-            issuer = tokenUri.getScheme() + "://" + tokenUri.getAuthority();
-        }
-        String normalizedIssuer = UrlMatchUtil.normalizeUrl(issuer);
+        String normalizedIssuer = UrlMatchUtil.normalizeUrl(metadata.issuer());
 
         // Check by issuer in case a previous registration used a different target URL
         existing = b2bRegistrations.get(normalizedIssuer);
@@ -383,12 +346,11 @@ public class B2BTokenService {
         }
 
         // Perform B2B-specific DCR with client_credentials grant
-        if (registrationEndpoint == null) {
+        if (metadata.registrationEndpoint() == null) {
             throw new RuntimeException("UDAP metadata missing registration_endpoint; cannot perform B2B DCR");
         }
-        outboundTargetValidator.validate(registrationEndpoint);
 
-        B2BRegistration registration = performB2BRegistration(registrationEndpoint, tokenEndpoint);
+        B2BRegistration registration = performB2BRegistration(metadata.registrationEndpoint(), tokenEndpoint);
         b2bRegistrations.put(normalizedIssuer, registration);
         b2bRegistrations.put(targetBaseUrl, registration);
         logger.info("B2B DCR completed for issuer {}, client_id: {}", normalizedIssuer, registration.clientId());
@@ -397,67 +359,22 @@ public class B2BTokenService {
     }
 
     /**
-     * Performs UDAP Dynamic Client Registration with client_credentials grant type.
-     * Follows the same pattern as {@link UdapClientRegistration#performRegistration}
-     * but with B2B-specific grant types and no redirect URIs.
+     * Performs UDAP Dynamic Client Registration with client_credentials grant
+     * type. Shares the discovery and DCR mechanics with
+     * {@link UdapClientRegistration} via {@link UdapDcrClient}, with
+     * B2B-specific grant types and no redirect URIs.
      */
     private B2BRegistration performB2BRegistration(
             String registrationEndpoint, String tokenEndpoint) throws Exception {
 
-        String providerBaseUrl = securityProperties.getProviderBaseUrl();
-        if (!providerBaseUrl.endsWith("/")) {
-            providerBaseUrl += "/";
-        }
-
-        JWTClaimsSet softwareStatementClaims = new JWTClaimsSet.Builder()
-            .issuer(providerBaseUrl)
-            .subject(providerBaseUrl)
-            .audience(registrationEndpoint)
-            .expirationTime(Date.from(Instant.now().plusSeconds(300)))
-            .issueTime(new Date())
-            .jwtID(UUID.randomUUID().toString())
+        JWTClaimsSet softwareStatementClaims = dcrClient
+            .softwareStatementBase(securityProperties.getProviderBaseUrl(), registrationEndpoint)
             .claim("client_name", securityProperties.getClientName() + " (B2B)")
             .claim("grant_types", List.of("client_credentials"))
-            .claim("token_endpoint_auth_method", List.of("private_key_jwt"))
-            .claim("contacts", List.of("mailto:admin@localhost"))
-            .claim("logo_uri", "https://build.fhir.org/icon-fhir-16.png")
             .claim("scope", "system/*.read system/*.write")
             .build();
 
-        JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.RS256)
-            .x509CertChain(certificateHolder.getX509CertChain())
-            .build();
-
-        SignedJWT signedStatement = new SignedJWT(header, softwareStatementClaims);
-        signedStatement.sign(new RSASSASigner(certificateHolder.getSigningKey()));
-
-        Map<String, Object> registrationBody = Map.of(
-            "software_statement", signedStatement.serialize(),
-            "certifications", List.of(),
-            "udap", "1"
-        );
-
-        HttpClient client = SecurityUtil.getHttpClient(securityProperties);
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(registrationEndpoint))
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(registrationBody)))
-            .timeout(Duration.ofSeconds(15))
-            .build();
-
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() != 200 && response.statusCode() != 201) {
-            throw new RuntimeException("B2B DCR failed: HTTP " + response.statusCode()
-                + " " + response.body());
-        }
-
-        Map<String, Object> result = objectMapper.readValue(
-            response.body(), new TypeReference<>() {});
-        String clientId = (String) result.get("client_id");
-        if (clientId == null) {
-            throw new RuntimeException("B2B DCR response missing client_id");
-        }
-
+        String clientId = dcrClient.performDcr(registrationEndpoint, softwareStatementClaims);
         return new B2BRegistration(clientId, tokenEndpoint);
     }
 

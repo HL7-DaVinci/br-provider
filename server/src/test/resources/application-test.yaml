@@ -8,6 +8,8 @@ hapi:
 spring:
   session:
     store-type: none
+  main:
+    allow-bean-definition-overriding: true
 
 security:
   enable-authentication: false

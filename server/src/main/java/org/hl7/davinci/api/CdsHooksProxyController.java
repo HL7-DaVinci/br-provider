@@ -14,7 +14,7 @@ import org.hl7.davinci.security.CdsClientJwtService;
 import org.hl7.davinci.security.OutboundTargetValidator;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SecurityUtil;
-import org.hl7.davinci.security.SpaAuthController;
+import org.hl7.davinci.security.SessionTokenService;
 import org.hl7.davinci.util.ForwardedHeaderUtil;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
@@ -134,7 +134,7 @@ public class CdsHooksProxyController {
             // Enrich the hook request with fhirAuthorization for payer prefetch callbacks
             var session = request.getSession(false);
             String accessToken = (session != null)
-                ? (String) session.getAttribute(SpaAuthController.SESSION_ACCESS_TOKEN) : null;
+                ? (String) session.getAttribute(SessionTokenService.SESSION_ACCESS_TOKEN) : null;
             String fhirServerBase = ProxyUtil.getActiveProviderFhirBase(
                 request, serverProperties);
 
@@ -152,7 +152,7 @@ public class CdsHooksProxyController {
 
             if (accessToken != null) {
                 String grantedScope = (session != null)
-                    ? (String) session.getAttribute(SpaAuthController.SESSION_GRANTED_SCOPE) : null;
+                    ? (String) session.getAttribute(SessionTokenService.SESSION_GRANTED_SCOPE) : null;
                 Map<String, Object> fhirAuth = new LinkedHashMap<>();
                 fhirAuth.put("access_token", accessToken);
                 fhirAuth.put("token_type", "Bearer");
@@ -218,7 +218,7 @@ public class CdsHooksProxyController {
     private String resolveSubject(jakarta.servlet.http.HttpSession session) {
         if (session == null) return "";
         Map<String, String> userInfo = (Map<String, String>) session.getAttribute(
-            SpaAuthController.SESSION_USERINFO);
+            SessionTokenService.SESSION_USERINFO);
         if (userInfo != null && userInfo.containsKey("fhirUser")) {
             return userInfo.get("fhirUser");
         }

@@ -1,7 +1,5 @@
 package org.hl7.davinci.security;
 
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.Map;
 import java.util.function.Consumer;
 import org.springframework.security.core.Authentication;
@@ -87,10 +85,6 @@ public class SmartAuthorizationRequestValidator
                 || scope.startsWith("user/"));
     }
 
-    private static String normalize(String value) {
-        return value == null ? "" : value.replaceAll("/+$", "");
-    }
-
     /**
      * The aud claim must point at this server's FHIR base, but a single deployment can be
      * reached over several hostnames -- e.g. localhost from a host browser and
@@ -99,32 +93,9 @@ public class SmartAuthorizationRequestValidator
      * allowedLocalHosts.
      */
     private boolean isAudAllowed(String aud) {
-        String normalizedAud = normalize(aud);
-        String normalizedBase = normalize(securityProperties.getSmartFhirBaseUrl());
-        if (normalizedAud.equals(normalizedBase)) {
-            return true;
-        }
-        try {
-            URI audUri = new URI(normalizedAud);
-            URI baseUri = new URI(normalizedBase);
-            if (audUri.getPort() != baseUri.getPort()
-                    || !nullSafe(audUri.getScheme()).equalsIgnoreCase(nullSafe(baseUri.getScheme()))
-                    || !nullSafe(audUri.getPath()).equals(nullSafe(baseUri.getPath()))) {
-                return false;
-            }
-            String audHost = audUri.getHost();
-            if (audHost == null) {
-                return false;
-            }
-            return securityProperties.getAllowedLocalHosts().stream()
-                .anyMatch(allowed -> allowed.equalsIgnoreCase(audHost));
-        } catch (URISyntaxException e) {
-            return false;
-        }
-    }
-
-    private static String nullSafe(String value) {
-        return value == null ? "" : value;
+        return SecurityUtil.matchesBaseWithAllowedHost(
+            aud, securityProperties.getSmartFhirBaseUrl(),
+            securityProperties.getAllowedLocalHosts(), true);
     }
 
     private static void throwError(

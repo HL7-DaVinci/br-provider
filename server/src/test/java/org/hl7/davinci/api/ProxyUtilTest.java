@@ -1,7 +1,7 @@
 package org.hl7.davinci.api;
 
 import org.hl7.davinci.config.ServerProperties;
-import org.hl7.davinci.security.SpaAuthController;
+import org.hl7.davinci.security.SessionTokenService;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -39,7 +39,7 @@ class ProxyUtilTest {
         ServerProperties serverProperties = new ServerProperties("http://localhost:8080/fhir", null);
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.getSession(true).setAttribute(
-            SpaAuthController.SESSION_SERVER_URL,
+            SessionTokenService.SESSION_SERVER_URL,
             "https://external.example/fhir/"
         );
 

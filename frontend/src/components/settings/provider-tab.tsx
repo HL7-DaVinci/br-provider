@@ -46,7 +46,6 @@ const RECENT_PREFIX = "recent:";
 export function ProviderTab({ onClose }: { onClose: () => void }) {
   const { serverUrl, presetServers, setServerUrl, isCustomServer } =
     useFhirServer();
-  const status = useServerStatus(serverUrl);
   const { login, logout: signOut, isAuthenticated } = useAuth();
   const navigate = useNavigate();
 
@@ -91,6 +90,14 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
   // Presets are probed too so a SMART-secured preset routes through
   // SMART login instead of the primary sign-in flow.
   const isPendingCustom = !!pendingUrl && !pendingPreset;
+
+  // The status row tracks the dropdown selection, falling back to the
+  // active server when nothing is pending. An unsaved custom server is
+  // excluded: the proxy only trusts it after save, so the probe would
+  // always 403. Discovery is its connection feedback instead.
+  const statusUrl =
+    isPendingCustom && pendingUrl !== serverUrl ? "" : pendingUrl || serverUrl;
+  const status = useServerStatus(statusUrl);
   const { data: discovery, isLoading: isDiscovering } = useServerDiscovery(
     pendingUrl,
     isPendingCustom || pendingPreset,
@@ -330,7 +337,9 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
                     value={`${RECENT_PREFIX}${index}`}
                   >
                     <span className="flex items-center gap-2">
-                      <span className="truncate max-w-56">{recent.url}</span>
+                      <span className="truncate max-w-96" title={recent.url}>
+                        {recent.url}
+                      </span>
                       <button
                         type="button"
                         aria-label={`Remove ${recent.url} from recents`}
@@ -403,14 +412,16 @@ export function ProviderTab({ onClose }: { onClose: () => void }) {
         />
       )}
 
-      <ConnectionStatus
-        isLoading={status.isLoading}
-        isConnected={status.isConnected}
-        latency={status.latency}
-        error={status.error}
-        onTest={status.refetch}
-        url={serverUrl}
-      />
+      {statusUrl && (
+        <ConnectionStatus
+          isLoading={status.isLoading}
+          isConnected={status.isConnected}
+          latency={status.latency}
+          error={status.error}
+          onTest={status.refetch}
+          url={statusUrl}
+        />
+      )}
 
       {switchingServer && isAuthenticated && (
         <div className="flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">

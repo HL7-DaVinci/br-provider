@@ -11,7 +11,7 @@ import static org.mockito.Mockito.when;
 
 import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.SecurityProperties;
-import org.hl7.davinci.security.SpaAuthController;
+import org.hl7.davinci.security.SessionTokenService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -57,9 +57,7 @@ class DtrPopulateControllerTest {
             repositoryFactory,
             EvaluationSettings.getDefault(),
             serverProperties,
-            securityProperties,
-            null,
-            null);
+            new SessionTokenService(securityProperties, null, null));
     }
 
     @Test
@@ -73,7 +71,7 @@ class DtrPopulateControllerTest {
     @Test
     void resolveDataRepository_sessionLocalBase_returnsLocalJpa() {
         var session = new MockHttpSession();
-        session.setAttribute(SpaAuthController.SESSION_SERVER_URL, LOCAL_BASE);
+        session.setAttribute(SessionTokenService.SESSION_SERVER_URL, LOCAL_BASE);
         var request = new MockHttpServletRequest();
         request.setSession(session);
         IRepository repo = controller.resolveDataRepository(request);
@@ -84,7 +82,7 @@ class DtrPopulateControllerTest {
     @Test
     void resolveDataRepository_sessionRemoteBase_returnsRestRepository() {
         var session = new MockHttpSession();
-        session.setAttribute(SpaAuthController.SESSION_SERVER_URL, REMOTE_BASE);
+        session.setAttribute(SessionTokenService.SESSION_SERVER_URL, REMOTE_BASE);
         var request = new MockHttpServletRequest();
         request.setSession(session);
         IRepository repo = controller.resolveDataRepository(request);
@@ -102,14 +100,12 @@ class DtrPopulateControllerTest {
             repositoryFactory,
             EvaluationSettings.getDefault(),
             serverProperties,
-            securityProperties,
-            null,
-            null);
+            new SessionTokenService(securityProperties, null, null));
 
         var session = new MockHttpSession();
-        session.setAttribute(SpaAuthController.SESSION_SERVER_URL, REMOTE_BASE);
-        session.setAttribute(SpaAuthController.SESSION_TOKEN_SERVER_URL, REMOTE_BASE);
-        session.setAttribute(SpaAuthController.SESSION_ACCESS_TOKEN, "session-token");
+        session.setAttribute(SessionTokenService.SESSION_SERVER_URL, REMOTE_BASE);
+        session.setAttribute(SessionTokenService.SESSION_TOKEN_SERVER_URL, REMOTE_BASE);
+        session.setAttribute(SessionTokenService.SESSION_ACCESS_TOKEN, "session-token");
         var request = new MockHttpServletRequest();
         request.setSession(session);
         request.addHeader("X-Fwd-X-Api-Key", "secret");

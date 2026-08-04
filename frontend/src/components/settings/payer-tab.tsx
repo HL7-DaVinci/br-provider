@@ -48,11 +48,21 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
   const { payerServer, payerServers, cdsUrl, fhirUrl, setPayerServer } =
     usePayerServer();
 
+  // An active payer that is not a preset reopens the dialog in custom
+  // mode with its configuration filled in, mirroring the provider tab.
+  const isCustomActive = !payerServers.some((s) => s.name === payerServer.name);
+
   const [pendingPayer, setPendingPayer] = useState("");
-  const [showCustomPayer, setShowCustomPayer] = useState(false);
-  const [customPayerCdsUrl, setCustomPayerCdsUrl] = useState("");
-  const [customPayerFhirUrl, setCustomPayerFhirUrl] = useState("");
-  const [customAuthMode, setCustomAuthMode] = useState<PayerAuthMode>("auto");
+  const [showCustomPayer, setShowCustomPayer] = useState(isCustomActive);
+  const [customPayerCdsUrl, setCustomPayerCdsUrl] = useState(
+    isCustomActive ? payerServer.cdsUrl : "",
+  );
+  const [customPayerFhirUrl, setCustomPayerFhirUrl] = useState(
+    isCustomActive ? payerServer.fhirUrl : "",
+  );
+  const [customAuthMode, setCustomAuthMode] = useState<PayerAuthMode>(
+    isCustomActive ? (payerServer.authMode ?? "auto") : "auto",
+  );
   const [clientId, setClientId] = useState(payerServer.clientId ?? "");
   const [bypassPayorCheck, setBypassPayorCheck] = useState(
     payerServer.bypassPayorCheck ?? false,
@@ -70,11 +80,24 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
   const selectedFhirUrl = showCustomPayer ? fhirUrl : selectedPayer.fhirUrl;
   const selectedCdsUrl = showCustomPayer ? cdsUrl : selectedPayer.cdsUrl;
   const status = usePayerStatus(selectedFhirUrl);
+
+  const normalizedCustomCds = customPayerCdsUrl.trim().replace(/\/+$/, "");
+  const normalizedCustomFhir = customPayerFhirUrl.trim().replace(/\/+$/, "");
+  // The custom form still describes the active payer, so nothing is
+  // being switched.
+  const customMatchesActive =
+    isCustomActive &&
+    showCustomPayer &&
+    normalizedCustomCds === payerServer.cdsUrl &&
+    normalizedCustomFhir === payerServer.fhirUrl &&
+    customAuthMode === (payerServer.authMode ?? "auto");
+
   const switchingPayer =
     (isPayerPreset && pendingPayer !== payerServer.name) ||
     (showCustomPayer &&
-      !!customPayerCdsUrl.trim() &&
-      !!customPayerFhirUrl.trim());
+      !!normalizedCustomCds &&
+      !!normalizedCustomFhir &&
+      !customMatchesActive);
 
   const handlePayerChange = (value: string) => {
     // Changing the payer resets the bypass to the safe default; only
@@ -87,6 +110,8 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
     if (value === "custom") {
       setShowCustomPayer(true);
       setPendingPayer("");
+      setCustomPayerCdsUrl("");
+      setCustomPayerFhirUrl("");
       setCustomAuthMode("auto");
       setClientId("");
       setHeaders([]);
@@ -133,8 +158,9 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
   // a different preset, and pendingPayer is either untouched or points
   // back at the active payer's own name.
   const editingActivePayer =
-    !showCustomPayer &&
-    (pendingPayer === "" || pendingPayer === payerServer.name);
+    customMatchesActive ||
+    (!showCustomPayer &&
+      (pendingPayer === "" || pendingPayer === payerServer.name));
 
   const effectiveAuthMode = showCustomPayer
     ? customAuthMode
@@ -224,19 +250,27 @@ export function PayerTab({ onClose }: { onClose: () => void }) {
                 <SelectLabel>Recent</SelectLabel>
                 {recents.map((recent, index) => (
                   <SelectItem
-                    key={recent.fhirUrl}
+                    key={`${recent.cdsUrl} ${recent.fhirUrl}`}
                     value={`${RECENT_PREFIX}${index}`}
                   >
                     <span className="flex items-center gap-2">
                       <span className="flex flex-col">
-                        <span>{recent.name}</span>
-                        <span className="truncate max-w-56 text-xs text-muted-foreground">
-                          {recent.fhirUrl}
+                        <span
+                          className="truncate max-w-96 text-xs"
+                          title={recent.cdsUrl}
+                        >
+                          CDS: {recent.cdsUrl}
+                        </span>
+                        <span
+                          className="truncate max-w-96 text-xs"
+                          title={recent.fhirUrl}
+                        >
+                          FHIR: {recent.fhirUrl}
                         </span>
                       </span>
                       <button
                         type="button"
-                        aria-label={`Remove ${recent.name} from recents`}
+                        aria-label={`Remove ${recent.fhirUrl} from recents`}
                         className="pointer-events-auto"
                         onPointerDown={(e) => {
                           e.preventDefault();

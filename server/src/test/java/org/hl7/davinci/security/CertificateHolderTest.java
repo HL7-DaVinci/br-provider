@@ -30,7 +30,6 @@ class CertificateHolderTest {
 
         assertTrue(holder.isInitialized());
         assertNotNull(holder.getSigningKey());
-        assertNotNull(holder.getCertificate());
         assertNotNull(holder.getX509CertChain());
         assertFalse(holder.getX509CertChain().isEmpty());
         assertNotNull(holder.getJwkSet());
@@ -59,7 +58,6 @@ class CertificateHolderTest {
 
         assertTrue(holder.isInitialized());
         assertNotNull(holder.getSigningKey());
-        assertNotNull(holder.getCertificate());
     }
 
     @Test

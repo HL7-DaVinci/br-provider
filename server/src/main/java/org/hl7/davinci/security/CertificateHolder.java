@@ -39,11 +39,10 @@ public class CertificateHolder {
 
     private RSAKey signingKey;
     private RSAKey cdsClientKey;
-    private X509Certificate certificate;
     private List<com.nimbusds.jose.util.Base64> x509CertChain;
     // keyStore is written last in initialize() so that a reader observing keyStore != null
     // (isInitialized()) is guaranteed, via the volatile write's happens-before edge, to also
-    // see the fully-published signingKey/certificate/x509CertChain from the same initialization.
+    // see the fully-published signingKey/x509CertChain from the same initialization.
     private volatile KeyStore keyStore;
 
     private volatile long lastInitAttemptMs;
@@ -139,7 +138,6 @@ public class CertificateHolder {
             .x509CertChain(loadedX509CertChain)
             .build();
 
-        this.certificate = loadedCertificate;
         this.x509CertChain = loadedX509CertChain;
         this.signingKey = loadedSigningKey;
         this.cdsClientKey = loadedCdsClientKey;
@@ -244,10 +242,8 @@ public class CertificateHolder {
     long lastInitAttemptMs() { return lastInitAttemptMs; }
 
     public boolean isInitialized() { return keyStore != null; }
-    public KeyStore getKeyStore() { return keyStore; }
     public RSAKey getSigningKey() { return signingKey; }
     public RSAKey getCdsClientKey() { return cdsClientKey; }
-    public X509Certificate getCertificate() { return certificate; }
     public List<com.nimbusds.jose.util.Base64> getX509CertChain() { return x509CertChain; }
     public JWKSet getJwkSet() {
         // Spring Authorization Server needs the private key available for Jwt encoding.

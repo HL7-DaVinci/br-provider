@@ -12,12 +12,10 @@ import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.B2BTokenService;
-import org.hl7.davinci.security.CertificateHolder;
 import org.hl7.davinci.security.OutboundAuthService;
 import org.hl7.davinci.security.SecurityProperties;
 import org.hl7.davinci.security.SecurityUtil;
-import org.hl7.davinci.security.SmartClientKeyService;
-import org.hl7.davinci.security.SpaAuthController;
+import org.hl7.davinci.security.SessionTokenService;
 import org.hl7.davinci.util.ForwardedHeaderUtil;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
@@ -66,22 +64,19 @@ public class FhirProxyController {
     private final SecurityProperties securityProperties;
     private final ServerProperties serverProperties;
     private final B2BTokenService b2bTokenService;
-    private final CertificateHolder certificateHolder;
+    private final SessionTokenService sessionTokens;
     private final OutboundAuthService outboundAuth;
-    private final SmartClientKeyService smartClientKeyService;
 
     public FhirProxyController(SecurityProperties securityProperties,
             ServerProperties serverProperties,
             B2BTokenService b2bTokenService,
-            CertificateHolder certificateHolder,
-            OutboundAuthService outboundAuth,
-            SmartClientKeyService smartClientKeyService) {
+            SessionTokenService sessionTokens,
+            OutboundAuthService outboundAuth) {
         this.securityProperties = securityProperties;
         this.serverProperties = serverProperties;
         this.b2bTokenService = b2bTokenService;
-        this.certificateHolder = certificateHolder;
+        this.sessionTokens = sessionTokens;
         this.outboundAuth = outboundAuth;
-        this.smartClientKeyService = smartClientKeyService;
     }
 
     @RequestMapping(method = {GET, POST, PUT, DELETE, PATCH})
@@ -131,16 +126,15 @@ public class FhirProxyController {
             String payerBaseUrl = null;
             List<String> payerScopes = null;
             String sessionClientId = session != null
-                ? (String) session.getAttribute(SpaAuthController.SESSION_PAYER_CLIENT_ID)
+                ? (String) session.getAttribute(SessionTokenService.SESSION_PAYER_CLIENT_ID)
                 : null;
 
             if (forwarded.hasAuthorization()) {
                 logger.debug("Forwarded Authorization present; skipping token injection for {}", targetUrl);
             } else if (payerAuth) {
                 payerBaseUrl = resolvePayerBaseUrl(targetUrl, session);
-                SpaAuthController.refreshTokenIfNeeded(
-                    session, securityProperties, certificateHolder, smartClientKeyService);
-                token = SpaAuthController.getTokenForServer(session, payerBaseUrl);
+                sessionTokens.refreshTokenIfNeeded(session);
+                token = sessionTokens.getTokenForServer(session, payerBaseUrl);
                 if (token != null) {
                     sessionToken = true;
                     logger.debug("Payer proxy: {} matches the session launch token; using it over B2B minting",
@@ -188,9 +182,8 @@ public class FhirProxyController {
                     }
                 }
             } else {
-                SpaAuthController.refreshTokenIfNeeded(
-                    session, securityProperties, certificateHolder, smartClientKeyService);
-                token = SpaAuthController.getTokenForServer(session, targetUrl);
+                sessionTokens.refreshTokenIfNeeded(session);
+                token = sessionTokens.getTokenForServer(session, targetUrl);
                 sessionToken = token != null;
             }
             if (token != null) {
@@ -247,10 +240,9 @@ public class FhirProxyController {
                 // The target rejected a token the session still considered valid, so
                 // the expiry check alone cannot catch it. A 403 is left alone because
                 // it means authenticated but not permitted, which a new token cannot fix.
-                boolean refreshed = SpaAuthController.refreshToken(
-                    session, securityProperties, certificateHolder, smartClientKeyService);
+                boolean refreshed = sessionTokens.refreshToken(session);
                 String newToken = refreshed
-                    ? SpaAuthController.getTokenForServer(
+                    ? sessionTokens.getTokenForServer(
                         session, payerAuth ? payerBaseUrl : targetUrl)
                     : null;
                 if (newToken != null) {
@@ -304,7 +296,7 @@ public class FhirProxyController {
             return configured;
         }
         if (session != null) {
-            String sessionPayer = (String) session.getAttribute(SpaAuthController.SESSION_PAYER_FHIR_URL);
+            String sessionPayer = (String) session.getAttribute(SessionTokenService.SESSION_PAYER_FHIR_URL);
             if (sessionPayer != null && UrlMatchUtil.matchesBaseUrl(targetUrl, sessionPayer)) {
                 return sessionPayer;
             }
@@ -332,13 +324,13 @@ public class FhirProxyController {
         // through /auth/active-server and /auth/active-payer respectively.
         if (session != null) {
             String sessionServer = (String) session.getAttribute(
-                SpaAuthController.SESSION_SERVER_URL);
+                SessionTokenService.SESSION_SERVER_URL);
             if (sessionServer != null
                     && UrlMatchUtil.matchesBaseUrl(target, sessionServer)) {
                 return true;
             }
             String sessionPayer = (String) session.getAttribute(
-                SpaAuthController.SESSION_PAYER_FHIR_URL);
+                SessionTokenService.SESSION_PAYER_FHIR_URL);
             if (sessionPayer != null
                     && UrlMatchUtil.matchesBaseUrl(target, sessionPayer)) {
                 return true;

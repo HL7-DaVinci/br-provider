@@ -66,11 +66,15 @@ test.describe("settings dialog", () => {
     await openSettings(page, "Payer");
     await page.getByLabel("Server").click();
     await expect(page.getByText("Recent")).toBeVisible();
-    const recentOption = page.getByRole("option", { name: /Custom Payer/ });
+    const recentOption = page.getByRole("option", {
+      name: /FHIR: http:\/\/localhost:8081\/fhir/,
+    });
     await expect(recentOption).toBeVisible();
 
     await page
-      .getByRole("button", { name: "Remove Custom Payer from recents" })
+      .getByRole("button", {
+        name: "Remove http://localhost:8081/fhir from recents",
+      })
       .click();
     await expect(recentOption).toBeHidden();
 

@@ -1,23 +1,9 @@
 package org.hl7.davinci.security;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.time.Instant;
-import java.util.Date;
 import java.util.List;
-import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jose.JWSHeader;
-import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 import org.hl7.davinci.util.UrlMatchUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,11 +25,11 @@ import org.springframework.stereotype.Component;
 public class UdapClientRegistration {
 
     private static final Logger logger = LoggerFactory.getLogger(UdapClientRegistration.class);
-    private static final ObjectMapper objectMapper = new ObjectMapper();
 
     private final SecurityProperties securityProperties;
     private final CertificateHolder certificateHolder;
     private final OutboundTargetValidator outboundTargetValidator;
+    private final UdapDcrClient dcrClient;
 
     /** Per-issuer registration cache. Keyed by normalized issuer URL. */
     private final ConcurrentHashMap<String, ServerRegistration> issuerRegistrations = new ConcurrentHashMap<>();
@@ -86,6 +72,7 @@ public class UdapClientRegistration {
         this.securityProperties = securityProperties;
         this.certificateHolder = certificateHolder;
         this.outboundTargetValidator = outboundTargetValidator;
+        this.dcrClient = new UdapDcrClient(securityProperties, certificateHolder, outboundTargetValidator);
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -174,55 +161,22 @@ public class UdapClientRegistration {
 
         try {
             outboundTargetValidator.validate(normalizedUrl);
-            outboundTargetValidator.validate(udapUrl);
 
-            HttpClient client = SecurityUtil.getHttpClient(securityProperties);
-            HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(udapUrl))
-                .GET()
-                .timeout(Duration.ofSeconds(10))
-                .build();
-
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
+            UdapDcrClient.UdapMetadata metadata = dcrClient.discoverMetadata(udapUrl);
+            if (metadata.authorizeEndpoint() == null || metadata.tokenEndpoint() == null
+                    || metadata.registrationEndpoint() == null) {
                 return new DiscoveryResult(false, null, null, false, false);
             }
-
-            Map<String, Object> metadata = objectMapper.readValue(
-                response.body(), new TypeReference<>() {});
-
-            String authorizeEp = (String) metadata.get("authorization_endpoint");
-            String tokenEp = (String) metadata.get("token_endpoint");
-            String registrationEndpoint = (String) metadata.get("registration_endpoint");
-            String userinfoEp = (String) metadata.get("userinfo_endpoint");
-
-            if (authorizeEp == null || tokenEp == null || registrationEndpoint == null) {
-                return new DiscoveryResult(false, null, null, false, false);
-            }
-
-            outboundTargetValidator.validate(authorizeEp);
-            outboundTargetValidator.validate(tokenEp);
-            outboundTargetValidator.validate(registrationEndpoint);
-            if (userinfoEp != null) {
-                outboundTargetValidator.validate(userinfoEp);
-            }
-
-            String issuer = (String) metadata.get("issuer");
-            if (issuer == null) {
-                URI authUri = URI.create(authorizeEp);
-                issuer = authUri.getScheme() + "://" + authUri.getAuthority();
-                logger.warn("UDAP metadata missing issuer, derived from authorization_endpoint: {}", issuer);
-            }
-            String normalizedIssuer = UrlMatchUtil.normalizeUrl(issuer);
+            String normalizedIssuer = UrlMatchUtil.normalizeUrl(metadata.issuer());
 
             // Detect Tiered OAuth support from UDAP metadata
             boolean tieredOauthSupported = false;
-            Object profiles = metadata.get("udap_profiles_supported");
+            Object profiles = metadata.raw().get("udap_profiles_supported");
             if (profiles instanceof List<?> profileList) {
                 tieredOauthSupported = profileList.contains("udap_to");
             }
             if (!tieredOauthSupported) {
-                Object scopes = metadata.get("scopes_supported");
+                Object scopes = metadata.raw().get("scopes_supported");
                 if (scopes instanceof List<?> scopeList) {
                     tieredOauthSupported = scopeList.contains("udap");
                 }
@@ -231,7 +185,7 @@ public class UdapClientRegistration {
             boolean alreadyRegistered = issuerRegistrations.containsKey(normalizedIssuer);
             if (!alreadyRegistered || forceRegistration) {
                 try {
-                    ServerRegistration reg = performRegistration(udapUrl);
+                    ServerRegistration reg = performRegistration(metadata);
                     issuerRegistrations.put(normalizedIssuer, reg);
                     alreadyRegistered = true;
                     logger.info("DCR completed for issuer {} via server {}", normalizedIssuer, normalizedUrl);
@@ -243,7 +197,8 @@ public class UdapClientRegistration {
             }
 
             serverToIssuerMap.put(normalizedUrl, normalizedIssuer);
-            return new DiscoveryResult(true, normalizedIssuer, authorizeEp, alreadyRegistered, tieredOauthSupported);
+            return new DiscoveryResult(true, normalizedIssuer, metadata.authorizeEndpoint(),
+                alreadyRegistered, tieredOauthSupported);
 
         } catch (Exception e) {
             logger.debug("UDAP discovery failed for {}: {}", fhirServerUrl, e.getMessage());
@@ -268,112 +223,35 @@ public class UdapClientRegistration {
      * and performs DCR against the target authorization server.
      */
     private ServerRegistration performRegistration(String udapDiscoveryUrl) throws Exception {
-        outboundTargetValidator.validate(udapDiscoveryUrl);
-        HttpClient client = SecurityUtil.getHttpClient(securityProperties);
+        return performRegistration(dcrClient.discoverMetadata(udapDiscoveryUrl));
+    }
 
-        // Discover endpoints from the target server's UDAP metadata
-        logger.info("Discovering UDAP endpoints from: {}", udapDiscoveryUrl);
-        HttpRequest discoveryRequest = HttpRequest.newBuilder()
-            .uri(URI.create(udapDiscoveryUrl))
-            .GET()
-            .timeout(Duration.ofSeconds(10))
-            .build();
-
-        HttpResponse<String> discoveryResponse = client.send(discoveryRequest, HttpResponse.BodyHandlers.ofString());
-        if (discoveryResponse.statusCode() != 200) {
-            throw new RuntimeException("UDAP discovery failed: HTTP " + discoveryResponse.statusCode());
-        }
-
-        Map<String, Object> udapMetadata = objectMapper.readValue(
-            discoveryResponse.body(), new TypeReference<>() {});
-
-        String authorizeEp = (String) udapMetadata.get("authorization_endpoint");
-        String tokenEp = (String) udapMetadata.get("token_endpoint");
-        String registrationEndpoint = (String) udapMetadata.get("registration_endpoint");
-        String userinfoEp = (String) udapMetadata.get("userinfo_endpoint");
-
-        if (registrationEndpoint == null || authorizeEp == null || tokenEp == null) {
+    private ServerRegistration performRegistration(UdapDcrClient.UdapMetadata metadata) throws Exception {
+        if (metadata.registrationEndpoint() == null || metadata.authorizeEndpoint() == null
+                || metadata.tokenEndpoint() == null) {
             throw new RuntimeException("UDAP metadata missing required endpoints");
         }
 
-        outboundTargetValidator.validate(authorizeEp);
-        outboundTargetValidator.validate(tokenEp);
-        outboundTargetValidator.validate(registrationEndpoint);
-        if (userinfoEp != null) {
-            outboundTargetValidator.validate(userinfoEp);
-        }
-
-        // Extract issuer from metadata, falling back to authorization_endpoint origin
-        String issuerStr = (String) udapMetadata.get("issuer");
-        if (issuerStr == null) {
-            URI authUri = URI.create(authorizeEp);
-            issuerStr = authUri.getScheme() + "://" + authUri.getAuthority();
-            logger.warn("UDAP metadata missing issuer, derived from authorization_endpoint: {}", issuerStr);
-        }
-
         logger.info("Discovered endpoints - authorize: {}, token: {}, registration: {}",
-            authorizeEp, tokenEp, registrationEndpoint);
-
-        // Build software statement for DCR
-        // Some authorization servers normalize URLs with a trailing slash
-        String baseUrl = securityProperties.getServerBaseUrl();
-        if (!baseUrl.endsWith("/")) {
-            baseUrl += "/";
-        }
+            metadata.authorizeEndpoint(), metadata.tokenEndpoint(), metadata.registrationEndpoint());
 
         String regRedirectUri = buildRedirectUri(securityProperties);
 
-        JWTClaimsSet softwareStatementClaims = new JWTClaimsSet.Builder()
-            .issuer(baseUrl)
-            .subject(baseUrl)
-            .audience(registrationEndpoint)
-            .expirationTime(Date.from(Instant.now().plusSeconds(300)))
-            .issueTime(new Date())
-            .jwtID(UUID.randomUUID().toString())
+        JWTClaimsSet softwareStatementClaims = dcrClient
+            .softwareStatementBase(securityProperties.getServerBaseUrl(), metadata.registrationEndpoint())
             .claim("client_name", securityProperties.getClientName())
             .claim("grant_types", List.of("authorization_code"))
             .claim("response_types", List.of("code"))
             .claim("redirect_uris", List.of(regRedirectUri))
-            .claim("contacts", List.of("mailto:admin@localhost"))
-            .claim("logo_uri", "https://build.fhir.org/icon-fhir-16.png")
-            .claim("token_endpoint_auth_method", List.of("private_key_jwt"))
             .claim("scope", buildRegistrationScope())
             .build();
 
-        // UDAP IG requires only alg and x5c in the header (no kid)
-        JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.RS256)
-            .x509CertChain(certificateHolder.getX509CertChain())
-            .build();
+        String regClientId = dcrClient.performDcr(metadata.registrationEndpoint(), softwareStatementClaims);
 
-        SignedJWT signedStatement = new SignedJWT(header, softwareStatementClaims);
-        signedStatement.sign(new RSASSASigner(certificateHolder.getSigningKey()));
-
-        // POST registration request (certifications required by UDAP IG, even if empty)
-        Map<String, Object> registrationBody = Map.of(
-            "software_statement", signedStatement.serialize(),
-            "certifications", List.of(),
-            "udap", "1"
-        );
-
-        HttpRequest regRequest = HttpRequest.newBuilder()
-            .uri(URI.create(registrationEndpoint))
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(registrationBody)))
-            .timeout(Duration.ofSeconds(15))
-            .build();
-
-        HttpResponse<String> regResponse = client.send(regRequest, HttpResponse.BodyHandlers.ofString());
-        if (regResponse.statusCode() != 200 && regResponse.statusCode() != 201) {
-            throw new RuntimeException("UDAP registration failed: HTTP " + regResponse.statusCode()
-                + " " + regResponse.body());
-        }
-
-        Map<String, Object> regResult = objectMapper.readValue(
-            regResponse.body(), new TypeReference<>() {});
-        String regClientId = (String) regResult.get("client_id");
-
-        logger.info("UDAP client registered with client_id: {} via {}", regClientId, udapDiscoveryUrl);
-        return new ServerRegistration(regClientId, authorizeEp, tokenEp, regRedirectUri, issuerStr, userinfoEp);
+        logger.info("UDAP client registered with client_id: {} via {}",
+            regClientId, metadata.registrationEndpoint());
+        return new ServerRegistration(regClientId, metadata.authorizeEndpoint(), metadata.tokenEndpoint(),
+            regRedirectUri, metadata.issuer(), metadata.userinfoEndpoint());
     }
 
     /**

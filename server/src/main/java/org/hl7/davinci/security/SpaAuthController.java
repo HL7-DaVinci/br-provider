@@ -18,18 +18,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
+import ca.uhn.fhir.context.FhirContext;
+import ca.uhn.fhir.rest.client.api.IGenericClient;
+import ca.uhn.fhir.rest.client.interceptor.BearerTokenAuthInterceptor;
+import org.hl7.fhir.r4.model.HumanName;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jose.JWSHeader;
-import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jose.jwk.source.JWKSource;
-import com.nimbusds.jose.jwk.source.RemoteJWKSet;
+import com.nimbusds.jose.jwk.source.JWKSourceBuilder;
 import com.nimbusds.jose.proc.JWSVerificationKeySelector;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jose.util.DefaultResourceRetriever;
-import com.nimbusds.jose.util.ResourceRetriever;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.nimbusds.jwt.proc.DefaultJWTProcessor;
@@ -54,11 +54,9 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * SPA authentication controller for OAuth2 authorization code flow with PKCE.
  * Provides endpoints for login initiation, token exchange (stored server-side
- * in the HTTP session), session status, and logout.
- * Private keys never leave the server; tokens are held in the server session.
- *
- * Single-server-per-session model: one access token is stored in flat session
- * attributes. Switching servers requires a full logout and re-authentication.
+ * in the HTTP session via {@link SessionTokenService}), session status, and
+ * logout. Private keys never leave the server; tokens are held in the server
+ * session.
  */
 @RestController
 @RequestMapping("/auth")
@@ -76,91 +74,15 @@ public class SpaAuthController {
     private static final String SMART_EHR_LAUNCH_SCOPE =
         "launch openid fhirUser patient/*.rs patient/QuestionnaireResponse.cu";
 
-    /** Session attribute holding the access token for the authenticated server */
-    public static final String SESSION_ACCESS_TOKEN = "bff.access_token";
-
-    /** Session attribute holding the id token for the authenticated server */
-    public static final String SESSION_ID_TOKEN = "bff.id_token";
-
-    /**
-     * Session attribute holding the FHIR base URL the SPA is currently
-     * pointed at. Set by the OAuth callback (initial login) and by
-     * `POST /auth/active-server`. Independent of where any stored token
-     * was issued: anonymous selection of a public server can change this
-     * without invalidating an authenticated session.
-     */
-    public static final String SESSION_SERVER_URL = "bff.server_url";
-
-    /**
-     * Session attribute holding the FHIR base URL that the stored access
-     * token was issued for. Set only by {@link #storeServerToken} during
-     * the OAuth code-exchange or refresh. Decoupled from
-     * {@link #SESSION_SERVER_URL} so the active server can be switched to
-     * an unauthenticated public server without wiping the authentication.
-     */
-    public static final String SESSION_TOKEN_SERVER_URL = "bff.token_server_url";
-
-    /**
-     * Session attribute holding the active payer FHIR base URL. Set by
-     * `POST /auth/active-payer` so the FHIR proxy will trust user-selected
-     * payer hosts that aren't in the static configured-payer allowlist.
-     */
-    public static final String SESSION_PAYER_FHIR_URL = "bff.payer_fhir_url";
-
-    /**
-     * Session attribute holding the SMART Backend Services client id for the
-     * active payer. Only set for payers the user configures in the settings
-     * dialog. A payer in app.payer-servers carries its own client-id.
-     */
-    public static final String SESSION_PAYER_CLIENT_ID = "bff.payer_client_id";
-
-    /** Session attribute holding userinfo claims for the authenticated user */
-    public static final String SESSION_USERINFO = "bff.userinfo";
-
-    /** Session attribute holding token expiry time */
-    public static final String SESSION_TOKEN_EXPIRES_AT = "bff.token_expires_at";
-
-    /** Session attribute holding the refresh token */
-    public static final String SESSION_REFRESH_TOKEN = "bff.refresh_token";
-
-    /** Session attribute holding the token endpoint used for the active session */
-    public static final String SESSION_TOKEN_ENDPOINT = "bff.token_endpoint";
-
-    /** Session attribute holding the client id used for the active session */
-    public static final String SESSION_CLIENT_ID = "bff.client_id";
-
-    /**
-     * Session attribute holding the client secret for a smart-basic session,
-     * so a later refresh can rebuild the Basic auth header. Only set for the
-     * smart-basic auth method.
-     */
-    public static final String SESSION_CLIENT_SECRET = "bff.client_secret";
-
-    /**
-     * Session attribute holding the auth method used to obtain the active
-     * session's token: one of "udap", "smart-none", "smart-basic",
-     * "smart-private-key-jwt", or "smart-ehr-launch". Read by
-     * {@link #refreshTokenIfNeeded} to select the correct refresh strategy.
-     */
-    public static final String SESSION_AUTH_METHOD = "bff.auth_method";
-
-    public static final String SESSION_GRANTED_SCOPE = "bff.granted_scope";
-
-    /**
-     * Session attribute holding the JWSAlgorithm name used to sign a
-     * smart-private-key-jwt session's client assertion, so a later refresh
-     * signs with the same algorithm chooseAlg picked at exchange time.
-     */
-    public static final String SESSION_TOKEN_ALG = "bff.token_alg";
-
     private final UdapClientRegistration udapClient;
-    private final CertificateHolder certificateHolder;
+    private final SessionTokenService sessionTokens;
     private final SecurityProperties securityProperties;
     private final ServerProperties serverProperties;
     private final FhirUserDetailsService userDetailsService;
     private final OutboundTargetValidator outboundTargetValidator;
     private final SmartClientDiscoveryService smartDiscovery;
     private final SmartClientKeyService smartClientKeyService;
+    private final FhirContext fhirContext;
     private final ConcurrentHashMap<String, PendingFlow> pendingFlows = new ConcurrentHashMap<>();
 
     /**
@@ -188,264 +110,23 @@ public class SpaAuthController {
 
     public SpaAuthController(
             UdapClientRegistration udapClient,
-            CertificateHolder certificateHolder,
+            SessionTokenService sessionTokens,
             SecurityProperties securityProperties,
             ServerProperties serverProperties,
             FhirUserDetailsService userDetailsService,
             OutboundTargetValidator outboundTargetValidator,
             SmartClientDiscoveryService smartDiscovery,
-            SmartClientKeyService smartClientKeyService) {
+            SmartClientKeyService smartClientKeyService,
+            FhirContext fhirContext) {
         this.udapClient = udapClient;
-        this.certificateHolder = certificateHolder;
+        this.sessionTokens = sessionTokens;
         this.securityProperties = securityProperties;
         this.serverProperties = serverProperties;
         this.userDetailsService = userDetailsService;
         this.outboundTargetValidator = outboundTargetValidator;
         this.smartDiscovery = smartDiscovery;
         this.smartClientKeyService = smartClientKeyService;
-    }
-
-    /**
-     * Stores an access token (and optional id token) for the single authenticated server.
-     */
-    public static void storeServerToken(HttpSession session, String serverUrl,
-            String accessToken, String idToken) {
-        storeServerToken(session, serverUrl, accessToken, idToken, null, null, null, null);
-    }
-
-    /**
-     * Stores an access token with expiry and refresh token for the single authenticated server.
-     */
-    public static void storeServerToken(HttpSession session, String serverUrl,
-            String accessToken, String idToken, Long expiresIn, String refreshToken) {
-        storeServerToken(session, serverUrl, accessToken, idToken, expiresIn, refreshToken, null, null);
-    }
-
-    /**
-     * Stores token metadata required to refresh the active server session.
-     */
-    public static void storeServerToken(HttpSession session, String serverUrl,
-            String accessToken, String idToken, Long expiresIn, String refreshToken,
-            String tokenEndpoint, String clientId) {
-        storeServerToken(session, serverUrl, accessToken, idToken, expiresIn, refreshToken,
-            tokenEndpoint, clientId, "udap");
-    }
-
-    /**
-     * Stores token metadata required to refresh the active server session,
-     * recording the auth method used so a later refresh can select the
-     * matching strategy.
-     */
-    public static void storeServerToken(HttpSession session, String serverUrl,
-            String accessToken, String idToken, Long expiresIn, String refreshToken,
-            String tokenEndpoint, String clientId, String authMethod) {
-        String normalized = UrlMatchUtil.normalizeUrl(serverUrl);
-        session.setAttribute(SESSION_ACCESS_TOKEN, accessToken);
-        session.setAttribute(SESSION_TOKEN_SERVER_URL, normalized);
-        // Also seed the active-server URL on first-time login so a freshly
-        // authenticated session has a sensible default. POST /auth/active-server
-        // (boot-sync from the SPA's localStorage) can override this later.
-        if (session.getAttribute(SESSION_SERVER_URL) == null) {
-            session.setAttribute(SESSION_SERVER_URL, normalized);
-        }
-        // Absent values clear their attributes so a replacement token bundle
-        // cannot inherit refresh credentials from the previous server.
-        setOrRemove(session, SESSION_ID_TOKEN, idToken);
-        setOrRemove(session, SESSION_TOKEN_EXPIRES_AT,
-            expiresIn != null ? Instant.now().plusSeconds(expiresIn) : null);
-        setOrRemove(session, SESSION_REFRESH_TOKEN, refreshToken);
-        setOrRemove(session, SESSION_TOKEN_ENDPOINT, tokenEndpoint);
-        setOrRemove(session, SESSION_CLIENT_ID, clientId);
-        session.setAttribute(SESSION_AUTH_METHOD, authMethod != null ? authMethod : "udap");
-    }
-
-    private static void setOrRemove(HttpSession session, String name, Object value) {
-        if (value != null) {
-            session.setAttribute(name, value);
-        } else {
-            session.removeAttribute(name);
-        }
-    }
-
-    /**
-     * Records the active provider FHIR server URL for the session.
-     *
-     * Independent of the auth bundle: the stored token (if any) stays
-     * tied to {@link #SESSION_TOKEN_SERVER_URL}, so switching the active
-     * server to an unauthenticated public host does not destroy the
-     * existing session. {@link #getTokenForServer} only returns the token
-     * when the requested URL matches the auth URL, so an active=public,
-     * auth=local session sends anonymous calls to public and bearer
-     * calls to local — both correct.
-     */
-    public static void setActiveServer(HttpSession session, String url) {
-        if (session == null) return;
-        if (url == null || url.isBlank()) {
-            throw new IllegalArgumentException("url is required");
-        }
-        String normalized = UrlMatchUtil.normalizeUrl(url);
-        session.setAttribute(SESSION_SERVER_URL, normalized);
-    }
-
-    /**
-     * Returns the stored access token if the target URL matches the URL the
-     * token was issued for ({@link #SESSION_TOKEN_SERVER_URL}). The active
-     * SPA server ({@link #SESSION_SERVER_URL}) is intentionally NOT used
-     * here: those two can diverge when the user picks a public/anonymous
-     * server, and the token must only be sent to its origin.
-     */
-    public static String getTokenForServer(HttpSession session, String targetUrl) {
-        if (session == null) return null;
-        String tokenServerUrl = (String) session.getAttribute(SESSION_TOKEN_SERVER_URL);
-        if (tokenServerUrl == null) return null;
-        if (!UrlMatchUtil.matchesBaseUrl(targetUrl, tokenServerUrl)) return null;
-        // A near-expired token with no refresh token cannot be replaced.
-        // Report it as absent so callers fall back to other token sources.
-        if (isTokenNearExpiry(session) && session.getAttribute(SESSION_REFRESH_TOKEN) == null) {
-            return null;
-        }
-        return (String) session.getAttribute(SESSION_ACCESS_TOKEN);
-    }
-
-    /**
-     * Returns true if the session token is expired or within 30 seconds of expiry.
-     */
-    public static boolean isTokenNearExpiry(HttpSession session) {
-        if (session == null) return false;
-        Object expiresAtObj = session.getAttribute(SESSION_TOKEN_EXPIRES_AT);
-        if (!(expiresAtObj instanceof Instant expiresAt)) return false;
-        return Instant.now().isAfter(expiresAt.minusSeconds(30));
-    }
-
-    /**
-     * Refreshes the session access token using the stored refresh token if the
-     * current token is near expiry. No-op if no refresh token is available or
-     * the token is still valid.
-     */
-    public static void refreshTokenIfNeeded(HttpSession session,
-            SecurityProperties securityProperties,
-            CertificateHolder certificateHolder,
-            SmartClientKeyService smartClientKeyService) {
-        if (session == null || !isTokenNearExpiry(session)) return;
-        refreshToken(session, securityProperties, certificateHolder, smartClientKeyService);
-    }
-
-    /**
-     * Refreshes the session access token whatever its expiry says, for a caller
-     * that saw the target reject the token early. Returns true when a new token
-     * is in the session. A failed refresh clears the stored token.
-     */
-    public static boolean refreshToken(HttpSession session,
-            SecurityProperties securityProperties,
-            CertificateHolder certificateHolder,
-            SmartClientKeyService smartClientKeyService) {
-        if (session == null) return false;
-        String refreshToken = (String) session.getAttribute(SESSION_REFRESH_TOKEN);
-        if (refreshToken == null) return false;
-
-        String serverUrl = (String) session.getAttribute(SESSION_TOKEN_SERVER_URL);
-        Logger log = LoggerFactory.getLogger(SpaAuthController.class);
-        if (serverUrl == null) {
-            log.warn("Missing token server URL for refresh token");
-            return false;
-        }
-        log.info("Refreshing expired token for server: {}", serverUrl);
-
-        try {
-            String tokenEndpoint = (String) session.getAttribute(SESSION_TOKEN_ENDPOINT);
-            String clientId = (String) session.getAttribute(SESSION_CLIENT_ID);
-            if (tokenEndpoint == null || clientId == null) {
-                log.warn("Missing refresh token metadata for server: {}", serverUrl);
-                return false;
-            }
-            String authMethod = (String) session.getAttribute(SESSION_AUTH_METHOD);
-
-            Map<String, String> params = new LinkedHashMap<>();
-            params.put("grant_type", "refresh_token");
-            params.put("refresh_token", refreshToken);
-            String basicAuthHeader = null;
-
-            if (isSmartAuthMethod(authMethod)) {
-                switch (authMethod) {
-                    case "smart-basic" -> {
-                        String clientSecret = (String) session.getAttribute(SESSION_CLIENT_SECRET);
-                        basicAuthHeader = "Basic " + Base64.getEncoder().encodeToString(
-                            (clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
-                    }
-                    case "smart-private-key-jwt" -> {
-                        String storedAlg = (String) session.getAttribute(SESSION_TOKEN_ALG);
-                        JWSAlgorithm alg = storedAlg != null ? JWSAlgorithm.parse(storedAlg) : JWSAlgorithm.RS384;
-                        params.put("client_assertion_type",
-                            "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
-                        params.put("client_assertion", smartClientKeyService.buildClientAssertion(
-                            clientId, tokenEndpoint, alg));
-                    }
-                    default -> params.put("client_id", clientId); // smart-none, smart-ehr-launch
-                }
-            } else {
-                String clientAssertion = buildClientAssertionFor(
-                    certificateHolder, tokenEndpoint, clientId);
-                params.put("client_id", clientId);
-                params.put("client_assertion_type",
-                    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
-                params.put("client_assertion", clientAssertion);
-            }
-
-            HttpClient httpClient = SecurityUtil.getHttpClient(securityProperties);
-            HttpRequest.Builder tokenRequestBuilder = HttpRequest.newBuilder()
-                .uri(URI.create(tokenEndpoint))
-                .header("Content-Type", "application/x-www-form-urlencoded");
-            if (basicAuthHeader != null) {
-                tokenRequestBuilder.header("Authorization", basicAuthHeader);
-            }
-            HttpRequest tokenRequest = tokenRequestBuilder
-                .POST(HttpRequest.BodyPublishers.ofString(formEncode(params)))
-                .build();
-
-            HttpResponse<String> tokenResponse = httpClient.send(
-                tokenRequest, HttpResponse.BodyHandlers.ofString());
-
-            if (tokenResponse.statusCode() == 200) {
-                ObjectMapper om = new ObjectMapper();
-                Map<String, Object> tokens = om.readValue(
-                    tokenResponse.body(), new com.fasterxml.jackson.core.type.TypeReference<>() {});
-                String newAccessToken = (String) tokens.get("access_token");
-                String newRefreshToken = tokens.containsKey("refresh_token")
-                    ? (String) tokens.get("refresh_token") : refreshToken;
-                Object expiresInObj = tokens.get("expires_in");
-                Long expiresIn = expiresInObj instanceof Number n ? n.longValue() : null;
-
-                storeServerToken(session, serverUrl, newAccessToken, null, expiresIn,
-                    newRefreshToken, tokenEndpoint, clientId, authMethod);
-                // A token response omits scope when it is unchanged from the request,
-                // so an absent scope keeps the previously granted set.
-                Object scopeObj = tokens.get("scope");
-                if (scopeObj instanceof String s) {
-                    session.setAttribute(SESSION_GRANTED_SCOPE, s);
-                }
-                log.info("Token refreshed successfully for server: {}", serverUrl);
-                return newAccessToken != null;
-            } else {
-                log.warn("Token refresh failed: HTTP {} - clearing session", tokenResponse.statusCode());
-                session.removeAttribute(SESSION_ACCESS_TOKEN);
-                session.removeAttribute(SESSION_TOKEN_SERVER_URL);
-                session.removeAttribute(SESSION_TOKEN_EXPIRES_AT);
-                session.removeAttribute(SESSION_REFRESH_TOKEN);
-                session.removeAttribute(SESSION_TOKEN_ENDPOINT);
-                session.removeAttribute(SESSION_CLIENT_ID);
-                session.removeAttribute(SESSION_CLIENT_SECRET);
-                session.removeAttribute(SESSION_AUTH_METHOD);
-                session.removeAttribute(SESSION_GRANTED_SCOPE);
-                session.removeAttribute(SESSION_TOKEN_ALG);
-            }
-        } catch (Exception e) {
-            log.warn("Token refresh error: {}", e.getMessage());
-        }
-        return false;
-    }
-
-    private static boolean isSmartAuthMethod(String authMethod) {
-        return authMethod != null && authMethod.startsWith("smart-");
+        this.fhirContext = fhirContext;
     }
 
     /**
@@ -754,7 +435,7 @@ public class SpaAuthController {
         // passed: a failed launch must not leave the session trusting a
         // target that never completed validation.
         HttpSession session = request.getSession(true);
-        setActiveServer(session, iss);
+        sessionTokens.setActiveServer(session, iss);
 
         pendingFlows.put(state, new PendingFlow(codeVerifier, redirectUri, Instant.now(),
             iss, smartConfig.tokenEndpoint(), resolvedClientId, "smart-ehr-launch", null, launch,
@@ -855,7 +536,7 @@ public class SpaAuthController {
                 tokenRequestBuilder.header("Authorization", tokenRequestSpec.basicAuthHeader());
             }
             HttpRequest tokenRequest = tokenRequestBuilder
-                .POST(HttpRequest.BodyPublishers.ofString(formEncode(tokenRequestSpec.params())))
+                .POST(HttpRequest.BodyPublishers.ofString(SessionTokenService.formEncode(tokenRequestSpec.params())))
                 .build();
 
             HttpResponse<String> tokenResponse = httpClient.send(tokenRequest, HttpResponse.BodyHandlers.ofString());
@@ -877,23 +558,22 @@ public class SpaAuthController {
                 ? (String) tokens.get("refresh_token") : null;
             String clientId = flow.clientId() != null ? flow.clientId() : udapClient.getClientId();
             String authMethod = flow.authMethod() != null ? flow.authMethod() : "udap";
-            storeServerToken(session, serverUrl,
+            sessionTokens.storeServerToken(session, serverUrl,
                 (String) tokens.get("access_token"),
-                tokens.containsKey("id_token") ? (String) tokens.get("id_token") : null,
                 expiresIn, refreshToken, tokenEndpoint, clientId, authMethod);
             // A token response omits scope when it is unchanged from the request.
             Object scopeObj = tokens.get("scope");
-            session.setAttribute(SESSION_GRANTED_SCOPE,
+            session.setAttribute(SessionTokenService.SESSION_GRANTED_SCOPE,
                 scopeObj instanceof String s ? s : flow.requestedScope());
             if ("smart-basic".equals(authMethod) && flow.clientSecret() != null) {
-                session.setAttribute(SESSION_CLIENT_SECRET, flow.clientSecret());
+                session.setAttribute(SessionTokenService.SESSION_CLIENT_SECRET, flow.clientSecret());
             } else {
-                session.removeAttribute(SESSION_CLIENT_SECRET);
+                session.removeAttribute(SessionTokenService.SESSION_CLIENT_SECRET);
             }
             if ("smart-private-key-jwt".equals(authMethod)) {
-                session.setAttribute(SESSION_TOKEN_ALG, chooseAlg(flow).getName());
+                session.setAttribute(SessionTokenService.SESSION_TOKEN_ALG, chooseAlg(flow).getName());
             } else {
-                session.removeAttribute(SESSION_TOKEN_ALG);
+                session.removeAttribute(SessionTokenService.SESSION_TOKEN_ALG);
             }
 
             Map<String, Object> result = new LinkedHashMap<>();
@@ -922,7 +602,7 @@ public class SpaAuthController {
             } else {
                 // Custom server: try id_token claims first (no network call)
                 String idToken = (String) tokens.get("id_token");
-                if (idToken != null && (!isSmartAuthMethod(authMethod) || trustSmartIdToken(flow, idToken))) {
+                if (idToken != null && (!SessionTokenService.isSmartAuthMethod(authMethod) || trustSmartIdToken(flow, idToken))) {
                     userInfo = extractClaimsFromIdToken(idToken);
                 }
 
@@ -949,9 +629,18 @@ public class SpaAuthController {
                         userInfo.put("fhirUserType", user.getFhirResourceType());
                     }
                 }
+
+                // Some servers put fhirUser in the id_token but no name claims.
+                if (userInfo.containsKey("fhirUser") && !userInfo.containsKey("name")) {
+                    String resolvedName = resolveFhirUserName(
+                        userInfo.get("fhirUser"), serverUrl, (String) tokens.get("access_token"));
+                    if (resolvedName != null) {
+                        userInfo.put("name", resolvedName);
+                    }
+                }
             }
 
-            session.setAttribute(SESSION_USERINFO, userInfo);
+            session.setAttribute(SessionTokenService.SESSION_USERINFO, userInfo);
             result.put("userinfo", userInfo);
 
             logger.info("Token exchange completed for server: {}", serverUrl);
@@ -980,21 +669,21 @@ public class SpaAuthController {
     public ResponseEntity<Map<String, Object>> getSession(HttpServletRequest request) {
         var session = request.getSession(false);
         String serverUrl = (session != null)
-            ? (String) session.getAttribute(SESSION_SERVER_URL) : null;
+            ? (String) session.getAttribute(SessionTokenService.SESSION_SERVER_URL) : null;
 
         // BFF session path (OAuth2 flow)
         if (serverUrl != null) {
             // Attempt to refresh the token if it's near expiry
-            refreshTokenIfNeeded(session, securityProperties, certificateHolder, smartClientKeyService);
+            sessionTokens.refreshTokenIfNeeded(session);
 
-            String accessToken = (String) session.getAttribute(SESSION_ACCESS_TOKEN);
-            String tokenServerUrl = (String) session.getAttribute(SESSION_TOKEN_SERVER_URL);
+            String accessToken = (String) session.getAttribute(SessionTokenService.SESSION_ACCESS_TOKEN);
+            String tokenServerUrl = (String) session.getAttribute(SessionTokenService.SESSION_TOKEN_SERVER_URL);
 
             // No valid token: either anonymous selection (active server
             // chosen via /auth/active-server with no login) or a token that
-            // has expired. Preserve the session — SESSION_SERVER_URL is the
+            // has expired. Preserve the session — SessionTokenService.SESSION_SERVER_URL is the
             // user's active-server preference and is independent of auth.
-            if (accessToken == null || isTokenNearExpiry(session)) {
+            if (accessToken == null || sessionTokens.isTokenNearExpiry(session)) {
                 return ResponseEntity.ok(Map.of(
                     "authenticated", false,
                     "serverUrl", serverUrl));
@@ -1013,17 +702,17 @@ public class SpaAuthController {
             }
 
             // Include token expiry so the frontend can schedule proactive checks
-            Object expiresAt = session.getAttribute(SESSION_TOKEN_EXPIRES_AT);
+            Object expiresAt = session.getAttribute(SessionTokenService.SESSION_TOKEN_EXPIRES_AT);
             if (expiresAt instanceof Instant) {
                 result.put("expiresAt", expiresAt.toString());
             }
 
             // Include refresh token presence for debugging
-            String refreshToken = (String) session.getAttribute(SESSION_REFRESH_TOKEN);
+            String refreshToken = (String) session.getAttribute(SessionTokenService.SESSION_REFRESH_TOKEN);
             result.put("hasRefreshToken", refreshToken != null);
 
             @SuppressWarnings("unchecked")
-            Map<String, String> userInfo = (Map<String, String>) session.getAttribute(SESSION_USERINFO);
+            Map<String, String> userInfo = (Map<String, String>) session.getAttribute(SessionTokenService.SESSION_USERINFO);
             if (userInfo != null && !userInfo.isEmpty()) {
                 result.put("userinfo", userInfo);
             }
@@ -1064,6 +753,35 @@ public class SpaAuthController {
         } catch (Exception e) {
             logger.debug("Userinfo fetch failed: {}", e.getMessage());
             return Map.of();
+        }
+    }
+
+    /**
+     * Resolves the fhirUser reference to a display name by reading the
+     * resource from the active FHIR server. Only references under that
+     * server's base are fetched, so the bearer token never goes to a
+     * third party.
+     */
+    private String resolveFhirUserName(String fhirUser, String serverUrl, String accessToken) {
+        try {
+            String base = UrlMatchUtil.normalizeUrl(serverUrl);
+            String url = fhirUser.startsWith("http") ? fhirUser : base + "/" + fhirUser;
+            String resourceType = extractFhirUserType(fhirUser);
+            if (resourceType == null || !UrlMatchUtil.matchesBaseUrl(url, serverUrl)) {
+                return null;
+            }
+            IGenericClient client = fhirContext.newRestfulGenericClient(base);
+            client.registerInterceptor(new BearerTokenAuthInterceptor(accessToken));
+            var resource = client.read().resource(resourceType).withUrl(url).execute();
+            return fhirContext.newTerser().getValues(resource, "name").stream()
+                .filter(HumanName.class::isInstance)
+                .map(name -> ((HumanName) name).getNameAsSingleString())
+                .filter(name -> name != null && !name.isBlank())
+                .findFirst()
+                .orElse(null);
+        } catch (Exception e) {
+            logger.debug("fhirUser lookup failed: {}", e.getMessage());
+            return null;
         }
     }
 
@@ -1298,14 +1016,7 @@ public class SpaAuthController {
     private JWSAlgorithm chooseAlg(PendingFlow flow) {
         try {
             SmartClientDiscoveryService.SmartConfiguration config = smartDiscovery.discover(flow.serverUrl());
-            List<String> algs = config.tokenEndpointAuthSigningAlgs();
-            if (algs == null || algs.isEmpty() || algs.contains("RS384")) {
-                return JWSAlgorithm.RS384;
-            }
-            if (algs.contains("ES384")) {
-                return JWSAlgorithm.ES384;
-            }
-            return JWSAlgorithm.RS384;
+            return SmartClientKeyService.selectAssertionAlgorithm(config.tokenEndpointAuthSigningAlgs());
         } catch (Exception e) {
             logger.warn("SMART discovery failed while choosing client assertion algorithm for {}: {}",
                 flow.serverUrl(), e.getMessage());
@@ -1359,18 +1070,8 @@ public class SpaAuthController {
                 return false;
             }
 
-            // The JWKS fetch honors the configured TLS policy.
-            SSLContext trustAllContext = SecurityUtil.getTrustAllSslContext(securityProperties);
-            ResourceRetriever retriever = trustAllContext == null
-                ? null
-                : new DefaultResourceRetriever(
-                    RemoteJWKSet.resolveDefaultHTTPConnectTimeout(),
-                    RemoteJWKSet.resolveDefaultHTTPReadTimeout(),
-                    RemoteJWKSet.resolveDefaultHTTPSizeLimit(),
-                    true,
-                    trustAllContext.getSocketFactory());
-            JWKSource<SecurityContext> jwkSource =
-                new RemoteJWKSet<>(new URL(config.jwksUri()), retriever);
+            JWKSource<SecurityContext> jwkSource = idTokenJwkSources.computeIfAbsent(
+                config.jwksUri(), this::buildIdTokenJwkSource);
             DefaultJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
             processor.setJWSKeySelector(
                 new JWSVerificationKeySelector<>(jwt.getHeader().getAlgorithm(), jwkSource));
@@ -1383,47 +1084,30 @@ public class SpaAuthController {
     }
 
     /**
+     * Cached, retrying JWK sources per jwks_uri, so repeated id_token
+     * validations against the same server reuse one fetched key set.
+     */
+    private final ConcurrentHashMap<String, JWKSource<SecurityContext>> idTokenJwkSources =
+        new ConcurrentHashMap<>();
+
+    /** The JWKS fetch honors the configured TLS policy. */
+    private JWKSource<SecurityContext> buildIdTokenJwkSource(String jwksUri) {
+        try {
+            SSLContext trustAllContext = SecurityUtil.getTrustAllSslContext(securityProperties);
+            javax.net.ssl.SSLSocketFactory sslFactory =
+                trustAllContext != null ? trustAllContext.getSocketFactory() : null;
+            DefaultResourceRetriever retriever = new DefaultResourceRetriever(5000, 5000, 0, true, sslFactory);
+            return JWKSourceBuilder.create(new URL(jwksUri), retriever).build();
+        } catch (Exception e) {
+            throw new IllegalStateException("Invalid jwks_uri: " + jwksUri, e);
+        }
+    }
+
+    /**
      * Builds a signed client assertion JWT for the specified token endpoint and client.
      */
-    static String buildClientAssertionFor(
-            CertificateHolder certificateHolder, String tokenEndpoint, String clientId)
-            throws Exception {
-        if (!certificateHolder.ensureInitialized()) {
-            throw new IllegalStateException(
-                "Signing certificate is not initialized; the UDAP issuer may be unreachable");
-        }
-        JWTClaimsSet claims = new JWTClaimsSet.Builder()
-            .issuer(clientId)
-            .subject(clientId)
-            .audience(tokenEndpoint)
-            .expirationTime(Date.from(Instant.now().plusSeconds(300)))
-            .issueTime(new Date())
-            .jwtID(UUID.randomUUID().toString())
-            .build();
-
-        // UDAP client assertions are validated using the x5c chain in the header.
-        JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.RS256)
-            .x509CertChain(certificateHolder.getX509CertChain())
-            .build();
-
-        SignedJWT signedJwt = new SignedJWT(header, claims);
-        signedJwt.sign(new RSASSASigner(certificateHolder.getSigningKey()));
-        return signedJwt.serialize();
-    }
-
     String buildClientAssertionFor(String tokenEndpoint, String clientId) throws Exception {
-        return buildClientAssertionFor(certificateHolder, tokenEndpoint, clientId);
-    }
-
-    String buildClientAssertion(String tokenEndpoint) throws Exception {
-        return buildClientAssertionFor(tokenEndpoint, udapClient.getClientId());
-    }
-
-    private static String formEncode(Map<String, String> params) {
-        return params.entrySet().stream()
-            .map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8)
-                + "=" + URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8))
-            .collect(Collectors.joining("&"));
+        return sessionTokens.buildUdapClientAssertion(tokenEndpoint, clientId);
     }
 
     private static String generateCodeVerifier() {
@@ -1472,7 +1156,7 @@ public class SpaAuthController {
             }
         }
         HttpSession session = request.getSession(true);
-        setActiveServer(session, normalized);
+        sessionTokens.setActiveServer(session, normalized);
         return ResponseEntity.noContent().build();
     }
 
@@ -1517,12 +1201,12 @@ public class SpaAuthController {
             }
         }
         HttpSession session = request.getSession(true);
-        session.setAttribute(SESSION_PAYER_FHIR_URL, normalized);
+        session.setAttribute(SessionTokenService.SESSION_PAYER_FHIR_URL, normalized);
         String clientId = body.clientId();
         if (clientId == null || clientId.isBlank()) {
-            session.removeAttribute(SESSION_PAYER_CLIENT_ID);
+            session.removeAttribute(SessionTokenService.SESSION_PAYER_CLIENT_ID);
         } else {
-            session.setAttribute(SESSION_PAYER_CLIENT_ID, clientId.trim());
+            session.setAttribute(SessionTokenService.SESSION_PAYER_CLIENT_ID, clientId.trim());
         }
         return ResponseEntity.noContent().build();
     }
@@ -1536,19 +1220,18 @@ public class SpaAuthController {
         SecurityContextHolder.clearContext();
         var session = request.getSession(false);
         if (session != null) {
-            session.removeAttribute(SESSION_ACCESS_TOKEN);
-            session.removeAttribute(SESSION_ID_TOKEN);
-            session.removeAttribute(SESSION_TOKEN_SERVER_URL);
-            session.removeAttribute(SESSION_SERVER_URL);
-            session.removeAttribute(SESSION_PAYER_FHIR_URL);
-            session.removeAttribute(SESSION_PAYER_CLIENT_ID);
-            session.removeAttribute(SESSION_USERINFO);
-            session.removeAttribute(SESSION_TOKEN_ENDPOINT);
-            session.removeAttribute(SESSION_CLIENT_ID);
-            session.removeAttribute(SESSION_CLIENT_SECRET);
-            session.removeAttribute(SESSION_AUTH_METHOD);
-            session.removeAttribute(SESSION_GRANTED_SCOPE);
-            session.removeAttribute(SESSION_TOKEN_ALG);
+            // Server selections (SESSION_SERVER_URL, SESSION_PAYER_FHIR_URL,
+            // SESSION_PAYER_CLIENT_ID) survive logout. They are preferences,
+            // not credentials, and the proxy allowlist reads them.
+            session.removeAttribute(SessionTokenService.SESSION_ACCESS_TOKEN);
+            session.removeAttribute(SessionTokenService.SESSION_TOKEN_SERVER_URL);
+            session.removeAttribute(SessionTokenService.SESSION_USERINFO);
+            session.removeAttribute(SessionTokenService.SESSION_TOKEN_ENDPOINT);
+            session.removeAttribute(SessionTokenService.SESSION_CLIENT_ID);
+            session.removeAttribute(SessionTokenService.SESSION_CLIENT_SECRET);
+            session.removeAttribute(SessionTokenService.SESSION_AUTH_METHOD);
+            session.removeAttribute(SessionTokenService.SESSION_GRANTED_SCOPE);
+            session.removeAttribute(SessionTokenService.SESSION_TOKEN_ALG);
             session.removeAttribute("SPRING_SECURITY_CONTEXT");
             session.invalidate();
         }

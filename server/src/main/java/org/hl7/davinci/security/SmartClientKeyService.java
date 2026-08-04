@@ -127,11 +127,19 @@ public class SmartClientKeyService {
         return true;
     }
 
-    public RSAKey getRsaKey() { return rsaKey; }
-    public ECKey getEcKey() { return ecKey; }
-
     public JWKSet publicJwkSet() {
         return new JWKSet(List.of(rsaKey.toPublicJWK(), ecKey.toPublicJWK()));
+    }
+
+    /** RS384 unless the server advertises support for ES384 only. */
+    public static JWSAlgorithm selectAssertionAlgorithm(List<String> signingAlgs) {
+        if (signingAlgs == null || signingAlgs.isEmpty() || signingAlgs.contains(JWSAlgorithm.RS384.getName())) {
+            return JWSAlgorithm.RS384;
+        }
+        if (signingAlgs.contains(JWSAlgorithm.ES384.getName())) {
+            return JWSAlgorithm.ES384;
+        }
+        return JWSAlgorithm.RS384;
     }
 
     public String buildClientAssertion(String clientId, String tokenEndpoint, JWSAlgorithm alg) throws Exception {

@@ -5,7 +5,7 @@ import java.util.Map;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import org.hl7.davinci.config.ServerProperties;
-import org.hl7.davinci.security.SpaAuthController;
+import org.hl7.davinci.security.SessionTokenService;
 import org.hl7.davinci.util.UrlMatchUtil;
 
 /**
@@ -75,7 +75,7 @@ public final class ProxyUtil {
             ServerProperties serverProperties) {
         if (session != null) {
             String sessionServer = (String) session.getAttribute(
-                SpaAuthController.SESSION_SERVER_URL);
+                SessionTokenService.SESSION_SERVER_URL);
             if (sessionServer != null && !sessionServer.isBlank()) {
                 return UrlMatchUtil.normalizeUrl(sessionServer);
             }

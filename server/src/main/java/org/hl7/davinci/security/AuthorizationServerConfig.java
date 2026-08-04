@@ -166,13 +166,8 @@ public class AuthorizationServerConfig {
                 String sub = null;
                 try {
                     // Extract sub (client_id) from the JWT assertion without full validation
-                    String assertion = req.getParameter("client_assertion");
-                    String[] parts = assertion.split("\\.");
-                    if (parts.length == 3) {
-                        String payload = new String(java.util.Base64.getUrlDecoder().decode(parts[1]));
-                        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                        sub = mapper.readTree(payload).path("sub").asText(null);
-                    }
+                    sub = com.nimbusds.jwt.SignedJWT.parse(req.getParameter("client_assertion"))
+                        .getJWTClaimsSet().getSubject();
                 } catch (Exception e) {
                     LoggerFactory.getLogger("UdapTokenClientIdFilter")
                         .warn("Failed to extract sub from client_assertion", e);
