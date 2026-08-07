@@ -42,6 +42,8 @@ class SpaAuthControllerTest {
     CertificateHolder certificateHolder;
     SmartClientKeyService smartClientKeyService;
     SessionTokenService sessionTokens;
+    AuthCodeFlowService authCodeFlow;
+    UserIdentityService userIdentity;
     SecurityProperties securityProperties;
     ServerProperties serverProperties;
     SpaAuthController controller;
@@ -62,11 +64,15 @@ class SpaAuthControllerTest {
             securityProperties, certificateHolder, new OutboundTargetValidator(securityProperties));
         smartDiscovery = new StubSmartClientDiscoveryService(securityProperties);
         outboundTargetValidator = new StubOutboundTargetValidator(securityProperties);
+        authCodeFlow = new AuthCodeFlowService(
+            udapClient, sessionTokens, securityProperties, smartDiscovery, smartClientKeyService);
+        userIdentity = new UserIdentityService(
+            securityProperties, udapClient, smartDiscovery, outboundTargetValidator,
+            FhirContext.forR4Cached());
         controller = new SpaAuthController(
             udapClient, sessionTokens, securityProperties, serverProperties,
             new StubUserDetailsService(),
-            outboundTargetValidator, smartDiscovery, smartClientKeyService,
-            FhirContext.forR4Cached());
+            outboundTargetValidator, smartDiscovery, authCodeFlow, userIdentity);
     }
 
     @Test
@@ -83,7 +89,7 @@ class SpaAuthControllerTest {
         assertTrue(location.contains("state="));
 
         // Verify state was stored in pending flows
-        assertEquals(1, controller.getPendingFlows().size());
+        assertEquals(1, authCodeFlow.getPendingFlows().size());
     }
 
     @Test
@@ -123,8 +129,8 @@ class SpaAuthControllerTest {
     void token_expiredState_returns400() {
         var request = new MockHttpServletRequest();
         String state = "expired-state";
-        controller.getPendingFlows().put(state,
-            new SpaAuthController.PendingFlow("verifier", "http://localhost:3000/callback",
+        authCodeFlow.getPendingFlows().put(state,
+            new AuthCodeFlowService.PendingFlow("verifier", "http://localhost:3000/callback",
                 Instant.now().minusSeconds(600)));
 
         Map<String, String> body = Map.of("code", "some-code", "state", state);
@@ -145,17 +151,21 @@ class SpaAuthControllerTest {
         CertificateHolder uninitializedCertHolder = new CertificateHolder(uninitializedProps);
         assertFalse(uninitializedCertHolder.isInitialized());
 
+        AuthCodeFlowService uninitializedFlow = new AuthCodeFlowService(
+            udapClient,
+            new SessionTokenService(securityProperties, uninitializedCertHolder, smartClientKeyService),
+            securityProperties, smartDiscovery, smartClientKeyService);
         SpaAuthController uninitializedController = new SpaAuthController(
             udapClient,
             new SessionTokenService(securityProperties, uninitializedCertHolder, smartClientKeyService),
             securityProperties, serverProperties,
             new StubUserDetailsService(), new OutboundTargetValidator(securityProperties), smartDiscovery,
-            smartClientKeyService, FhirContext.forR4Cached());
+            uninitializedFlow, userIdentity);
 
         var request = new MockHttpServletRequest();
         String state = "pending-state";
-        uninitializedController.getPendingFlows().put(state,
-            new SpaAuthController.PendingFlow("verifier", "http://localhost:3000/callback", Instant.now()));
+        uninitializedFlow.getPendingFlows().put(state,
+            new AuthCodeFlowService.PendingFlow("verifier", "http://localhost:3000/callback", Instant.now()));
         Map<String, String> body = Map.of("code", "some-code", "state", state);
 
         ResponseEntity<Map<String, Object>> response = uninitializedController.exchangeToken(body, request);
@@ -169,7 +179,7 @@ class SpaAuthControllerTest {
         controller.login(null, null, null, null);
         controller.login(null, null, null, null);
 
-        assertEquals(2, controller.getPendingFlows().size());
+        assertEquals(2, authCodeFlow.getPendingFlows().size());
     }
 
     @Test
@@ -197,8 +207,8 @@ class SpaAuthControllerTest {
     void login_snapshotsClientIntoPendingFlow() throws Exception {
         controller.login(null, null, null, null);
 
-        SpaAuthController.PendingFlow flow =
-            controller.getPendingFlows().values().iterator().next();
+        AuthCodeFlowService.PendingFlow flow =
+            authCodeFlow.getPendingFlows().values().iterator().next();
         assertEquals("test-client-id", flow.clientId());
         assertEquals("https://localhost:5001/connect/token", flow.tokenEndpoint());
         assertNull(flow.serverUrl());
@@ -218,7 +228,7 @@ class SpaAuthControllerTest {
 
     @Test
     void buildClientAssertion_includesX5cHeader() throws Exception {
-        String assertion = controller.buildClientAssertionFor(
+        String assertion = authCodeFlow.buildClientAssertionFor(
             "https://localhost:5001/connect/token", "test-client-id");
         SignedJWT jwt = SignedJWT.parse(assertion);
 
@@ -231,8 +241,8 @@ class SpaAuthControllerTest {
 
     @Test
     void buildTokenParams_includesUdapVersion() throws Exception {
-        SpaAuthController.TokenRequestSpec spec = controller.buildTokenRequest(
-            new SpaAuthController.PendingFlow("verifier", "http://localhost:3000/callback", Instant.now()),
+        AuthCodeFlowService.TokenRequestSpec spec = authCodeFlow.buildTokenRequest(
+            new AuthCodeFlowService.PendingFlow("verifier", "http://localhost:3000/callback", Instant.now()),
             "auth-code");
 
         assertEquals("authorization_code", spec.params().get("grant_type"));
@@ -244,11 +254,11 @@ class SpaAuthControllerTest {
 
     @Test
     void smartPublicExchangeUsesCodeVerifierNoAssertion() throws Exception {
-        SpaAuthController.PendingFlow flow = new SpaAuthController.PendingFlow(
+        AuthCodeFlowService.PendingFlow flow = new AuthCodeFlowService.PendingFlow(
             "verifier", "http://localhost:3000/callback", Instant.now(),
             "https://ehr.example.com/fhir", "https://ehr.example.com/token",
             "spa-client", "smart-none", null, null, null);
-        SpaAuthController.TokenRequestSpec spec = controller.buildTokenRequest(flow, "abc");
+        AuthCodeFlowService.TokenRequestSpec spec = authCodeFlow.buildTokenRequest(flow, "abc");
         assertEquals("authorization_code", spec.params().get("grant_type"));
         assertEquals("verifier", spec.params().get("code_verifier"));
         assertEquals("spa-client", spec.params().get("client_id"));
@@ -258,11 +268,11 @@ class SpaAuthControllerTest {
 
     @Test
     void smartBasicExchangeOmitsClientIdAndSetsBasicHeader() throws Exception {
-        SpaAuthController.PendingFlow flow = new SpaAuthController.PendingFlow(
+        AuthCodeFlowService.PendingFlow flow = new AuthCodeFlowService.PendingFlow(
             "verifier", "http://localhost:3000/callback", Instant.now(),
             "https://ehr.example.com/fhir", "https://ehr.example.com/token",
             "spa-client", "smart-basic", "s3cret", null, null);
-        SpaAuthController.TokenRequestSpec spec = controller.buildTokenRequest(flow, "abc");
+        AuthCodeFlowService.TokenRequestSpec spec = authCodeFlow.buildTokenRequest(flow, "abc");
         assertNull(spec.params().get("client_id"));
         String expected = "Basic " + Base64.getEncoder()
             .encodeToString("spa-client:s3cret".getBytes(StandardCharsets.UTF_8));
@@ -336,7 +346,7 @@ class SpaAuthControllerTest {
             "patient", "pat-1",
             "appContext", "{\"coverageAssertionId\":\"ca-1\"}");
 
-        Map<String, Object> smartContext = SpaAuthController.buildSmartContext(tokens);
+        Map<String, Object> smartContext = AuthCodeFlowService.buildSmartContext(tokens);
 
         assertEquals("pat-1", smartContext.get("patient"));
         assertEquals("{\"coverageAssertionId\":\"ca-1\"}", smartContext.get("appContext"));
@@ -344,11 +354,11 @@ class SpaAuthControllerTest {
 
     @Test
     void smartAsymmetricExchangeCarriesSignedAssertion() throws Exception {
-        SpaAuthController.PendingFlow flow = new SpaAuthController.PendingFlow(
+        AuthCodeFlowService.PendingFlow flow = new AuthCodeFlowService.PendingFlow(
             "verifier", "http://localhost:3000/callback", Instant.now(),
             "https://ehr.example.com/fhir", "https://ehr.example.com/token",
             "spa-client", "smart-private-key-jwt", null, null, null);
-        SpaAuthController.TokenRequestSpec spec = controller.buildTokenRequest(flow, "abc");
+        AuthCodeFlowService.TokenRequestSpec spec = authCodeFlow.buildTokenRequest(flow, "abc");
         assertNull(spec.params().get("client_id"));
         SignedJWT assertion = SignedJWT.parse(spec.params().get("client_assertion"));
         assertEquals("spa-client", assertion.getJWTClaimsSet().getIssuer());
@@ -358,8 +368,8 @@ class SpaAuthControllerTest {
 
     @Test
     void udapExchangeUnchanged() throws Exception {
-        SpaAuthController.TokenRequestSpec spec = controller.buildTokenRequest(
-            new SpaAuthController.PendingFlow("verifier", "http://localhost:3000/callback", Instant.now()),
+        AuthCodeFlowService.TokenRequestSpec spec = authCodeFlow.buildTokenRequest(
+            new AuthCodeFlowService.PendingFlow("verifier", "http://localhost:3000/callback", Instant.now()),
             "abc");
 
         assertEquals("1", spec.params().get("udap"));
@@ -374,19 +384,19 @@ class SpaAuthControllerTest {
             Map.of("reference", "Coverage/cov1", "role", "launch"),
             Map.of("canonical", "http://payer.example.com/Questionnaire/q1", "type", "Questionnaire"));
         assertEquals(List.of("Coverage/cov1", "http://payer.example.com/Questionnaire/q1"),
-            SpaAuthController.parseFhirContext(raw));
+            AuthCodeFlowService.parseFhirContext(raw));
     }
 
     @Test
     void parseFhirContextHandlesLegacyStringArray() {
         assertEquals(List.of("Coverage/cov1"),
-            SpaAuthController.parseFhirContext(List.of("Coverage/cov1")));
+            AuthCodeFlowService.parseFhirContext(List.of("Coverage/cov1")));
     }
 
     @Test
     void parseFhirContextIgnoresGarbage() {
-        assertTrue(SpaAuthController.parseFhirContext("not-a-list").isEmpty());
-        assertTrue(SpaAuthController.parseFhirContext(null).isEmpty());
+        assertTrue(AuthCodeFlowService.parseFhirContext("not-a-list").isEmpty());
+        assertTrue(AuthCodeFlowService.parseFhirContext(null).isEmpty());
     }
 
     @Test
@@ -409,7 +419,7 @@ class SpaAuthControllerTest {
             String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
             String smartServer = "https://ehr.example.com/fhir";
             String state = "smart-context-state-" + UUID.randomUUID();
-            controller.getPendingFlows().put(state, new SpaAuthController.PendingFlow(
+            authCodeFlow.getPendingFlows().put(state, new AuthCodeFlowService.PendingFlow(
                 "verifier", "http://localhost:3000/callback", Instant.now(),
                 smartServer, tokenEndpoint, "spa-client", "smart-ehr-launch", null, "launch-abc", null));
 
@@ -500,7 +510,7 @@ class SpaAuthControllerTest {
         assertTrue(location.startsWith("https://custom-issuer.org/authorize"));
         assertTrue(location.contains("client_id=custom-client-id"));
         assertFalse(location.contains("idp="), "Custom server flow should not include idp parameter");
-        assertEquals(1, controller.getPendingFlows().size());
+        assertEquals(1, authCodeFlow.getPendingFlows().size());
     }
 
     @Test
@@ -526,7 +536,7 @@ class SpaAuthControllerTest {
         assertTrue(location.contains("idp=https%3A%2F%2Fmy-idp.org"),
             "Should include URL-encoded idp parameter, got: " + location);
         assertTrue(location.contains("udap"), "Scope should include udap for Tiered OAuth");
-        assertEquals(1, controller.getPendingFlows().size());
+        assertEquals(1, authCodeFlow.getPendingFlows().size());
     }
 
     @Test
@@ -540,8 +550,8 @@ class SpaAuthControllerTest {
             LOCAL_SERVER, java.util.List.of(smartProvider));
         SpaAuthController smartController = new SpaAuthController(
             udapClient, sessionTokens, securityProperties, smartServerProperties,
-            new StubUserDetailsService(), outboundTargetValidator, smartDiscovery, smartClientKeyService,
-            FhirContext.forR4Cached());
+            new StubUserDetailsService(), outboundTargetValidator, smartDiscovery,
+            authCodeFlow, userIdentity);
 
         ResponseEntity<?> response = smartController.login(smartServer, null, "smart", null);
 
@@ -722,6 +732,31 @@ class SpaAuthControllerTest {
         assertEquals(204, response.getStatusCode().value());
         assertEquals(LOCAL_SERVER,
             request.getSession(false).getAttribute(SessionTokenService.SESSION_SERVER_URL));
+    }
+
+    @Test
+    void logout_clearsTokensButKeepsServerSelections() {
+        var request = new MockHttpServletRequest();
+        var session = new MockHttpSession();
+        session.setAttribute(SessionTokenService.SESSION_SERVER_URL, SECOND_SERVER);
+        session.setAttribute(SessionTokenService.SESSION_PAYER_FHIR_URL, "https://payer.example/fhir");
+        session.setAttribute(SessionTokenService.SESSION_PAYER_CLIENT_ID, "payer-client");
+        session.setAttribute(SessionTokenService.SESSION_ACCESS_TOKEN, "token-abc");
+        session.setAttribute(SessionTokenService.SESSION_USERINFO, Map.of("name", "Amy"));
+        request.setSession(session);
+
+        controller.logout(request);
+
+        var fresh = request.getSession(false);
+        assertNotNull(fresh);
+        assertNotSame(session, fresh);
+        // The proxy allowlist reads these, so a custom server stays trusted.
+        assertEquals(SECOND_SERVER, fresh.getAttribute(SessionTokenService.SESSION_SERVER_URL));
+        assertEquals("https://payer.example/fhir",
+            fresh.getAttribute(SessionTokenService.SESSION_PAYER_FHIR_URL));
+        assertEquals("payer-client", fresh.getAttribute(SessionTokenService.SESSION_PAYER_CLIENT_ID));
+        assertNull(fresh.getAttribute(SessionTokenService.SESSION_ACCESS_TOKEN));
+        assertNull(fresh.getAttribute(SessionTokenService.SESSION_USERINFO));
     }
 
     @Test
@@ -1011,7 +1046,7 @@ class SpaAuthControllerTest {
             String tokenEndpoint = "http://localhost:" + tokenServer.getAddress().getPort() + "/token";
             String smartServer = "https://ehr.example.com/fhir";
             String state = "smart-id-token-state-" + UUID.randomUUID();
-            controller.getPendingFlows().put(state, new SpaAuthController.PendingFlow(
+            authCodeFlow.getPendingFlows().put(state, new AuthCodeFlowService.PendingFlow(
                 "verifier", "http://localhost:3000/callback", Instant.now(),
                 smartServer, tokenEndpoint, "spa-client", "smart-none", null, null, null));
 
@@ -1100,36 +1135,64 @@ class SpaAuthControllerTest {
     @Test
     void buildUserinfoFromClaims_resolvesNameFromClaims() {
         // Prefers "name" claim
-        Map<String, String> result = SpaAuthController.buildUserinfoFromClaims(
+        Map<String, String> result = UserIdentityService.buildUserinfoFromClaims(
             Map.of("name", "Jane Doe", "email", "jane@test.com"));
         assertEquals("Jane Doe", result.get("name"));
 
         // Falls back to preferred_username
-        result = SpaAuthController.buildUserinfoFromClaims(
+        result = UserIdentityService.buildUserinfoFromClaims(
             Map.of("preferred_username", "jdoe"));
         assertEquals("jdoe", result.get("name"));
 
         // Falls back to given + family
-        result = SpaAuthController.buildUserinfoFromClaims(
+        result = UserIdentityService.buildUserinfoFromClaims(
             Map.of("given_name", "Jane", "family_name", "Doe"));
         assertEquals("Jane Doe", result.get("name"));
 
         // Falls back to email
-        result = SpaAuthController.buildUserinfoFromClaims(
+        result = UserIdentityService.buildUserinfoFromClaims(
             Map.of("email", "jane@test.com"));
         assertEquals("jane@test.com", result.get("name"));
 
         // Includes fhirUser and extracts type
-        result = SpaAuthController.buildUserinfoFromClaims(
+        result = UserIdentityService.buildUserinfoFromClaims(
             Map.of("name", "Jane", "fhirUser", "Practitioner/123"));
         assertEquals("Jane", result.get("name"));
         assertEquals("Practitioner/123", result.get("fhirUser"));
         assertEquals("Practitioner", result.get("fhirUserType"));
 
-        result = SpaAuthController.buildUserinfoFromClaims(
+        result = UserIdentityService.buildUserinfoFromClaims(
             Map.of("fhirUser", "https://ehr.example/fhir/Practitioner/123"));
         assertEquals("https://ehr.example/fhir/Practitioner/123", result.get("fhirUser"));
         assertEquals("Practitioner", result.get("fhirUserType"));
+    }
+
+    @Test
+    void relativizeFhirUser_convertsAbsoluteUrlUnderActiveServer() {
+        String base = "https://inferno.healthit.gov/reference-server/r4";
+
+        assertEquals("Patient/pat015",
+            UserIdentityService.relativizeFhirUser(base + "/Patient/pat015", base));
+        assertEquals("Patient/pat015",
+            UserIdentityService.relativizeFhirUser(base + "/Patient/pat015", base + "/"));
+
+        // Already relative stays as-is
+        assertEquals("Practitioner/123",
+            UserIdentityService.relativizeFhirUser("Practitioner/123", base));
+
+        // Query strings and fragments do not survive into the reference
+        assertEquals("Patient/pat015",
+            UserIdentityService.relativizeFhirUser(base + "/Patient/pat015?_format=json", base));
+        assertEquals(base + "?x=1",
+            UserIdentityService.relativizeFhirUser(base + "?x=1", base));
+
+        // A different base stays absolute
+        String foreign = "https://other.example/fhir/Patient/9";
+        assertEquals(foreign, UserIdentityService.relativizeFhirUser(foreign, base));
+
+        // Null-safe
+        assertEquals(null, UserIdentityService.relativizeFhirUser(null, base));
+        assertEquals(foreign, UserIdentityService.relativizeFhirUser(foreign, null));
     }
 
     @Test
@@ -1144,7 +1207,7 @@ class SpaAuthControllerTest {
             new JWSHeader.Builder(JWSAlgorithm.RS256).build(), claims);
         jwt.sign(new RSASSASigner(certificateHolder.getSigningKey()));
 
-        Map<String, String> result = SpaAuthController.extractClaimsFromIdToken(jwt.serialize());
+        Map<String, String> result = UserIdentityService.extractClaimsFromIdToken(jwt.serialize());
 
         assertEquals("Dr. Smith", result.get("name"));
         assertEquals("Practitioner/456", result.get("fhirUser"));
@@ -1162,7 +1225,7 @@ class SpaAuthControllerTest {
             new JWSHeader.Builder(JWSAlgorithm.RS256).build(), claims);
         jwt.sign(new RSASSASigner(certificateHolder.getSigningKey()));
 
-        Map<String, String> result = SpaAuthController.extractClaimsFromIdToken(jwt.serialize());
+        Map<String, String> result = UserIdentityService.extractClaimsFromIdToken(jwt.serialize());
 
         assertEquals("Jane Doe", result.get("name"));
         assertNull(result.get("fhirUser"));
@@ -1179,7 +1242,7 @@ class SpaAuthControllerTest {
             new JWSHeader.Builder(JWSAlgorithm.RS256).build(), claims);
         jwt.sign(new RSASSASigner(certificateHolder.getSigningKey()));
 
-        Map<String, String> result = SpaAuthController.extractClaimsFromIdToken(jwt.serialize());
+        Map<String, String> result = UserIdentityService.extractClaimsFromIdToken(jwt.serialize());
 
         assertEquals("Patient/789", result.get("fhirUser"));
         assertEquals("Patient", result.get("fhirUserType"));
@@ -1187,7 +1250,7 @@ class SpaAuthControllerTest {
 
     @Test
     void extractClaimsFromIdToken_invalidJwt_returnsEmpty() {
-        Map<String, String> result = SpaAuthController.extractClaimsFromIdToken("not-a-jwt");
+        Map<String, String> result = UserIdentityService.extractClaimsFromIdToken("not-a-jwt");
 
         assertTrue(result.isEmpty());
     }
@@ -1195,7 +1258,7 @@ class SpaAuthControllerTest {
     @Test
     void extractClaimsFromIdToken_nullSafe_returnsEmpty() {
         // Verify the method handles edge cases gracefully
-        Map<String, String> result = SpaAuthController.extractClaimsFromIdToken("");
+        Map<String, String> result = UserIdentityService.extractClaimsFromIdToken("");
 
         assertTrue(result.isEmpty());
     }

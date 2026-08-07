@@ -136,9 +136,12 @@ public class AuthorizationServerConfig {
         MediaTypeRequestMatcher browserNavigation = new MediaTypeRequestMatcher(MediaType.TEXT_HTML);
         browserNavigation.setIgnoredMediaTypes(Set.of(MediaType.ALL));
 
+        // idp=1 tells the SPA login page that an inbound authorization
+        // request (for example Tiered OAuth from a custom target's server)
+        // needs the local account form, not a redirect to an external server.
         http.exceptionHandling(exceptions -> exceptions
             .defaultAuthenticationEntryPointFor(
-                (request, response, authException) -> response.sendRedirect(loginUrl(request)),
+                (request, response, authException) -> response.sendRedirect(loginUrl(request) + "?idp=1"),
                 browserNavigation
             )
         );
@@ -207,7 +210,13 @@ public class AuthorizationServerConfig {
             .authorizeHttpRequests(authorize -> authorize.anyRequest().permitAll())
             .formLogin(form -> form
                 .loginPage("/login")
-                .defaultSuccessUrl("/auth/login", false))
+                .defaultSuccessUrl("/auth/login", false)
+                // A form-login failure always comes from the local account
+                // form. Keep idp=1 so the retry shows that form again
+                // instead of an external sign-in card, and keep the SPA host
+                // in dev mode where the default /login?error would 404.
+                .failureHandler((request, response, exception) ->
+                    response.sendRedirect(loginUrl(request) + "?idp=1&error=bad_credentials")))
             .userDetailsService(userDetailsService)
             .requestCache(cache -> cache.requestCache(expiringRequestCache))
             .csrf(csrf -> csrf

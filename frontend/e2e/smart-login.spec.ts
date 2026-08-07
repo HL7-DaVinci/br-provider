@@ -79,9 +79,21 @@ test.describe("SMART standalone provider login", () => {
       page.getByRole("link", { name: /Stub/ }).first(),
     ).toBeVisible();
 
+    // Sign-out must rotate the BFF session cookie: the logout endpoint
+    // invalidates the session and reseeds a fresh one, so keeping the old
+    // cookie value would mean the authenticated session survived.
+    const sessionCookie = async () =>
+      (await page.context().cookies()).find((c) => c.name === "SESSION")?.value;
+    const cookieBeforeLogout = await sessionCookie();
+    expect(cookieBeforeLogout).toBeTruthy();
+
     await page.getByRole("button", { name: "Sign out" }).click();
     await expect(
       page.getByRole("banner").getByRole("link", { name: "Sign In" }),
     ).toBeVisible();
+
+    const cookieAfterLogout = await sessionCookie();
+    expect(cookieAfterLogout).toBeTruthy();
+    expect(cookieAfterLogout).not.toBe(cookieBeforeLogout);
   });
 });

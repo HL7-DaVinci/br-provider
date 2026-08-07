@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { awaitActiveServerSync } from "@/hooks/use-fhir-server";
 import type { PayerServer } from "@/lib/fhir-config";
 import {
   getPayerServers,
@@ -32,22 +33,31 @@ async function pushActivePayer(
 // Mirrors the active-server boot sync in useFhirServer: pushes the stored
 // payer fhirUrl to the BFF session once per page load so the proxy allowlist
 // recognizes it. fhirFetch awaits this via awaitActivePayerSync() to avoid
-// a race on the first request.
+// a race on the first request. Chained after the provider sync: both
+// endpoints create the session when it is missing, so concurrent first
+// requests could split the two selections across two sessions and lose one.
 let bootSyncPromise: Promise<void> | null = null;
 
 function ensureBootSync(): Promise<void> {
   if (bootSyncPromise !== null) return bootSyncPromise;
   const stored = getStoredPayerServer();
   bootSyncPromise = stored.fhirUrl
-    ? pushActivePayer(stored.fhirUrl, stored.clientId).catch((err) => {
-        console.error("active-payer boot sync failed", err);
-      })
+    ? awaitActiveServerSync()
+        .then(() => pushActivePayer(stored.fhirUrl, stored.clientId))
+        .catch((err) => {
+          console.error("active-payer boot sync failed", err);
+        })
     : Promise.resolve();
   return bootSyncPromise;
 }
 
 export function awaitActivePayerSync(): Promise<void> {
   return ensureBootSync();
+}
+
+/** Mirrors resetActiveServerSync: the BFF loses its copy when the session ends. */
+export function resetActivePayerSync(): void {
+  bootSyncPromise = null;
 }
 
 /**

@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { resetActiveServerSync } from "@/hooks/use-fhir-server";
+import { resetActivePayerSync } from "@/hooks/use-payer-server";
 import {
   checkSession,
   clearAuthStorage,
@@ -29,6 +31,7 @@ export function useAuth() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [, forceUpdate] = useState(0);
+  const wasAuthenticated = useRef(false);
 
   const userInfo = getUserInfo();
 
@@ -55,6 +58,18 @@ export function useAuth() {
   // locally selected identity.
   useEffect(() => {
     if (localIdentityMode || !sessionData) return;
+
+    if (sessionData.authenticated) {
+      wasAuthenticated.current = true;
+    } else if (wasAuthenticated.current) {
+      // The BFF session is gone, so its copy of the active server and payer
+      // went with it. Re-push both before the next proxied request. Only on
+      // the transition out of an authenticated session: a signed-out page
+      // has nothing to reset, and repeated polls must not re-trigger pushes.
+      wasAuthenticated.current = false;
+      resetActiveServerSync();
+      resetActivePayerSync();
+    }
 
     if (!sessionData.authenticated && userInfo) {
       // Server session expired -- clear local state

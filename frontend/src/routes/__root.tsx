@@ -39,7 +39,7 @@ export const Route = createRootRoute({
 // Stable search object so the redirect-to-login navigate has the same
 // reference every render (props churn is what makes TanStack's <Navigate>
 // re-fire its layout effect each render).
-const LOGIN_SEARCH = { error: undefined } as const;
+const LOGIN_SEARCH = { error: undefined, idp: undefined } as const;
 
 // Lives inside TaskSheetProvider so the toast's View action can dismiss an
 // open task sheet before revealing the dev-tools drawer.
@@ -276,7 +276,7 @@ function RootComponent() {
               {authEnabled && !isAuthenticated && !isRestoringSession && (
                 <Link
                   to="/login"
-                  search={{ error: undefined }}
+                  search={{ error: undefined, idp: undefined }}
                   className="flex items-center gap-1.5 pl-1 text-[13px] font-medium text-brand-foreground/75 hover:text-brand-foreground transition-colors"
                 >
                   <LogIn className="h-3.5 w-3.5" />

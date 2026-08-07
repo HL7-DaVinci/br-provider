@@ -1,5 +1,6 @@
 import type { SmartLaunchContext } from "@/lib/dtr-launch";
 import {
+  type CustomAuthTarget,
   getServerByUrl,
   getStoredCustomAuthTarget,
   getStoredServerUrl,
@@ -22,6 +23,25 @@ interface SmartLoginOption {
   clientId?: string;
 }
 
+// Returns the stored custom auth target when it governs sign-in for the
+// selected server. A preset server can be SMART-secured too, so a stored
+// SMART target for the selected server wins over the primary FAST flow.
+// A non-SMART record only applies to a genuinely custom server: when the
+// same URL is also a configured preset, the preset stays on the primary
+// FAST flow.
+export function getApplicableCustomAuthTarget(
+  selectedServerUrl: string,
+): CustomAuthTarget | null {
+  const stored = getStoredCustomAuthTarget();
+  if (stored?.serverUrl !== selectedServerUrl) {
+    return null;
+  }
+  if (stored.authMode !== "smart" && getServerByUrl(selectedServerUrl)) {
+    return null;
+  }
+  return stored;
+}
+
 // Redirects to the server which initiates the OAuth2 flow.
 // Without serverUrl, uses the primary FAST RI flow (Tiered OAuth).
 // With serverUrl, targets a custom server's issuer (requires prior discovery).
@@ -37,30 +57,17 @@ function resolveLoginTarget(
     return { serverUrl, idp };
   }
 
-  const selectedServerUrl = getStoredServerUrl();
-  const storedCustomAuthTarget = getStoredCustomAuthTarget();
-
-  // A preset server can be SMART-secured too, so a stored SMART target for the
-  // selected server wins over the primary FAST flow.
-  if (
-    storedCustomAuthTarget?.serverUrl === selectedServerUrl &&
-    storedCustomAuthTarget.authMode === "smart"
-  ) {
+  const target = getApplicableCustomAuthTarget(getStoredServerUrl());
+  if (!target) {
+    return {};
+  }
+  if (target.authMode === "smart") {
     return {
-      serverUrl: storedCustomAuthTarget.serverUrl,
-      smart: { clientId: storedCustomAuthTarget.clientId },
+      serverUrl: target.serverUrl,
+      smart: { clientId: target.clientId },
     };
   }
-
-  if (getServerByUrl(selectedServerUrl)) {
-    return {};
-  }
-
-  if (storedCustomAuthTarget?.serverUrl !== selectedServerUrl) {
-    return {};
-  }
-
-  return storedCustomAuthTarget;
+  return target;
 }
 
 export function buildLoginPath(

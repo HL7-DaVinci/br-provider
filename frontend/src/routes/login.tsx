@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import type { Bundle, Patient, Practitioner } from "fhir/r4";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   Select,
@@ -13,7 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/hooks/use-auth";
 import { useFhirServer } from "@/hooks/use-fhir-server";
 import { fhirSend } from "@/lib/api";
-import { setLocalIdentity } from "@/lib/auth";
+import { getApplicableCustomAuthTarget, setLocalIdentity } from "@/lib/auth";
 import { formatPatientName } from "@/lib/clinical-formatters";
 
 interface TestAccount {
@@ -63,20 +63,34 @@ const ERROR_MESSAGES: Record<string, string> = {
     "This server's SMART configuration is missing required support (PKCE with S256, authorization_code grant).",
   smart_client_not_configured:
     "No client ID is configured for this server. Add one in settings or provide one at login.",
+  bad_credentials: "Sign-in failed. Select an account and try again.",
 };
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
   validateSearch: (search: Record<string, unknown>) => ({
     error: search.error as string | undefined,
+    idp: search.idp as string | undefined,
   }),
 });
 
 function LoginPage() {
-  const { error: urlError } = Route.useSearch();
-  const { localIdentityMode } = useAuth();
+  const { error: urlError, idp } = Route.useSearch();
+  const { localIdentityMode: storedServerIsOpen, login } = useAuth();
   const { serverUrl } = useFhirServer();
   const navigate = useNavigate();
+  // idp=1 marks an inbound authorization request (Tiered OAuth) that this
+  // server must answer with its own account form and a real form POST, no
+  // matter which server the SPA has selected. It overrides both local
+  // identity mode and the external sign-in card below, or the saved OAuth
+  // request never resumes.
+  const localIdentityMode = storedServerIsOpen && !idp;
+  // A custom server authenticates against itself, so the local test accounts
+  // below do not apply to it. getApplicableCustomAuthTarget applies the same
+  // policy as login itself: a non-SMART record never overrides a preset.
+  const authTarget = getApplicableCustomAuthTarget(serverUrl);
+  const externalTarget =
+    !localIdentityMode && !idp && authTarget ? authTarget : undefined;
   const [accounts, setAccounts] = useState<TestAccount[]>([]);
   const [error, setError] = useState<string | undefined>(
     () =>
@@ -84,13 +98,24 @@ function LoginPage() {
   );
   const [submitting, setSubmitting] = useState(false);
 
+  const startExternalLogin = useCallback(() => {
+    if (!externalTarget) return;
+    if (externalTarget.authMode === "smart") {
+      login(externalTarget.serverUrl, undefined, {
+        clientId: externalTarget.clientId,
+      });
+      return;
+    }
+    login(externalTarget.serverUrl, externalTarget.idp || undefined);
+  }, [externalTarget, login]);
+
   useEffect(() => {
-    if (localIdentityMode) return;
+    if (localIdentityMode || externalTarget) return;
     fetch("/api/users")
       .then((res) => res.json())
       .then((data) => setAccounts(data))
       .catch(() => {});
-  }, [localIdentityMode]);
+  }, [localIdentityMode, externalTarget]);
 
   useEffect(() => {
     if (!localIdentityMode) return;
@@ -162,6 +187,32 @@ function LoginPage() {
   function handleTabChange(value: string) {
     setActiveTab(value as "practitioner" | "patient");
     setSelectedUsername(undefined);
+  }
+
+  if (externalTarget) {
+    return (
+      <div className="flex flex-1 items-start justify-center pt-16">
+        <div className="w-full max-w-md rounded-lg border bg-card p-8 shadow-sm">
+          <h2 className="mb-2 text-xl font-semibold">Sign In</h2>
+          <p className="mb-6 text-sm text-muted-foreground">
+            You sign in to this server directly.
+          </p>
+          <p className="mb-6 break-all font-mono text-xs text-muted-foreground">
+            {externalTarget.serverUrl}
+          </p>
+
+          {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+
+          <button
+            type="button"
+            onClick={startExternalLogin}
+            className="w-full cursor-pointer rounded-md bg-brand px-4 py-2 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand/85"
+          >
+            {error ? "Try again" : "Continue to sign in"}
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (

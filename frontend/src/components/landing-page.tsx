@@ -16,7 +16,7 @@ export function LandingPage() {
 
       <Link
         to="/login"
-        search={{ error: undefined }}
+        search={{ error: undefined, idp: undefined }}
         className="inline-block cursor-pointer rounded-md bg-brand px-8 py-3 text-base font-medium text-brand-foreground transition-colors hover:bg-brand/85 active:scale-[0.98]"
       >
         Sign In

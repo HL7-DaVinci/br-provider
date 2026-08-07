@@ -51,6 +51,16 @@ export function awaitActiveServerSync(): Promise<void> {
   return ensureBootSync();
 }
 
+/**
+ * Forgets the completed boot sync so the next request pushes the stored
+ * selection again. The BFF drops its copy whenever the session ends
+ * (sign-out, expiry, server restart), which would otherwise leave a custom
+ * server outside the proxy allowlist until the user re-saves it.
+ */
+export function resetActiveServerSync(): void {
+  bootSyncPromise = null;
+}
+
 /** Adopts a server as the active selection outside the settings dialog. */
 export function adoptActiveFhirServer(url: string): Promise<void> {
   return serverUrlStore.setServerUrl(url);
