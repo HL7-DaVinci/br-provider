@@ -60,6 +60,9 @@ public class AuthInterceptor extends BaseInterceptor {
             }
         }
 
+        logger.info("Rejecting unauthenticated request: method={}, requestURI={}, authHeaderPresent={}",
+            request.getMethod(), path, authHeader != null);
+
         response.setStatus(401);
         response.setHeader("WWW-Authenticate", "Bearer");
         response.setContentType("application/json");
