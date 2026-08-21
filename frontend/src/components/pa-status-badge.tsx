@@ -3,22 +3,22 @@ import { Badge } from "@/components/ui/badge";
 import type { OrderPaStatus } from "@/hooks/use-clinical-api";
 
 const PA_STATUS_CONFIG = {
-  complete: {
+  approved: {
     label: "Approved",
     variant: "default" as const,
     className: "bg-green-600",
   },
-  error: {
+  partial: {
+    label: "Partially Approved",
+    variant: "secondary" as const,
+    className: "bg-amber-500 text-white",
+  },
+  denied: {
     label: "Denied",
     variant: "destructive" as const,
     className: "",
   },
-  queued: {
-    label: "Pended",
-    variant: "secondary" as const,
-    className: "bg-amber-500 text-white",
-  },
-  partial: {
+  pended: {
     label: "Pended",
     variant: "secondary" as const,
     className: "bg-amber-500 text-white",
@@ -31,13 +31,14 @@ interface PaStatusBadgeProps {
 }
 
 export function PaStatusBadge({ status, patientId }: PaStatusBadgeProps) {
-  const config = status.pended
-    ? PA_STATUS_CONFIG.queued
-    : (PA_STATUS_CONFIG[status.outcome as keyof typeof PA_STATUS_CONFIG] ?? {
-        label: status.outcome,
-        variant: "outline" as const,
-        className: "",
-      });
+  const config =
+    status.decision === "unknown"
+      ? {
+          label: status.outcome,
+          variant: "outline" as const,
+          className: "",
+        }
+      : PA_STATUS_CONFIG[status.decision];
 
   return (
     <Link

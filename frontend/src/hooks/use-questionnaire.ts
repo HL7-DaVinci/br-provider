@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-query";
 import type {
   Bundle,
+  Coverage,
   OperationOutcome,
   ParametersParameter,
   Questionnaire,
@@ -19,6 +20,7 @@ import {
 } from "@/lib/dtr-ingestion";
 import { extractFhirError } from "@/lib/fhir-types";
 import { loggedFetch } from "@/lib/logged-fetch";
+import { ensureCoverageRelationship } from "@/lib/pas-bundle-builder";
 import { useFhirServer } from "./use-fhir-server";
 
 interface QuestionnairePackageParams {
@@ -338,6 +340,22 @@ export function useQuestionnairePackages(
 }
 
 /**
+ * Removes the LForms export stamps that break profile validation: the FHIR
+ * version pseudo-profile in meta.profile and the system-less lformsVersion tag.
+ */
+export function stripLformsMetaStamps(qr: QuestionnaireResponse): void {
+  if (!qr.meta) return;
+  qr.meta.profile = qr.meta.profile?.filter(
+    (profile) =>
+      !/^http:\/\/hl7\.org\/fhir\/[0-9.]+\/StructureDefinition\//.test(profile),
+  );
+  if (qr.meta.profile?.length === 0) delete qr.meta.profile;
+  qr.meta.tag = qr.meta.tag?.filter((tag) => tag.system);
+  if (qr.meta.tag?.length === 0) delete qr.meta.tag;
+  if (Object.keys(qr.meta).length === 0) delete qr.meta;
+}
+
+/**
  * Saves a completed QuestionnaireResponse to the provider FHIR server.
  */
 export function useSaveQuestionnaireResponse(providerFhirUrl?: string) {
@@ -347,6 +365,7 @@ export function useSaveQuestionnaireResponse(providerFhirUrl?: string) {
 
   return useMutation({
     mutationFn: async (questionnaireResponse: QuestionnaireResponse) => {
+      stripLformsMetaStamps(questionnaireResponse);
       const method = questionnaireResponse.id ? "PUT" : "POST";
       const fhirUrl = questionnaireResponse.id
         ? `${serverUrl}/QuestionnaireResponse/${questionnaireResponse.id}`
@@ -499,9 +518,17 @@ export function useProviderPopulate(params: {
           issues,
         };
       }
-      // Tolerate non-conformant servers that return a bare QR.
+      // Tolerate non-conformant servers that return a bare QR. Populate
+      // problems then ride along as a contained OperationOutcome.
       if (data?.resourceType === "QuestionnaireResponse") {
-        return { response: data as QuestionnaireResponse, issues: null };
+        const qr = data as QuestionnaireResponse;
+        const containedIssues = (qr.contained ?? []).find(
+          (resource) => resource.resourceType === "OperationOutcome",
+        ) as OperationOutcome | undefined;
+        if (containedIssues?.issue?.length) {
+          console.warn("[$populate] issues:", containedIssues);
+        }
+        return { response: qr, issues: containedIssues ?? null };
       }
       return { response: null, issues: null };
     },
@@ -607,16 +634,41 @@ async function buildQuestionnairePackageParams(
       : null,
   ]);
 
-  const coverageWithPayors = coverage
+  let coverageWithPayors = coverage
     ? await withContainedPayorOrgs(coverage, (ref) =>
         fetchProviderResource(params.providerFhirUrl, ref),
       )
     : null;
+  if (coverageWithPayors) {
+    coverageWithPayors = stripVolatileMeta(coverageWithPayors);
+    ensureCoverageRelationship(coverageWithPayors as Coverage);
+  }
 
   return {
     resourceType: "Parameters",
     parameter: buildPackageParameterList(coverageWithPayors, order, params),
   };
+}
+
+/**
+ * Removes meta.versionId and meta.lastUpdated so the resource stays dom-4 valid when the receiver
+ * embeds it as a contained resource.
+ */
+export function stripVolatileMeta<T>(resource: T): T {
+  const res = resource as {
+    meta?: { versionId?: string; lastUpdated?: string };
+  };
+  if (!res?.meta) return resource;
+  const {
+    versionId: _versionId,
+    lastUpdated: _lastUpdated,
+    ...rest
+  } = res.meta;
+  if (Object.keys(rest).length === 0) {
+    const { meta: _meta, ...withoutMeta } = res;
+    return withoutMeta as T;
+  }
+  return { ...res, meta: rest } as T;
 }
 
 /**
@@ -647,7 +699,7 @@ export async function withContainedPayorOrgs(
       } | null;
       if (!org) return ref;
       const localId = `payor-org-${org.id ?? index}`;
-      contained.push({ ...org, id: localId });
+      contained.push(stripVolatileMeta({ ...org, id: localId }));
       anyContained = true;
       return { ...ref, reference: `#${localId}` };
     }),

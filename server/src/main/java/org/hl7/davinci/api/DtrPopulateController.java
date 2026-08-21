@@ -1,12 +1,18 @@
 package org.hl7.davinci.api;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 import org.hl7.davinci.config.ServerProperties;
 import org.hl7.davinci.security.SessionTokenService;
+import org.hl7.davinci.util.DtrPackageNormalizer;
 import org.hl7.davinci.util.ForwardedHeaderUtil;
 import org.hl7.davinci.util.UrlMatchUtil;
+import org.hl7.fhir.instance.model.api.IBaseResource;
 import org.hl7.fhir.r4.model.Bundle;
+import org.hl7.fhir.r4.model.IdType;
 import org.hl7.fhir.r4.model.OperationOutcome;
 import org.hl7.fhir.r4.model.OperationOutcome.IssueSeverity;
 import org.hl7.fhir.r4.model.OperationOutcome.IssueType;
@@ -16,11 +22,13 @@ import org.hl7.fhir.r4.model.Questionnaire;
 import org.hl7.fhir.r4.model.QuestionnaireResponse;
 import org.hl7.fhir.r4.model.Reference;
 import org.hl7.fhir.r4.model.Resource;
+import org.hl7.fhir.r4.model.StringType;
 import org.opencds.cqf.fhir.cql.EvaluationSettings;
+import org.opencds.cqf.fhir.cql.LibraryEngine;
 import org.opencds.cqf.fhir.cr.CrSettings;
 import org.opencds.cqf.fhir.cr.questionnaire.QuestionnaireProcessor;
-import org.opencds.cqf.fhir.utility.monad.Eithers;
 import org.opencds.cqf.fhir.utility.repository.InMemoryFhirRepository;
+import org.opencds.cqf.fhir.utility.repository.Repositories;
 import org.opencds.cqf.fhir.utility.repository.RestRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -122,10 +130,11 @@ public class DtrPopulateController {
             .toList();
 
         try {
+            DtrPackageNormalizer.alignLibrariesWithCql(packageBundle, questionnaire);
+
             // Wrap the payer package bundle as an in-memory repository.
             // Passed as both content (Library/StructureDefinition) and
-            // terminology (ValueSet/CodeSystem) source; QuestionnaireProcessor
-            // proxies the two slots internally.
+            // terminology (ValueSet/CodeSystem) source of the proxied repository.
             InMemoryFhirRepository inMemoryRepo = new InMemoryFhirRepository(fhirContext, packageBundle);
 
             // Patient/clinical retrieves come from the session's active provider
@@ -133,19 +142,21 @@ public class DtrPopulateController {
             // RestRepository carrying the user's session bearer token otherwise.
             IRepository dataRepo = resolveDataRepository(request);
 
+            Map<String, Resource> orderParameters = resolveOrderParameters(contexts, dataRepo);
+            IRepository proxied = Repositories.proxy(dataRepo, true, null, inMemoryRepo, inMemoryRepo);
+            DtrPopulateRequest populateRequest = new DtrPopulateRequest(questionnaire, subject, contexts,
+                new LibraryEngine(proxied, evaluationSettings), orderParameters);
             CrSettings crSettings = new CrSettings().withEvaluationSettings(evaluationSettings);
-            QuestionnaireProcessor processor = new QuestionnaireProcessor(dataRepo, crSettings);
+            QuestionnaireResponse result = (QuestionnaireResponse) new QuestionnaireProcessor(dataRepo, crSettings)
+                .populate(populateRequest);
 
-            QuestionnaireResponse result = (QuestionnaireResponse) processor.populate(
-                Eithers.forRight3(questionnaire),
-                subject,
-                contexts,
-                null,            // launchContext extension (passed via context list)
-                null,            // data Bundle (engine retrieves via dataRepo)
-                true,            // useServerData: retrieves go to the constructor's dataRepo
-                null,            // dataRepository (constructor's dataRepo is the source)
-                inMemoryRepo,    // contentRepository
-                inMemoryRepo);   // terminologyRepository
+            if (logger.isDebugEnabled()) {
+                long answered = result.getItem().stream()
+                    .filter(item -> item.hasAnswer() || item.hasItem())
+                    .count();
+                logger.debug("Populate for subject {} produced {} top-level items ({} with content), {} contained",
+                    subject, result.getItem().size(), answered, result.getContained().size());
+            }
 
             return ResponseEntity.ok()
                 .header("Content-Type", "application/fhir+json")
@@ -174,11 +185,14 @@ public class DtrPopulateController {
     IRepository resolveDataRepository(HttpServletRequest request) {
         String activeBase = ProxyUtil.getActiveProviderFhirBase(request, serverProperties);
         if (UrlMatchUtil.matchesBaseUrl(activeBase, serverProperties.getLocalServerAddress())) {
+            logger.debug("Populate retrieves use the local JPA repository (active base {})", activeBase);
             return repositoryFactory.create(new SystemRequestDetails());
         }
         HttpSession session = request != null ? request.getSession(false) : null;
         sessionTokens.refreshTokenIfNeeded(session);
         String token = sessionTokens.getTokenForServer(session, activeBase);
+        logger.debug("Populate retrieves use REST base {} (session token {})",
+            activeBase, token != null ? "present" : "absent");
         IGenericClient client = fhirContext.newRestfulGenericClient(activeBase);
         var forwarded = ForwardedHeaderUtil.extract(request);
         if (token != null && !forwarded.hasAuthorization()) {
@@ -187,6 +201,49 @@ public class DtrPopulateController {
         forwarded.headers().forEach((name, value) ->
             client.registerInterceptor(new SimpleRequestHeaderInterceptor(name, value)));
         return new RestRepository(client);
+    }
+
+    /**
+     * Reads the order named by a {@code device_request}, {@code service_request}
+     * or {@code medication_request} context so it can be bound as a CQL
+     * parameter. Inline resources are used as-is, references are read from the
+     * data repository. A failed read is logged and skipped so the rest of the
+     * questionnaire still populates.
+     */
+    Map<String, Resource> resolveOrderParameters(List<ParametersParameterComponent> contexts, IRepository dataRepo) {
+        Map<String, Resource> parameters = new HashMap<>();
+        for (ParametersParameterComponent context : contexts) {
+            String name = context.getPart().stream()
+                .filter(p -> "name".equals(p.getName()) && p.getValue() instanceof StringType)
+                .map(p -> ((StringType) p.getValue()).getValue())
+                .findFirst()
+                .orElse(null);
+            if (name == null || !DtrPopulateRequest.ORDER_PARAMETER_NAMES.contains(name)) {
+                continue;
+            }
+            context.getPart().stream()
+                .filter(p -> "content".equals(p.getName()))
+                .map(p -> p.hasResource() ? p.getResource() : readReference(p, dataRepo))
+                .filter(Objects::nonNull)
+                .findFirst()
+                .ifPresent(order -> parameters.put(name, order));
+        }
+        return parameters;
+    }
+
+    private Resource readReference(ParametersParameterComponent content, IRepository dataRepo) {
+        if (!(content.getValue() instanceof Reference reference) || !reference.hasReference()) {
+            return null;
+        }
+        IdType id = new IdType(reference.getReference());
+        try {
+            Class<? extends IBaseResource> type = fhirContext.getResourceDefinition(id.getResourceType())
+                .getImplementingClass();
+            return (Resource) dataRepo.read(type, id);
+        } catch (Exception e) {
+            logger.warn("Could not read order {} for CQL parameter binding: {}", id.getValue(), e.getMessage());
+            return null;
+        }
     }
 
     private <T extends Resource> T extractResource(Parameters input, String name, Class<T> type) {

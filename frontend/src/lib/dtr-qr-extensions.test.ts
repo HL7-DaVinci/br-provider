@@ -1,7 +1,9 @@
 import type { Extension, QuestionnaireResponse } from "fhir/r4";
 import { describe, expect, it } from "vitest";
 import {
+  copyMissingExtensionsWithContained,
   INTENDED_USE_EXT_URL,
+  QR_CONTEXT_EXT_URL,
   QR_COVERAGE_EXT_URL,
   upsertQrDtrExtensions,
 } from "./dtr-qr-extensions";
@@ -91,7 +93,7 @@ describe("upsertQrDtrExtensions", () => {
     expect(concept?.coding?.[0]?.code).toBe("withpa");
   });
 
-  it("adds a qr-context per order and the required qr-coverage", () => {
+  it("adds qr-contexts for orders and the Coverage plus the qr-coverage", () => {
     const qr = emptyQr();
     upsertQrDtrExtensions(qr, {
       orderRefs: ["ServiceRequest/sr-1"],
@@ -100,16 +102,27 @@ describe("upsertQrDtrExtensions", () => {
     });
     expect(
       (qr.extension ?? [])
-        .filter(
-          (e) =>
-            e.url ===
-            "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/qr-context",
-        )
+        .filter((e) => e.url === QR_CONTEXT_EXT_URL)
         .map((e) => e.valueReference?.reference),
-    ).toEqual(["ServiceRequest/sr-1"]);
+    ).toEqual(["ServiceRequest/sr-1", "Coverage/cov-1"]);
     expect(findExt(qr, QR_COVERAGE_EXT_URL)?.valueReference?.reference).toBe(
       "Coverage/cov-1",
     );
+  });
+
+  it("adds an Encounter qr-context so encounter-launched sessions without an order stay conformant", () => {
+    const qr = emptyQr();
+    upsertQrDtrExtensions(qr, {
+      orderRefs: [],
+      coverageRef: "Coverage/cov-1",
+      encounterRef: "Encounter/enc-1",
+      intendedUse: "withorder",
+    });
+    expect(
+      (qr.extension ?? [])
+        .filter((e) => e.url === QR_CONTEXT_EXT_URL)
+        .map((e) => e.valueReference?.reference),
+    ).toEqual(["Coverage/cov-1", "Encounter/enc-1"]);
   });
 
   it("replaces existing qr-context/qr-coverage without duplicating, preserving others", () => {
@@ -134,12 +147,12 @@ describe("upsertQrDtrExtensions", () => {
       intendedUse: "withorder",
     });
     const contextExts = (qr.extension ?? []).filter(
-      (e) =>
-        e.url ===
-        "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/qr-context",
+      (e) => e.url === QR_CONTEXT_EXT_URL,
     );
-    expect(contextExts).toHaveLength(1);
-    expect(contextExts[0].valueReference?.reference).toBe("DeviceRequest/dr-1");
+    expect(contextExts.map((e) => e.valueReference?.reference)).toEqual([
+      "DeviceRequest/dr-1",
+      "Coverage/cov-2",
+    ]);
     expect(
       (qr.extension ?? []).filter((e) => e.url === QR_COVERAGE_EXT_URL),
     ).toHaveLength(1);
@@ -149,5 +162,68 @@ describe("upsertQrDtrExtensions", () => {
     expect(
       (qr.extension ?? []).some((e) => e.url === "http://example.org/other"),
     ).toBe(true);
+  });
+});
+
+describe("copyMissingExtensionsWithContained", () => {
+  const OUTCOME_EXT = "http://example.org/populate-outcome";
+
+  function sourceQr(): QuestionnaireResponse {
+    return {
+      resourceType: "QuestionnaireResponse",
+      status: "in-progress",
+      contained: [
+        {
+          resourceType: "OperationOutcome",
+          id: "populate-outcome-1",
+          issue: [{ severity: "warning", code: "processing" }],
+        },
+      ],
+      extension: [
+        {
+          url: OUTCOME_EXT,
+          valueReference: { reference: "#populate-outcome-1" },
+        },
+        { url: "http://example.org/plain", valueString: "v" },
+      ],
+    };
+  }
+
+  it("copies the referenced contained resource alongside the extension", () => {
+    const target = emptyQr();
+    copyMissingExtensionsWithContained(sourceQr(), target);
+    expect(
+      target.extension?.find((e) => e.url === OUTCOME_EXT)?.valueReference
+        ?.reference,
+    ).toBe("#populate-outcome-1");
+    expect(target.contained?.[0]?.id).toBe("populate-outcome-1");
+    expect(
+      target.extension?.some((e) => e.url === "http://example.org/plain"),
+    ).toBe(true);
+  });
+
+  it("drops extensions whose contained target is missing", () => {
+    const source = sourceQr();
+    source.contained = [];
+    const target = emptyQr();
+    copyMissingExtensionsWithContained(source, target);
+    expect(target.extension?.some((e) => e.url === OUTCOME_EXT)).toBe(false);
+    expect(target.contained).toBeUndefined();
+    expect(
+      target.extension?.some((e) => e.url === "http://example.org/plain"),
+    ).toBe(true);
+  });
+
+  it("does not overwrite extensions the target already carries", () => {
+    const target = emptyQr();
+    target.extension = [{ url: "http://example.org/plain", valueString: "t" }];
+    copyMissingExtensionsWithContained(sourceQr(), target);
+    expect(
+      target.extension?.filter((e) => e.url === "http://example.org/plain"),
+    ).toHaveLength(1);
+    expect(
+      target.extension?.find((e) => e.url === "http://example.org/plain")
+        ?.valueString,
+    ).toBe("t");
   });
 });

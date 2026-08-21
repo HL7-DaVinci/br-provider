@@ -53,6 +53,21 @@ test.describe("PAS pended prior-authorization workflow", () => {
       (res) => res.url().includes("Subscription"),
       { timeout: 30_000 },
     );
+    // The submit onSuccess persists the ClaimResponse and documentation Task
+    // in background PUTs. The later goto() is a hard navigation that aborts
+    // in-flight requests, so both writes must settle first.
+    const persistPromises = [
+      page.waitForResponse(
+        (res) =>
+          res.request().method() === "PUT" &&
+          res.url().includes("ClaimResponse"),
+        { timeout: 30_000 },
+      ),
+      page.waitForResponse(
+        (res) => res.request().method() === "PUT" && res.url().includes("Task"),
+        { timeout: 30_000 },
+      ),
+    ];
     await page
       .getByRole("button", { name: "Submit Prior Authorization" })
       .click();
@@ -71,6 +86,10 @@ test.describe("PAS pended prior-authorization workflow", () => {
     await expect(
       page.getByRole("button", { name: "Complete Additional Documentation" }),
     ).toBeVisible();
+
+    for (const persisted of await Promise.all(persistPromises)) {
+      expect(persisted.ok()).toBe(true);
+    }
 
     // Mid-flow check: the task worklist reflects the outstanding documentation request.
     // Worklist rows have an onRowClick handler, which renders them with an

@@ -77,12 +77,19 @@ export function inlineBundleValueSets(
   bundle: Bundle,
 ): Questionnaire {
   const valueSets = new Map<string, ValueSet>();
+  const register = (vs: ValueSet, key: string | undefined) => {
+    if (key && vs.expansion?.contains?.length) valueSets.set(key, vs);
+  };
   for (const entry of bundle.entry ?? []) {
     const resource = entry.resource;
-    if (resource?.resourceType !== "ValueSet") continue;
-    const vs = resource as ValueSet;
-    if (vs.url && vs.expansion?.contains?.length) {
-      valueSets.set(vs.url, vs);
+    if (resource?.resourceType === "ValueSet") {
+      register(resource as ValueSet, (resource as ValueSet).url);
+    }
+  }
+  // Contained ValueSets are referenced as "#<id>" from answerValueSet.
+  for (const contained of questionnaire.contained ?? []) {
+    if (contained.resourceType === "ValueSet") {
+      register(contained as ValueSet, `#${contained.id}`);
     }
   }
   if (valueSets.size === 0) return questionnaire;
@@ -97,6 +104,42 @@ export function inlineBundleValueSets(
           valueCoding: { system: c.system, code: c.code, display: c.display },
         }));
         delete item.answerValueSet;
+      }
+      walk(item.item);
+    }
+  };
+  walk(result.item);
+  return result;
+}
+
+/**
+ * Narrows populated dateTime answers to dates on `date` items. CQL evaluates
+ * FHIR dateTime elements (e.g. Encounter.period.start) to dateTime values, and
+ * LForms drops a valueDateTime on a date item instead of truncating it.
+ */
+export function coerceDateAnswers(
+  response: QuestionnaireResponse,
+  questionnaire: Questionnaire,
+): QuestionnaireResponse {
+  const dateLinkIds = new Set<string>();
+  const collect = (items?: QuestionnaireItem[]) => {
+    for (const item of items ?? []) {
+      if (item.type === "date") dateLinkIds.add(item.linkId);
+      collect(item.item);
+    }
+  };
+  collect(questionnaire.item);
+  if (dateLinkIds.size === 0) return response;
+
+  const result = structuredClone(response);
+  const walk = (items?: QuestionnaireResponseItem[]) => {
+    for (const item of items ?? []) {
+      for (const answer of item.answer ?? []) {
+        if (dateLinkIds.has(item.linkId) && answer.valueDateTime) {
+          answer.valueDate = answer.valueDateTime.slice(0, 10);
+          delete answer.valueDateTime;
+        }
+        walk(answer.item);
       }
       walk(item.item);
     }

@@ -53,7 +53,7 @@ import {
   formatPatientName,
 } from "@/lib/clinical-formatters";
 import { buildTaskFhirContext } from "@/lib/dtr-search";
-import { isPendedClaimResponse } from "@/lib/pas-pend-status";
+import { derivePasDecision, type PasDecision } from "@/lib/pas-pend-status";
 import { isTerminalQrStatus, selectNewCompletedQrs } from "@/lib/qr-status";
 import { TERMINAL_TASK_STATUSES } from "@/lib/task-worklist";
 
@@ -203,8 +203,7 @@ function PasPage() {
   const latestResponse: ClaimResponse | null =
     paStatus.data ?? activeClaimResponse;
   const isPended =
-    (!!latestResponse && isPendedClaimResponse(latestResponse)) ||
-    latestResponse?.outcome === "partial";
+    !!latestResponse && derivePasDecision(latestResponse) === "pended";
   const priorClaimId = latestResponse?.request?.reference?.replace(
     /^.*Claim\//,
     "",
@@ -802,7 +801,8 @@ function PasResponseDisplay({
   isPolling: boolean;
 }) {
   const outcome = claimResponse.outcome;
-  const pended = isPendedClaimResponse(claimResponse) || outcome === "partial";
+  const decision = derivePasDecision(claimResponse);
+  const pended = decision === "pended";
   const preAuthRef = claimResponse.preAuthRef;
   const items = extractItemDetails(claimResponse.item);
 
@@ -814,7 +814,7 @@ function PasResponseDisplay({
       <CardContent className="space-y-4">
         <div className="flex items-center gap-3">
           <span className="text-sm text-muted-foreground">Status:</span>
-          <StatusBadge outcome={outcome} pended={pended} />
+          <StatusBadge decision={decision} outcome={outcome} />
         </div>
 
         {preAuthRef && (
@@ -851,7 +851,7 @@ function PasResponseDisplay({
         )}
 
         {/* Denial reasons */}
-        {outcome === "error" && claimResponse.error && (
+        {decision === "denied" && claimResponse.error && (
           <div className="space-y-1">
             <span className="text-sm text-muted-foreground">Reasons:</span>
             <ul className="list-disc list-inside text-sm">
@@ -943,29 +943,35 @@ function ItemDetailCard({ item }: { item: ItemDetails }) {
 }
 
 function StatusBadge({
+  decision,
   outcome,
-  pended,
 }: {
+  decision: PasDecision;
   outcome: ClaimResponse["outcome"];
-  pended: boolean;
 }) {
-  if (pended) {
-    return (
-      <Badge className="bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-700">
-        <Clock className="h-3 w-3 mr-1" />
-        Pended
-      </Badge>
-    );
-  }
-  switch (outcome) {
-    case "complete":
+  switch (decision) {
+    case "pended":
+      return (
+        <Badge className="bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-700">
+          <Clock className="h-3 w-3 mr-1" />
+          Pended
+        </Badge>
+      );
+    case "approved":
       return (
         <Badge className="bg-green-100 text-green-800 border-green-300 dark:bg-green-900/40 dark:text-green-300 dark:border-green-700">
           <CheckCircle2 className="h-3 w-3 mr-1" />
           Approved
         </Badge>
       );
-    case "error":
+    case "partial":
+      return (
+        <Badge className="bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-700">
+          <CheckCircle2 className="h-3 w-3 mr-1" />
+          Partially Approved
+        </Badge>
+      );
+    case "denied":
       return (
         <Badge className="bg-red-100 text-red-800 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-700">
           <XCircle className="h-3 w-3 mr-1" />

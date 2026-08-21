@@ -6,7 +6,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import org.hl7.davinci.config.ServerProperties;
@@ -42,6 +44,18 @@ public class CdsHooksProxyController {
 
     private static final Logger logger = LoggerFactory.getLogger(CdsHooksProxyController.class);
 
+    private static final String ACCEPT_HEADER = "Accept";
+    private static final String CONTENT_TYPE_HEADER = "Content-Type";
+    private static final String APPLICATION_JSON = "application/json";
+    private static final String ERROR_KEY = "error";
+
+    private static final List<String> US_CORE_RESOURCE_TYPES = List.of(
+        "AllergyIntolerance", "CarePlan", "CareTeam", "Condition", "Device",
+        "DiagnosticReport", "DocumentReference", "Encounter", "Goal",
+        "Immunization", "Location", "Medication", "MedicationRequest",
+        "Observation", "Organization", "Patient", "Practitioner",
+        "PractitionerRole", "Procedure", "Provenance");
+
     private final CdsClientJwtService cdsClientJwtService;
     private final SecurityProperties securityProperties;
     private final ServerProperties serverProperties;
@@ -66,7 +80,7 @@ public class CdsHooksProxyController {
      * Returns the payer's discovery document as-is.
      */
     @GetMapping
-    public ResponseEntity<?> discoverServices(@RequestParam("server") String server,
+    public ResponseEntity<Object> discoverServices(@RequestParam("server") String server,
             HttpServletRequest request) {
         try {
             var forwarded = ForwardedHeaderUtil.extract(request);
@@ -80,8 +94,8 @@ public class CdsHooksProxyController {
                 .timeout(Duration.ofSeconds(15))
                 .GET();
 
-            if (!forwarded.contains("Accept")) {
-                reqBuilder.header("Accept", "application/json");
+            if (!forwarded.contains(ACCEPT_HEADER)) {
+                reqBuilder.header(ACCEPT_HEADER, APPLICATION_JSON);
             }
 
             if (clientJwt != null && !forwarded.hasAuthorization()) {
@@ -93,24 +107,30 @@ public class CdsHooksProxyController {
             HttpClient client = SecurityUtil.getHttpClient(securityProperties);
             HttpResponse<String> upstream = client.send(
                 reqBuilder.build(), HttpResponse.BodyHandlers.ofString());
+            int status = upstream.statusCode();
 
-            if (upstream.statusCode() != 200) {
-                logger.warn("CDS discovery failed for {}: HTTP {}", discoveryUrl, upstream.statusCode());
-                return ResponseEntity.status(upstream.statusCode())
-                    .body(Map.of("error", "CDS discovery failed: HTTP " + upstream.statusCode()));
+            if (status != 200) {
+                logger.warn("CDS discovery failed for {}: HTTP {}", discoveryUrl, status);
+                return ResponseEntity.status(status)
+                    .body(Map.of(ERROR_KEY, "CDS discovery failed: HTTP " + status));
             }
 
             return ResponseEntity.ok()
-                .header("Content-Type", "application/json")
+                .header(CONTENT_TYPE_HEADER, APPLICATION_JSON)
                 .body(upstream.body());
 
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest()
-                .body(Map.of("error", e.getMessage()));
+                .body(Map.of(ERROR_KEY, e.getMessage()));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.error("CDS discovery interrupted for server={}", server);
+            return ResponseEntity.status(502)
+                .body(Map.of(ERROR_KEY, "Failed to reach CDS service"));
         } catch (Exception e) {
             logger.error("CDS discovery error for server={}: {}", server, e.getMessage());
             return ResponseEntity.status(502)
-                .body(Map.of("error", "Failed to reach CDS service"));
+                .body(Map.of(ERROR_KEY, "Failed to reach CDS service"));
         }
     }
 
@@ -121,7 +141,7 @@ public class CdsHooksProxyController {
      * a CDS client JWT in the Authorization header.
      */
     @PostMapping("/{serviceId}")
-    public ResponseEntity<?> invokeHook(
+    public ResponseEntity<Object> invokeHook(
             @PathVariable("serviceId") String serviceId,
             @RequestParam("server") String server,
             @RequestBody Map<String, Object> hookRequest,
@@ -151,13 +171,12 @@ public class CdsHooksProxyController {
             extensionMap.putIfAbsent("davinci-crd.requestedVersion", "2.2");
 
             if (accessToken != null) {
-                String grantedScope = (session != null)
-                    ? (String) session.getAttribute(SessionTokenService.SESSION_GRANTED_SCOPE) : null;
+                String grantedScope = (String) session.getAttribute(SessionTokenService.SESSION_GRANTED_SCOPE);
                 Map<String, Object> fhirAuth = new LinkedHashMap<>();
                 fhirAuth.put("access_token", accessToken);
                 fhirAuth.put("token_type", "Bearer");
                 fhirAuth.put("expires_in", 300);
-                fhirAuth.put("scope", grantedScope != null ? grantedScope : securityProperties.getScope());
+                fhirAuth.put("scope", narrowedHookScope(grantedScope));
                 fhirAuth.put("subject", resolveSubject(session));
                 hookRequest.put("fhirAuthorization", fhirAuth);
             }
@@ -171,11 +190,11 @@ public class CdsHooksProxyController {
                 .timeout(Duration.ofSeconds(30))
                 .POST(HttpRequest.BodyPublishers.ofString(body));
 
-            if (!forwarded.contains("Content-Type")) {
-                reqBuilder.header("Content-Type", "application/json");
+            if (!forwarded.contains(CONTENT_TYPE_HEADER)) {
+                reqBuilder.header(CONTENT_TYPE_HEADER, APPLICATION_JSON);
             }
-            if (!forwarded.contains("Accept")) {
-                reqBuilder.header("Accept", "application/json");
+            if (!forwarded.contains(ACCEPT_HEADER)) {
+                reqBuilder.header(ACCEPT_HEADER, APPLICATION_JSON);
             }
 
             if (clientJwt != null && !forwarded.hasAuthorization()) {
@@ -187,27 +206,46 @@ public class CdsHooksProxyController {
             HttpClient client = SecurityUtil.getHttpClient(securityProperties);
             HttpResponse<String> upstream = client.send(
                 reqBuilder.build(), HttpResponse.BodyHandlers.ofString());
+            int status = upstream.statusCode();
+            String upstreamBody = upstream.body();
 
-            if (upstream.statusCode() != 200) {
+            if (status != 200) {
                 logger.warn("CDS hook {} failed at {}: HTTP {} {}",
-                    serviceId, serviceUrl, upstream.statusCode(), upstream.body());
-                return ResponseEntity.status(upstream.statusCode())
-                    .header("Content-Type", "application/json")
-                    .body(upstream.body());
+                    serviceId, serviceUrl, status, upstreamBody);
+                return ResponseEntity.status(status)
+                    .header(CONTENT_TYPE_HEADER, APPLICATION_JSON)
+                    .body(upstreamBody);
             }
 
             return ResponseEntity.ok()
-                .header("Content-Type", "application/json")
-                .body(upstream.body());
+                .header(CONTENT_TYPE_HEADER, APPLICATION_JSON)
+                .body(upstreamBody);
 
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest()
-                .body(Map.of("error", e.getMessage()));
+                .body(Map.of(ERROR_KEY, e.getMessage()));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.error("CDS hook {} relay interrupted for server={}", serviceId, server);
+            return ResponseEntity.status(502)
+                .body(Map.of(ERROR_KEY, "Failed to relay CDS hook request"));
         } catch (Exception e) {
             logger.error("CDS hook {} relay error for server={}: {}", serviceId, server, e.getMessage());
             return ResponseEntity.status(502)
-                .body(Map.of("error", "Failed to relay CDS hook request"));
+                .body(Map.of(ERROR_KEY, "Failed to relay CDS hook request"));
         }
+    }
+
+    /**
+     * Builds the advertised fhirAuthorization scope. CRD requires the scopes to be as narrow
+     * as feasible, so the CDS service is offered read and search on the US Core resource
+     * types only. Token enforcement reads the JWT scope claim, not this string.
+     */
+    private static String narrowedHookScope(String grantedScope) {
+        String level = grantedScope != null && grantedScope.contains("patient/") ? "patient" : "user";
+        return US_CORE_RESOURCE_TYPES.stream()
+            .map(type -> level + "/" + type + ".rs")
+            .collect(Collectors.joining(" "));
     }
 
     /**

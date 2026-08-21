@@ -432,10 +432,10 @@ function extractDiagnosis(order: FhirResource): CodeableConcept | undefined {
 }
 
 /**
- * Adds a type=MB member identifier derived from Coverage.subscriberId to the Patient and to the
- * Coverage itself when either lacks one; profile-coverage requires a memberid-slice identifier.
+ * Defaults Coverage.relationship to self when absent; CRD profile-coverage requires it 1..1 and
+ * PAS additionally expects the X12 1069 code.
  */
-function ensureMemberIdentifier(patient: Patient, coverage: Coverage): void {
+export function ensureCoverageRelationship(coverage: Coverage): void {
   coverage.relationship ??= {
     coding: [
       {
@@ -445,6 +445,14 @@ function ensureMemberIdentifier(patient: Patient, coverage: Coverage): void {
       { system: "https://codesystem.x12.org/005010/1069", code: "18" },
     ],
   };
+}
+
+/**
+ * Adds a type=MB member identifier derived from Coverage.subscriberId to the Patient and to the
+ * Coverage itself when either lacks one; profile-coverage requires a memberid-slice identifier.
+ */
+function ensureMemberIdentifier(patient: Patient, coverage: Coverage): void {
+  ensureCoverageRelationship(coverage);
   const subscriberId = coverage.subscriberId;
   if (!subscriberId) return;
 

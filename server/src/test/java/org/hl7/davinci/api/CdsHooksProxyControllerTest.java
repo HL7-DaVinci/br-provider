@@ -23,15 +23,18 @@ class CdsHooksProxyControllerTest {
 
     HttpServer upstream;
     AtomicReference<Headers> received;
+    AtomicReference<String> receivedBody;
     CdsHooksProxyController controller;
     CdsClientJwtService jwtService;
 
     @BeforeEach
     void setUp() throws IOException {
         received = new AtomicReference<>();
+        receivedBody = new AtomicReference<>();
         upstream = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         upstream.createContext("/cds-services", exchange -> {
             received.set(exchange.getRequestHeaders());
+            receivedBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             byte[] body = "{\"services\":[]}".getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.sendResponseHeaders(200, body.length);
@@ -79,6 +82,35 @@ class CdsHooksProxyControllerTest {
 
         assertEquals(200, response.getStatusCode().value());
         assertEquals(java.util.List.of("application/json"), received.get().get("Accept"));
+    }
+
+    @Test
+    void invokeHook_advertisesNarrowedUsCoreScopes() throws Exception {
+        when(jwtService.createClientJwt(anyString())).thenReturn("client-jwt");
+        var request = new MockHttpServletRequest();
+        var session = new org.springframework.mock.web.MockHttpSession();
+        session.setAttribute(
+            org.hl7.davinci.security.SessionTokenService.SESSION_ACCESS_TOKEN, "session-token");
+        session.setAttribute(
+            org.hl7.davinci.security.SessionTokenService.SESSION_GRANTED_SCOPE,
+            "user/*.cruds openid fhirUser");
+        request.setSession(session);
+
+        var response = controller.invokeHook(
+            "svc", upstreamUrl(), new java.util.HashMap<>(Map.of("hook", "order-sign")), request);
+
+        assertEquals(200, response.getStatusCode().value());
+        Map<?, ?> sent = new ObjectMapper().readValue(receivedBody.get(), Map.class);
+        Map<?, ?> fhirAuth = (Map<?, ?>) sent.get("fhirAuthorization");
+        String scope = (String) fhirAuth.get("scope");
+        assertFalse(scope.contains("*"));
+        assertFalse(scope.contains("patient/"));
+        assertTrue(scope.contains("user/Patient.rs"));
+        assertTrue(scope.contains("user/PractitionerRole.rs"));
+        for (String entry : scope.split(" ")) {
+            assertTrue(entry.matches("user/[A-Za-z]+\\.rs"), "unexpected scope entry: " + entry);
+        }
+        assertEquals("session-token", fhirAuth.get("access_token"));
     }
 
     @Test

@@ -43,8 +43,9 @@ import {
 import { parseCoverageInfoFromResource } from "@/lib/coverage-extensions";
 import { propagateCoverageInfo } from "@/lib/coverage-propagation";
 import { broadcastDtrCompletion } from "@/lib/dtr-completion";
-import { alignChoiceAnswers } from "@/lib/dtr-ingestion";
+import { alignChoiceAnswers, coerceDateAnswers } from "@/lib/dtr-ingestion";
 import {
+  copyMissingExtensionsWithContained,
   type IntendedUse,
   upsertQrDtrExtensions,
 } from "@/lib/dtr-qr-extensions";
@@ -388,7 +389,10 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     // index serializes the same values the form will export.
     const align = (qr: QuestionnaireResponse): QuestionnaireResponse =>
       activePackage?.questionnaire
-        ? alignChoiceAnswers(qr, activePackage.questionnaire)
+        ? coerceDateAnswers(
+            alignChoiceAnswers(qr, activePackage.questionnaire),
+            activePackage.questionnaire,
+          )
         : qr;
     // Terminal QRs (completed/amended) render verbatim. The submitted answers
     // are authoritative and must not be blended with a fresh populate result,
@@ -551,20 +555,13 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       upsertQrDtrExtensions(response, {
         orderRefs: allOrderRefs,
         coverageRef: resolvedCoverageRef,
+        encounterRef,
         intendedUse,
       });
 
       const sourceQr = activeExistingQr ?? mergedQr;
       if (sourceQr?.extension) {
-        const existingUrls = new Set(
-          (response.extension ?? []).map((e) => e.url),
-        );
-        for (const ext of sourceQr.extension) {
-          if (!existingUrls.has(ext.url)) {
-            response.extension = response.extension ?? [];
-            response.extension.push(ext);
-          }
-        }
+        copyMissingExtensionsWithContained(sourceQr, response);
       }
 
       saveResponse.mutate(response, {
@@ -604,6 +601,7 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     [
       context.patientId,
       context.encounterId,
+      encounterRef,
       saveResponse,
       savedResponseId,
       allOrderRefs,
@@ -812,6 +810,33 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
         </div>
       )}
 
+      {activePackage?.questionnaire &&
+        (populateResult?.issues?.issue?.length ?? 0) > 0 && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium">
+                Pre-population reported problems. Some answers may be missing.
+              </p>
+              <ul className="list-disc list-inside">
+                {populateResult?.issues?.issue?.map((issue, index) => (
+                  <li
+                    key={`${issue.diagnostics ?? issue.code ?? "issue"}-${
+                      // biome-ignore lint/suspicious/noArrayIndexKey: issues have no stable id
+                      index
+                    }`}
+                  >
+                    {issue.diagnostics ??
+                      issue.details?.text ??
+                      issue.code ??
+                      "Unknown issue"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+
       {activePackage?.questionnaire && (
         <div className="min-h-0 flex-1">
           {isAdaptiveQuestionnaire(activePackage.questionnaire) ? (
@@ -882,6 +907,14 @@ const SDC_LAUNCH_CONTEXT_URL =
  * order type leaks into the subject slot and the CQL `context Patient`
  * scope evaluates against the wrong resource.
  */
+// SDC launchContext has no slot for the order. The Da Vinci DTR reference CQL
+// libraries declare it as one of these parameters, which the BFF binds by name.
+const ORDER_CQL_PARAMETERS: Record<string, string> = {
+  DeviceRequest: "device_request",
+  ServiceRequest: "service_request",
+  MedicationRequest: "medication_request",
+};
+
 function buildLaunchContexts(
   questionnaire: Questionnaire | null,
   patientRef: string | undefined,
@@ -891,6 +924,11 @@ function buildLaunchContexts(
   const contexts: Record<string, string[]> = {};
   if (patientRef) {
     contexts.patient = [patientRef];
+  }
+  const orderParameter =
+    orderRef && ORDER_CQL_PARAMETERS[orderRef.split("/")[0]];
+  if (orderRef && orderParameter) {
+    contexts[orderParameter] = [orderRef];
   }
   if (!questionnaire?.extension) return contexts;
 

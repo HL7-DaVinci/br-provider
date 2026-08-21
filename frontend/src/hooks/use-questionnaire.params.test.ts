@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPackageParameterList,
+  stripVolatileMeta,
   withContainedPayorOrgs,
 } from "./use-questionnaire";
 
@@ -115,5 +116,93 @@ describe("withContainedPayorOrgs", () => {
       throw new Error("should not fetch");
     });
     expect(result).toBe(selfPay);
+  });
+
+  it("strips versionId and lastUpdated from contained payor Organizations", async () => {
+    const orgWithMeta = {
+      ...payorOrg,
+      meta: {
+        versionId: "3",
+        lastUpdated: "2026-08-07T00:00:00Z",
+        profile: ["http://example.org/StructureDefinition/org"],
+      },
+    };
+    const result = (await withContainedPayorOrgs(
+      payorCoverage,
+      async () => orgWithMeta,
+    )) as { contained?: { meta?: Record<string, unknown> }[] };
+    expect(result.contained?.[0]?.meta).toEqual({
+      profile: ["http://example.org/StructureDefinition/org"],
+    });
+  });
+});
+
+describe("stripVolatileMeta", () => {
+  it("removes versionId and lastUpdated but keeps other meta fields", () => {
+    const stripped = stripVolatileMeta({
+      resourceType: "Coverage",
+      meta: {
+        versionId: "1",
+        lastUpdated: "2026-08-07T00:00:00Z",
+        source: "#abc",
+      },
+    });
+    expect(stripped.meta).toEqual({ source: "#abc" });
+  });
+
+  it("drops meta entirely when nothing else remains", () => {
+    const stripped = stripVolatileMeta({
+      resourceType: "Coverage",
+      meta: { versionId: "1", lastUpdated: "2026-08-07T00:00:00Z" },
+    });
+    expect("meta" in stripped).toBe(false);
+  });
+
+  it("returns resources without meta unchanged", () => {
+    const coverage = { resourceType: "Coverage" as const };
+    expect(stripVolatileMeta(coverage)).toBe(coverage);
+  });
+});
+
+describe("stripLformsMetaStamps", () => {
+  it("removes the FHIR version pseudo-profile and system-less tags", async () => {
+    const { stripLformsMetaStamps } = await import("./use-questionnaire");
+    const qr = {
+      resourceType: "QuestionnaireResponse",
+      status: "completed",
+      meta: {
+        profile: [
+          "http://hl7.org/fhir/4.0/StructureDefinition/QuestionnaireResponse",
+          "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/dtr-questionnaireresponse",
+        ],
+        tag: [
+          { code: "lformsVersion: 40.1.3" },
+          { system: "http://example.org/tags", code: "keep" },
+        ],
+      },
+    } as import("fhir/r4").QuestionnaireResponse;
+    stripLformsMetaStamps(qr);
+    expect(qr.meta?.profile).toEqual([
+      "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/dtr-questionnaireresponse",
+    ]);
+    expect(qr.meta?.tag).toEqual([
+      { system: "http://example.org/tags", code: "keep" },
+    ]);
+  });
+
+  it("drops meta entirely when nothing remains", async () => {
+    const { stripLformsMetaStamps } = await import("./use-questionnaire");
+    const qr = {
+      resourceType: "QuestionnaireResponse",
+      status: "completed",
+      meta: {
+        profile: [
+          "http://hl7.org/fhir/4.0/StructureDefinition/QuestionnaireResponse",
+        ],
+        tag: [{ code: "lformsVersion: 40.1.3" }],
+      },
+    } as import("fhir/r4").QuestionnaireResponse;
+    stripLformsMetaStamps(qr);
+    expect(qr.meta).toBeUndefined();
   });
 });

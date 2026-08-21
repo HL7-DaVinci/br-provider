@@ -8,6 +8,7 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   alignChoiceAnswers,
+  coerceDateAnswers,
   extractPackageBundles,
   inlineBundleValueSets,
   selectPackageBundle,
@@ -214,6 +215,43 @@ describe("inlineBundleValueSets", () => {
     expect(item?.answerOption).toBeUndefined();
   });
 
+  it("inlines a contained ValueSet referenced as #id", () => {
+    const q: Questionnaire = {
+      resourceType: "Questionnaire",
+      status: "active",
+      contained: [
+        {
+          resourceType: "ValueSet",
+          id: "administrative-gender",
+          status: "active",
+          expansion: {
+            timestamp: "2024-01-01T00:00:00Z",
+            contains: [
+              {
+                system: "http://hl7.org/fhir/administrative-gender",
+                code: "male",
+                display: "Male",
+              },
+            ],
+          },
+        },
+      ],
+      item: [
+        {
+          linkId: "gender",
+          type: "choice",
+          answerValueSet: "#administrative-gender",
+        },
+      ],
+    };
+    const result = inlineBundleValueSets(q, {
+      resourceType: "Bundle",
+      type: "collection",
+    });
+    expect(result.item?.[0].answerValueSet).toBeUndefined();
+    expect(result.item?.[0].answerOption?.[0].valueCoding?.code).toBe("male");
+  });
+
   it("does not mutate the input questionnaire", () => {
     const q = questionnaireWithChoice(GENDER_VS);
     inlineBundleValueSets(q, bundleWith(expandedValueSet(GENDER_VS)));
@@ -304,5 +342,39 @@ describe("alignChoiceAnswers", () => {
       "not-a-gender",
     );
     expect(result.item?.[0].item?.[0].answer?.[0].valueCoding).toBeUndefined();
+  });
+});
+
+describe("coerceDateAnswers", () => {
+  const questionnaire: Questionnaire = {
+    resourceType: "Questionnaire",
+    status: "active",
+    item: [
+      { linkId: "f2f", type: "date" },
+      { linkId: "when", type: "dateTime" },
+    ],
+  };
+
+  it("truncates a dateTime answer on a date item and leaves dateTime items alone", () => {
+    const qr: QuestionnaireResponse = {
+      resourceType: "QuestionnaireResponse",
+      status: "in-progress",
+      item: [
+        {
+          linkId: "f2f",
+          answer: [{ valueDateTime: "2020-07-01T10:40:10+01:00" }],
+        },
+        {
+          linkId: "when",
+          answer: [{ valueDateTime: "2020-07-01T10:40:10+01:00" }],
+        },
+      ],
+    };
+    const result = coerceDateAnswers(qr, questionnaire);
+    expect(result.item?.[0].answer?.[0]).toEqual({ valueDate: "2020-07-01" });
+    expect(result.item?.[1].answer?.[0].valueDateTime).toBe(
+      "2020-07-01T10:40:10+01:00",
+    );
+    expect(qr.item?.[0].answer?.[0].valueDateTime).toBeDefined();
   });
 });

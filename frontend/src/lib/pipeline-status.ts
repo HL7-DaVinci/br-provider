@@ -52,11 +52,12 @@ export function derivePipelineStatus(
     authorization = "not-needed";
   } else if (!paStatus) {
     authorization = "not-started";
-  } else if (paStatus.pended) {
-    authorization = "pended";
-  } else if (paStatus.outcome === "complete") {
+  } else if (
+    paStatus.decision === "approved" ||
+    paStatus.decision === "partial"
+  ) {
     authorization = "approved";
-  } else if (paStatus.outcome === "error") {
+  } else if (paStatus.decision === "denied") {
     authorization = "denied";
   } else {
     authorization = "pended";

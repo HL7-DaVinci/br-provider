@@ -7,7 +7,6 @@ import java.util.Iterator;
 import java.util.List;
 
 import org.hl7.fhir.instance.model.api.IBaseResource;
-import org.hl7.fhir.r4.model.Library;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,17 +34,18 @@ public class DataInitializer {
 
   private static final Logger logger = LoggerFactory.getLogger(DataInitializer.class);
 
-  @Autowired
-  private FhirContext fhirContext;
+  private final FhirContext fhirContext;
+  private final DaoRegistry daoRegistry;
+  private final DataInitializerProperties dataInitializerProperties;
+  private final ResourceLoader resourceLoader;
 
-  @Autowired
-  private DaoRegistry daoRegistry;
-
-  @Autowired
-  private DataInitializerProperties dataInitializerProperties;
-
-  @Autowired
-  private ResourceLoader resourceLoader;
+  public DataInitializer(FhirContext fhirContext, DaoRegistry daoRegistry,
+      DataInitializerProperties dataInitializerProperties, ResourceLoader resourceLoader) {
+    this.fhirContext = fhirContext;
+    this.daoRegistry = daoRegistry;
+    this.dataInitializerProperties = dataInitializerProperties;
+    this.resourceLoader = resourceLoader;
+  }
 
   @PostConstruct
   public void initializeData() {

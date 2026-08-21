@@ -1,8 +1,4 @@
-import {
-  type QueryClient,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type {
   Bundle,
   DomainResource,
@@ -10,7 +6,11 @@ import type {
   Resource,
 } from "fhir/r4";
 import { useCallback, useRef } from "react";
-import { fhirSend } from "@/lib/api";
+import { fhirProxyUrl } from "@/lib/api";
+import {
+  type PrefetchFetcher,
+  resolvePrefetchTemplates,
+} from "@/lib/cds-prefetch";
 import type {
   CdsCard,
   CdsHookName,
@@ -79,8 +79,6 @@ export function useCdsHooksCore(
   serverUrl: string,
   callbacks: CdsHooksCallbacks,
 ): UseCdsHooksCoreResult {
-  const queryClient = useQueryClient();
-
   const callbacksRef = useRef(callbacks);
   callbacksRef.current = callbacks;
 
@@ -136,7 +134,6 @@ export function useCdsHooksCore(
             context,
             serverUrl,
             selectedCoverageRef,
-            queryClient,
           );
         }
 
@@ -145,7 +142,9 @@ export function useCdsHooksCore(
           hookInstance: crypto.randomUUID(),
           context,
           ...(serverUrl ? { fhirServer: serverUrl } : {}),
-          ...(prefetchData ? { prefetch: prefetchData } : {}),
+          ...(prefetchData && Object.keys(prefetchData).length > 0
+            ? { prefetch: prefetchData }
+            : {}),
         };
 
         const response = await loggedFetch(
@@ -218,7 +217,7 @@ export function useCdsHooksCore(
         cb.onError(hookError);
       }
     },
-    [cdsServerUrl, discovery, serverUrl, queryClient],
+    [cdsServerUrl, discovery, serverUrl],
   );
 
   return { fireHook, discovery, isDiscovering };
@@ -294,9 +293,9 @@ export function useCdsHooks(cdsServerUrl: string): UseCdsHooksResult {
 
 /**
  * Resolves prefetch data by executing the FHIR queries declared in the
- * service's discovery prefetch templates. Replaces {{context.*}} tokens
- * with actual values from the hook context, then fetches each resource
- * via the BFF proxy.
+ * service's discovery prefetch templates. Supports {{context.*}} tokens and
+ * the CRD dependent-template tokens over earlier prefetch results (see
+ * resolvePrefetchTemplates), fetching each query via the BFF proxy.
  *
  * If a selectedCoverageRef is provided and a prefetch key returns a
  * Coverage search Bundle with multiple entries, filters to only the
@@ -307,52 +306,32 @@ async function resolvePrefetch(
   context: HookContext,
   serverUrl: string,
   selectedCoverageRef: string | undefined,
-  qc: QueryClient,
 ): Promise<Record<string, unknown>> {
-  const prefetch: Record<string, unknown> = {};
-
-  const ctx = context as unknown as Record<string, unknown>;
-  const tokenValues: Record<string, string> = {};
-  for (const [key, value] of Object.entries(ctx)) {
-    if (typeof value === "string") {
-      tokenValues[`context.${key}`] = value;
+  const fetchJson: PrefetchFetcher = async (query) => {
+    const fhirUrl = query.startsWith("http") ? query : `${serverUrl}/${query}`;
+    try {
+      const res = await loggedFetch(fhirProxyUrl(fhirUrl), undefined, {
+        payerUrl: "",
+        providerUrl: serverUrl,
+        operationName: "CDS prefetch",
+      });
+      if (!res.ok) {
+        console.warn(`[cds-prefetch] ${fhirUrl} failed: ${res.status}`);
+        return undefined;
+      }
+      return await res.json();
+    } catch (error) {
+      console.warn(`[cds-prefetch] ${fhirUrl} failed:`, error);
+      return undefined;
     }
-  }
+  };
 
-  const entries = Object.entries(templates);
-  const results = await Promise.allSettled(
-    entries.map(async ([key, template]) => {
-      let query = template;
-      for (const [token, value] of Object.entries(tokenValues)) {
-        query = query.replaceAll(`{{${token}}}`, value);
-      }
-
-      if (query.includes("{{")) return { key, data: undefined };
-
-      const url = query.startsWith("http") ? query : `${serverUrl}/${query}`;
-
-      try {
-        const data = await qc.fetchQuery({
-          queryKey: ["cds-prefetch", url],
-          queryFn: async () => {
-            const res = await fhirSend(url);
-            if (!res.ok) return undefined;
-            return res.json();
-          },
-          staleTime: 0,
-        });
-        return { key, data };
-      } catch {
-        return { key, data: undefined };
-      }
-    }),
+  const prefetch = await resolvePrefetchTemplates(
+    templates,
+    context as unknown as Record<string, unknown>,
+    fetchJson,
+    serverUrl,
   );
-
-  for (const result of results) {
-    if (result.status === "fulfilled" && result.value.data !== undefined) {
-      prefetch[result.value.key] = result.value.data;
-    }
-  }
 
   // CRD requires exactly one Coverage in prefetch. If the user selected a
   // specific coverage, filter to that one. Otherwise, keep only the first.

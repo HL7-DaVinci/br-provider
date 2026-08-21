@@ -48,6 +48,7 @@ describe("deriveOrderPaStatuses", () => {
     );
     const status = map.get("DeviceRequest/dev-1");
     expect(status?.outcome).toBe("complete");
+    expect(status?.decision).toBe("approved");
     expect(status?.preAuthRef).toBe("AUTH-1");
     expect(status?.orderId).toBe("dev-1");
     expect(status?.orderType).toBe("DeviceRequest");
@@ -61,6 +62,50 @@ describe("deriveOrderPaStatuses", () => {
       [],
     );
     expect(map.get("DeviceRequest/dev-1")?.outcome).toBe("queued");
+    expect(map.get("DeviceRequest/dev-1")?.decision).toBe("pended");
+    expect(map.get("DeviceRequest/dev-1")?.pended).toBe(true);
+  });
+
+  it("derives denied from A3 review action codes despite outcome=complete", () => {
+    const map = deriveOrderPaStatuses(
+      [paTask("DeviceRequest/dev-1", "trk-1")],
+      [
+        claimResponse("trk-1", {
+          item: [
+            {
+              itemSequence: 1,
+              adjudication: [
+                {
+                  category: { coding: [{ code: "submitted" }] },
+                  extension: [
+                    {
+                      url: "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/extension-reviewAction",
+                      extension: [
+                        {
+                          url: "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/extension-reviewActionCode",
+                          valueCodeableConcept: {
+                            coding: [
+                              {
+                                system: "https://codesystem.x12.org/005010/306",
+                                code: "A3",
+                              },
+                            ],
+                          },
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    );
+    const status = map.get("DeviceRequest/dev-1");
+    expect(status?.outcome).toBe("complete");
+    expect(status?.decision).toBe("denied");
+    expect(status?.pended).toBe(false);
   });
 
   it("keeps two orders independent", () => {

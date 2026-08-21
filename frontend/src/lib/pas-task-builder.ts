@@ -11,7 +11,7 @@ import {
   PROVIDER_ORG_IDENTIFIER_SYSTEM,
   providerOrgIdentifier,
 } from "./pas-bundle-builder";
-import { isPendedClaimResponse } from "./pas-pend-status";
+import { derivePasDecision } from "./pas-pend-status";
 
 type TaskInput = NonNullable<Task["input"]>[number];
 
@@ -237,9 +237,15 @@ export function buildPaStatusTask(
     claimIdentifier,
     insurerIdentifier: insurerIdentifierFrom(claimResponse, bundle),
   };
-  const status = isPendedClaimResponse(claimResponse)
-    ? "in-progress"
-    : mapOutcomeToTaskStatus(claimResponse.outcome);
+  const decision = derivePasDecision(claimResponse);
+  const status =
+    decision === "pended"
+      ? "in-progress"
+      : decision === "denied"
+        ? "failed"
+        : decision === "approved" || decision === "partial"
+          ? "completed"
+          : mapOutcomeToTaskStatus(claimResponse.outcome);
   const task = baseTask(context, status);
   const trackingValue = context.trackingId?.value ?? claimIdentifier?.value;
   if (trackingValue) task.id = `pa-task-${sanitizeId(trackingValue)}`;

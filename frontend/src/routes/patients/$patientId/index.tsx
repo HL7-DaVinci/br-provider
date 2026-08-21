@@ -193,7 +193,7 @@ function Field({ label, value }: { label: string; value: string | undefined }) {
   );
 }
 
-const OUTCOME_CONFIG: Record<
+const DECISION_CONFIG: Record<
   string,
   {
     icon: typeof CheckCircle2;
@@ -201,10 +201,14 @@ const OUTCOME_CONFIG: Record<
     label: string;
   }
 > = {
-  complete: { icon: CheckCircle2, variant: "default", label: "Approved" },
-  error: { icon: AlertCircle, variant: "destructive", label: "Denied" },
-  queued: { icon: Clock, variant: "secondary", label: "Pending" },
-  partial: { icon: Clock, variant: "secondary", label: "Partial" },
+  approved: { icon: CheckCircle2, variant: "default", label: "Approved" },
+  partial: {
+    icon: CheckCircle2,
+    variant: "secondary",
+    label: "Partially Approved",
+  },
+  denied: { icon: AlertCircle, variant: "destructive", label: "Denied" },
+  pended: { icon: Clock, variant: "secondary", label: "Pending" },
 };
 
 function PaStatusRow({
@@ -214,9 +218,7 @@ function PaStatusRow({
   status: OrderPaStatus;
   patientId: string;
 }) {
-  const config = status.pended
-    ? OUTCOME_CONFIG.queued
-    : (OUTCOME_CONFIG[status.outcome] ?? OUTCOME_CONFIG.queued);
+  const config = DECISION_CONFIG[status.decision] ?? DECISION_CONFIG.pended;
   const Icon = config.icon;
   const created = formatClinicalDate(status.created);
 

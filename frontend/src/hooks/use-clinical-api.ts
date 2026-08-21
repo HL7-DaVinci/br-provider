@@ -30,7 +30,7 @@ import {
   type OrderEntry,
   type OrderResource,
 } from "@/lib/order-types";
-import { isPendedClaimResponse } from "@/lib/pas-pend-status";
+import { derivePasDecision, type PasDecision } from "@/lib/pas-pend-status";
 import type { AnyQrStatus } from "@/lib/qr-status";
 import { isTerminalTaskStatus } from "@/lib/task-worklist";
 import { fhirFetch } from "./use-fhir-api";
@@ -718,6 +718,7 @@ export function useEncounters(patientId: string) {
 
 export interface OrderPaStatus {
   outcome: string;
+  decision: PasDecision;
   pended: boolean;
   disposition?: string;
   preAuthRef?: string;
@@ -747,7 +748,7 @@ function useOrderClaimResponses(patientId: string) {
         const cr = e.resource;
         return (
           cr?.resourceType === "ClaimResponse" &&
-          (isPendedClaimResponse(cr) || cr.outcome === "partial")
+          derivePasDecision(cr) === "pended"
         );
       });
       return anyPended ? 30 * 1000 : false;
@@ -812,9 +813,11 @@ export function deriveOrderPaStatuses(
     const trackingId =
       task.identifier?.[0]?.value ?? task.reasonReference?.identifier?.value;
     const cr = trackingId ? crByTracking.get(trackingId) : undefined;
+    const decision = cr ? derivePasDecision(cr) : "pended";
     statusMap.set(orderRef, {
       outcome: cr?.outcome ?? "queued",
-      pended: cr ? isPendedClaimResponse(cr) || cr.outcome === "partial" : true,
+      decision,
+      pended: decision === "pended",
       disposition: cr?.disposition,
       preAuthRef: cr?.preAuthRef,
       claimResponseId: trackingId ?? "",
@@ -875,9 +878,7 @@ export function useOrderPaStatus(
     enabled: enabled && !!trackingId && !!providerFhirUrl,
     refetchInterval: (q) => {
       const cr = q.state.data as ClaimResponse | null | undefined;
-      return !cr || isPendedClaimResponse(cr) || cr.outcome === "partial"
-        ? 5_000
-        : false;
+      return !cr || derivePasDecision(cr) === "pended" ? 5_000 : false;
     },
   });
 }

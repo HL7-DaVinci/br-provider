@@ -13,6 +13,7 @@ import {
   buildClaimItem,
   buildPasInquiryBundle,
   buildPasRequestBundle,
+  ensureCoverageRelationship,
   extractOrderCode,
   type PasSubmitResources,
   providerOrgIdentifier,
@@ -628,5 +629,33 @@ describe("order reference pruning", () => {
     buildPasRequestBundle(resources({ order }), PROVIDER_FHIR_BASE);
 
     expect(order.encounter?.reference).toBe("Encounter/1715");
+  });
+});
+
+describe("ensureCoverageRelationship", () => {
+  it("defaults relationship to self with the X12 1069 code", () => {
+    const coverage = {
+      resourceType: "Coverage",
+      status: "active",
+    } as Parameters<typeof ensureCoverageRelationship>[0];
+    ensureCoverageRelationship(coverage);
+    expect(coverage.relationship?.coding).toEqual([
+      {
+        system: "http://terminology.hl7.org/CodeSystem/subscriber-relationship",
+        code: "self",
+      },
+      { system: "https://codesystem.x12.org/005010/1069", code: "18" },
+    ]);
+  });
+
+  it("preserves an existing relationship", () => {
+    const relationship = { coding: [{ code: "spouse" }] };
+    const coverage = {
+      resourceType: "Coverage",
+      status: "active",
+      relationship,
+    } as Parameters<typeof ensureCoverageRelationship>[0];
+    ensureCoverageRelationship(coverage);
+    expect(coverage.relationship).toBe(relationship);
   });
 });
