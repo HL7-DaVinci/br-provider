@@ -12,6 +12,7 @@ import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.Customizer;
@@ -200,6 +201,20 @@ public class AuthorizationServerConfig {
         });
         reg.addUrlPatterns("/oauth2/token");
         reg.setOrder(-200);
+        return reg;
+    }
+
+    /**
+     * Registered directly (not via addFilterX into the security chain) so it
+     * runs ahead of the Spring Security filter chain, before private_key_jwt
+     * authentication tries to fetch the client's key.
+     */
+    @Bean
+    public FilterRegistrationBean<UdapClientAssertionKeyFilter> udapClientAssertionKeyFilterRegistration(
+            UdapClientAssertionKeyFilter filter) {
+        FilterRegistrationBean<UdapClientAssertionKeyFilter> reg = new FilterRegistrationBean<>(filter);
+        reg.addUrlPatterns("/oauth2/token");
+        reg.setOrder(Ordered.HIGHEST_PRECEDENCE);
         return reg;
     }
 

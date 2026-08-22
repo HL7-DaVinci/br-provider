@@ -7,6 +7,7 @@ import java.security.interfaces.RSAPrivateKey;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -51,7 +52,7 @@ class UdapRegistrationControllerTest {
         repo = new MutableRegisteredClientRepository();
         SecurityProperties props = new SecurityProperties();
         props.setServerBaseUrl("http://localhost:8080");
-        controller = new UdapRegistrationController(repo, props);
+        controller = new UdapRegistrationController(repo, new UdapClientKeyStore(), props);
     }
 
     private String buildSoftwareStatement(JWTClaimsSet claims) throws Exception {
@@ -87,6 +88,7 @@ class UdapRegistrationControllerTest {
             "Expected 201 but got " + response.getStatusCode().value() + ": " + response.getBody());
         String clientId = (String) response.getBody().get("client_id");
         assertNotNull(clientId);
+        assertEquals(Optional.of("https://example.com"), TieredClientIds.decode(clientId));
         assertEquals("RS256", response.getBody().get("token_endpoint_auth_signing_alg"));
 
         RegisteredClient registeredClient = repo.findByClientId(clientId);

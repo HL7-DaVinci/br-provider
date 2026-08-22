@@ -3,14 +3,12 @@ package org.hl7.davinci.security;
 import java.io.ByteArrayInputStream;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.crypto.RSASSAVerifier;
@@ -41,16 +39,17 @@ public class UdapRegistrationController {
     private static final Logger logger = LoggerFactory.getLogger(UdapRegistrationController.class);
 
     private final MutableRegisteredClientRepository registeredClientRepository;
+    private final UdapClientKeyStore clientKeyStore;
     private final String serverRoot;
 
-    // Stores public keys from DCR x5c chains, keyed by client_id
-    private final ConcurrentHashMap<String, JWK> clientPublicKeys = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Instant> seenJtis = new ConcurrentHashMap<>();
 
     public UdapRegistrationController(
             MutableRegisteredClientRepository registeredClientRepository,
+            UdapClientKeyStore clientKeyStore,
             SecurityProperties securityProperties) {
         this.registeredClientRepository = registeredClientRepository;
+        this.clientKeyStore = clientKeyStore;
         this.serverRoot = securityProperties.getServerBaseUrl();
     }
 
@@ -148,14 +147,14 @@ public class UdapRegistrationController {
             // Deterministic client_id from issuer. Some authorization servers upsert
             // their Tiered OAuth registration and keep using a previously issued
             // client_id, so the same issuer must always map to the same client_id.
+            // The id is reversible (see TieredClientIds) so a restart that wipes the
+            // in-memory client store can reconstruct the registration from the
+            // client_id alone, via TieredClientRecovery.
             RegisteredClient existing = registeredClientRepository.findByIssuer(issuer);
-            String clientId = (existing != null) ? existing.getClientId()
-                : UUID.nameUUIDFromBytes(issuer.getBytes(StandardCharsets.UTF_8)).toString();
-            String id = (existing != null) ? existing.getId()
-                : UUID.nameUUIDFromBytes(("id:" + issuer).getBytes(StandardCharsets.UTF_8)).toString();
+            String clientId = (existing != null) ? existing.getClientId() : TieredClientIds.encode(issuer);
             int httpStatus = (existing != null) ? 200 : 201;
 
-            RegisteredClient.Builder builder = RegisteredClient.withId(id)
+            RegisteredClient.Builder builder = RegisteredClient.withId(clientId)
                 .clientId(clientId)
                 .clientName(clientName)
                 .clientAuthenticationMethod(ClientAuthenticationMethod.PRIVATE_KEY_JWT);
@@ -175,14 +174,14 @@ public class UdapRegistrationController {
 
             // Store the client's public key from the x5c chain for client assertion validation.
             // No keyID set: clients may sign JWTs with a kid derived from their
-            // certificate thumbprint, not our client_id UUID. Omitting kid lets NimbusDS
+            // certificate thumbprint, not our client_id. Omitting kid lets NimbusDS
             // match by algorithm and key type instead, which is sufficient for
             // single-key clients.
             RSAKey clientJwk = new RSAKey.Builder(rsaKey.toRSAPublicKey())
                 .keyUse(KeyUse.SIGNATURE)
                 .algorithm(JWSAlgorithm.RS256)
                 .build();
-            clientPublicKeys.put(clientId, clientJwk);
+            clientKeyStore.put(clientId, clientJwk);
 
             // UDAP clients use x5c for key distribution, not jwks_uri.
             // Serve the client's public key via our own JWKS endpoint.
@@ -224,7 +223,7 @@ public class UdapRegistrationController {
      */
     @GetMapping(value = "/oauth2/udap-jwks", produces = "application/json")
     public ResponseEntity<String> clientJwks(@RequestParam("client_id") String clientId) {
-        JWK jwk = clientPublicKeys.get(clientId);
+        JWK jwk = clientKeyStore.get(clientId);
         if (jwk == null) {
             return ResponseEntity.notFound().build();
         }

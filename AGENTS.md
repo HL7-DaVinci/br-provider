@@ -159,7 +159,9 @@ This server is the **Identity Provider (IdP)** in a UDAP Tiered OAuth flow. The 
 - **`/.well-known/udap`** (IdP discovery via `UdapIdpDiscoveryController`) - endpoints point to this server's own Spring Authorization Server; used by the FAST RI during Tiered OAuth to discover IdP capabilities and register as a client
 
 ### UDAP DCR on this server
-`UdapRegistrationController` accepts dynamic client registrations from the FAST RI (and other UDAP clients). Client IDs are deterministic (UUID derived from issuer) to handle the FAST RI's `UpsertTieredClient` re-registration behavior.
+`UdapRegistrationController` accepts dynamic client registrations from the FAST RI (and other UDAP clients). Client IDs are reversible (`TieredClientIds`: base64url of the issuer URL) so repeat registrations from one issuer map to one client. The client store is in-memory and wiped on restart, so `TieredClientRecovery` rebuilds a client on a `findByClientId` miss by decoding the issuer and binding the redirect URI to that issuer's origin, and `UdapClientAssertionKeyFilter` learns the client's signing key from the x5c of its next `client_assertion` at `/oauth2/token`. Recovered clients and learned keys are each capped at 256 (oldest evicted); a real DCR lifts the client cap for its issuer, and an evicted key is re-learned from the next assertion.
+
+**Known limitation (test-only IdP):** neither DCR, recovery nor the assertion key filter validates the certificate chain against community trust anchors or binds the cert SAN to the issuer; any self-consistent x5c is accepted. This IdP exists only to let the seed practitioners and patients act as user accounts, so the exposure is login availability (key squatting, client overwrite), not data. Revisit before fronting non-seed data or joining a real trust community. A later real DCR from the same issuer overwrites the recovered client.
 
 ### Security module (`org.hl7.davinci.security/`)
 - `AuthorizationServerConfig` - Spring OAuth2 Authorization Server (local IdP)
