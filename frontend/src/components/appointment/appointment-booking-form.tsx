@@ -21,15 +21,15 @@ const SERVICE_TYPES = [
     value: "cardiology",
     label: "Cardiology Consultation",
     system: "http://snomed.info/sct",
-    code: "394579002",
-    snomedDisplay: "Cardiology",
+    code: "183519002",
+    snomedDisplay: "Referral to cardiology service",
   },
   {
     value: "dme-evaluation",
     label: "DME Evaluation",
     system: "http://snomed.info/sct",
-    code: "183524004",
-    snomedDisplay: "Recommendation regarding equipment",
+    code: "226004006",
+    snomedDisplay: "Medical equipment assessment",
   },
   {
     value: "follow-up",
@@ -135,6 +135,7 @@ export function AppointmentBookingForm({
 
     const appointment: Appointment = {
       resourceType: "Appointment",
+      id: crypto.randomUUID(),
       status: "proposed",
       serviceType: serviceTypeDef
         ? [
@@ -164,6 +165,17 @@ export function AppointmentBookingForm({
           status: "accepted",
         },
         {
+          type: [
+            {
+              coding: [
+                {
+                  system:
+                    "http://terminology.hl7.org/CodeSystem/v3-ParticipationType",
+                  code: "PPRF",
+                },
+              ],
+            },
+          ],
           actor: {
             reference: `Practitioner/${form.practitionerId}`,
             display: practitioner

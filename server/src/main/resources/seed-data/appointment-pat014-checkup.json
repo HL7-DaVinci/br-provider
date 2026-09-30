@@ -32,6 +32,16 @@
       "status": "accepted"
     },
     {
+      "type": [
+        {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-ParticipationType",
+              "code": "PPRF"
+            }
+          ]
+        }
+      ],
       "actor": {
         "reference": "Practitioner/pra1234",
         "display": "Dr. Jane Doe"

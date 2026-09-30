@@ -7,8 +7,8 @@
       "coding": [
         {
           "system": "http://snomed.info/sct",
-          "code": "394579002",
-          "display": "Cardiology"
+          "code": "183519002",
+          "display": "Referral to cardiology service"
         }
       ],
       "text": "Cardiology Consultation"
@@ -32,6 +32,16 @@
       "status": "accepted"
     },
     {
+      "type": [
+        {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-ParticipationType",
+              "code": "PPRF"
+            }
+          ]
+        }
+      ],
       "actor": {
         "reference": "Practitioner/pra1234",
         "display": "Dr. Jane Doe"

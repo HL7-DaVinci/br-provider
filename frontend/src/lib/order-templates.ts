@@ -132,7 +132,8 @@ const TEMPLATES: OrderTemplate[] = [
   {
     id: "svc-72148",
     code: "72148",
-    display: "MRI Lumbar Spine without Contrast",
+    display:
+      "Magnetic resonance (eg, proton) imaging, spinal canal and contents, lumbar; without contrast material",
     description:
       "Payer checks whether the imaging facility is in network when the order is dispatched",
     category: "Services",
@@ -142,9 +143,9 @@ const TEMPLATES: OrderTemplate[] = [
 
   // Medications (MedicationRequest) - codes match payer library focus codes
   {
-    id: "med-azathioprine-105585",
+    id: "med-methotrexate-105585",
     code: "105585",
-    display: "Azathioprine",
+    display: "methotrexate 2.5 MG Oral Tablet",
     description:
       "Payer requests supporting documentation for immunosuppressive drugs",
     category: "Medications",
@@ -152,9 +153,9 @@ const TEMPLATES: OrderTemplate[] = [
     codeSystem: RXNORM_SYSTEM,
   },
   {
-    id: "med-cyclosporine-105611",
+    id: "med-azathioprine-105611",
     code: "105611",
-    display: "Cyclosporine",
+    display: "azathioprine 50 MG Oral Tablet [Imuran]",
     description:
       "Payer requests supporting documentation for immunosuppressive drugs",
     category: "Medications",
@@ -162,9 +163,9 @@ const TEMPLATES: OrderTemplate[] = [
     codeSystem: RXNORM_SYSTEM,
   },
   {
-    id: "med-morphine-197696",
+    id: "med-fentanyl-197696",
     code: "197696",
-    display: "Morphine Sulfate",
+    display: "72 HR fentanyl 0.075 MG/HR Transdermal System",
     description:
       "Payer runs opioid safety checks and may require prior authorization",
     category: "Medications",
@@ -172,9 +173,9 @@ const TEMPLATES: OrderTemplate[] = [
     codeSystem: RXNORM_SYSTEM,
   },
   {
-    id: "med-hydrocodone-acetaminophen-1049502",
+    id: "med-oxycodone-1049502",
     code: "1049502",
-    display: "Hydrocodone/Acetaminophen",
+    display: "12 HR oxycodone hydrochloride 10 MG Extended Release Oral Tablet",
     description:
       "Payer runs opioid safety checks and may require prior authorization",
     category: "Medications",

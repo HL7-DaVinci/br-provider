@@ -84,7 +84,14 @@ class TieredClientRecovery {
             return null;
         }
         String redirectUri = request.getParameter("redirect_uri");
-        return (redirectUri != null && sameOrigin(redirectUri, issuer)) ? redirectUri : null;
+        if (redirectUri == null) {
+            return null;
+        }
+        // The trust community server may register with an internal issuer (for
+        // example its container address) while redirecting from its public origin.
+        boolean trusted = sameOrigin(redirectUri, issuer)
+            || sameOrigin(redirectUri, securityProperties.getIssuer());
+        return trusted ? redirectUri : null;
     }
 
     private List<String> requestedScopes() {

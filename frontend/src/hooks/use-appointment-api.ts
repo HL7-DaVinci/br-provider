@@ -72,8 +72,11 @@ export function useCreateAppointment() {
 
   return useMutation({
     mutationFn: async (appointment: Appointment) => {
-      const response = await fhirSend(`${serverUrl}/Appointment`, {
-        method: "POST",
+      const url = appointment.id
+        ? `${serverUrl}/Appointment/${appointment.id}`
+        : `${serverUrl}/Appointment`;
+      const response = await fhirSend(url, {
+        method: appointment.id ? "PUT" : "POST",
         headers: {
           "Content-Type": "application/fhir+json",
           Prefer: "return=representation",

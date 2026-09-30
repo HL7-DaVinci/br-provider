@@ -26,6 +26,19 @@ import { loggedFetch } from "@/lib/logged-fetch";
 import { useFhirServer } from "./use-fhir-server";
 import { useOrderContext } from "./use-order-context";
 
+/**
+ * CRD clients that support configuration options SHALL convey them on every
+ * hook call. There is no configuration UI yet, so each advertised option is
+ * sent at the default the service declared.
+ */
+export function buildCrdConfiguration(
+  service: CdsServiceDefinition,
+): Record<string, boolean | number> | undefined {
+  const options = service.extension?.["davinci-crd.configuration-options"];
+  if (!options || options.length === 0) return undefined;
+  return Object.fromEntries(options.map((o) => [o.code, o.default]));
+}
+
 export interface FireHookResult {
   systemActionResources: Map<string, Resource>;
 }
@@ -137,10 +150,14 @@ export function useCdsHooksCore(
           );
         }
 
+        const configuration = buildCrdConfiguration(service);
         const request: CdsHookRequest = {
           hook: hookName,
           hookInstance: crypto.randomUUID(),
           context,
+          ...(configuration
+            ? { extension: { "davinci-crd.configuration": configuration } }
+            : {}),
           ...(serverUrl ? { fhirServer: serverUrl } : {}),
           ...(prefetchData && Object.keys(prefetchData).length > 0
             ? { prefetch: prefetchData }

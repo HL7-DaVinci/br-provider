@@ -7,8 +7,8 @@
       "coding": [
         {
           "system": "http://snomed.info/sct",
-          "code": "183524004",
-          "display": "Recommendation regarding equipment"
+          "code": "226004006",
+          "display": "Medical equipment assessment"
         }
       ],
       "text": "DME Evaluation"
@@ -32,6 +32,16 @@
       "status": "needs-action"
     },
     {
+      "type": [
+        {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-ParticipationType",
+              "code": "PPRF"
+            }
+          ]
+        }
+      ],
       "actor": {
         "reference": "Practitioner/pra1255",
         "display": "Dr. Practitioner"

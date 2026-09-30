@@ -73,6 +73,24 @@ class TieredClientRecoveryTest {
     }
 
     @Test
+    void redirectUriOnConfiguredIssuerOrigin_recoversClientEvenWhenDecodedIssuerDiffers() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setParameter("redirect_uri", "https://udap-security.example.org/federation/udap-tiered/signin");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+        SecurityProperties props = new SecurityProperties();
+        props.setServerBaseUrl("http://localhost:8080");
+        props.setIssuer("https://udap-security.example.org");
+        recovery = new TieredClientRecovery(props, repo);
+
+        String clientId = TieredClientIds.encode("https://localhost:5001/");
+        RegisteredClient client = recovery.recover(clientId);
+
+        assertNotNull(client);
+        assertTrue(client.getAuthorizationGrantTypes().contains(AuthorizationGrantType.AUTHORIZATION_CODE));
+        assertEquals(Set.of("https://udap-security.example.org/federation/udap-tiered/signin"), client.getRedirectUris());
+    }
+
+    @Test
     void undecodableClientId_returnsNull() {
         assertNull(recovery.recover("not-a-valid-client-id!!"));
     }

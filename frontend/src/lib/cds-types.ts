@@ -21,6 +21,18 @@ export interface CdsServiceDefinition {
   title?: string;
   description: string;
   prefetch?: Record<string, string>;
+  extension?: {
+    "davinci-crd.configuration-options"?: CrdConfigurationOption[];
+  };
+}
+
+// CRD hook configuration option advertised by a service (davinci-crd.configuration-options)
+export interface CrdConfigurationOption {
+  code: string;
+  type: "boolean" | "integer";
+  name: string;
+  description: string;
+  default: boolean | number;
 }
 
 // Hook Context Variants
@@ -80,6 +92,7 @@ export interface CdsHookRequest {
   prefetch?: Record<string, unknown>;
   fhirServer?: string;
   fhirAuthorization?: FhirAuthorization;
+  extension?: Record<string, unknown>;
 }
 
 export interface FhirAuthorization {
