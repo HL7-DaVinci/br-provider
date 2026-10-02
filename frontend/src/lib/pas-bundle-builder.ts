@@ -431,20 +431,46 @@ function extractDiagnosis(order: FhirResource): CodeableConcept | undefined {
   return o.reasonCode?.[0];
 }
 
+const SUBSCRIBER_RELATIONSHIP_SYSTEM =
+  "http://terminology.hl7.org/CodeSystem/subscriber-relationship";
+const X12_RELATIONSHIP_SYSTEM = "https://codesystem.x12.org/005010/1069";
+
+const X12_RELATIONSHIP_BY_SUBSCRIBER_CODE: Record<string, string> = {
+  self: "18",
+  spouse: "01",
+  child: "19",
+  common: "53",
+  parent: "G8",
+  injured: "G8",
+  other: "G8",
+};
+
 /**
- * Defaults Coverage.relationship to self when absent; CRD profile-coverage requires it 1..1 and
- * PAS additionally expects the X12 1069 code.
+ * CRD profile-coverage requires relationship. PAS profile-coverage keys its
+ * self-beneficiary invariant on the X12 1069 code, so the X12 counterpart is
+ * added whenever only the subscriber-relationship coding is present.
  */
 export function ensureCoverageRelationship(coverage: Coverage): void {
-  coverage.relationship ??= {
-    coding: [
-      {
-        system: "http://terminology.hl7.org/CodeSystem/subscriber-relationship",
-        code: "self",
-      },
-      { system: "https://codesystem.x12.org/005010/1069", code: "18" },
-    ],
-  };
+  if (!coverage.relationship) {
+    coverage.relationship = {
+      coding: [
+        { system: SUBSCRIBER_RELATIONSHIP_SYSTEM, code: "self" },
+        { system: X12_RELATIONSHIP_SYSTEM, code: "18" },
+      ],
+    };
+    return;
+  }
+  const coding = coverage.relationship.coding ?? [];
+  if (coding.some((c) => c.system === X12_RELATIONSHIP_SYSTEM)) return;
+  const subscriberCode = coding.find(
+    (c) => c.system === SUBSCRIBER_RELATIONSHIP_SYSTEM,
+  )?.code;
+  const x12Code = X12_RELATIONSHIP_BY_SUBSCRIBER_CODE[subscriberCode ?? ""];
+  if (!x12Code) return;
+  coverage.relationship.coding = [
+    ...coding,
+    { system: X12_RELATIONSHIP_SYSTEM, code: x12Code },
+  ];
 }
 
 /**

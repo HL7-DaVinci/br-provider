@@ -92,7 +92,7 @@ export function OrderTemplateCatalog() {
                     disabled={selectedIds.has(t.id)}
                     description={t.description}
                   >
-                    {t.code} - {t.display}
+                    {t.code} - {t.label}
                   </SelectItem>
                 ))}
               </SelectGroup>
@@ -107,7 +107,7 @@ export function OrderTemplateCatalog() {
                     disabled={selectedIds.has(t.id)}
                     description={t.description}
                   >
-                    {t.code} - {t.display}
+                    {t.code} - {t.label}
                   </SelectItem>
                 ))}
               </SelectGroup>

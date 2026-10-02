@@ -83,7 +83,7 @@ function SelectedOrderItem({
             {order.template.code}
           </Badge>
           <span className="min-w-0 flex-1 truncate text-sm font-medium">
-            {order.template.display}
+            {order.template.label}
           </span>
           <Button
             variant="ghost"

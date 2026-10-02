@@ -15,6 +15,7 @@ const selectedOrder: SelectedOrder = {
     id: "svc-g0151",
     code: "G0151",
     display: "Home Health Services",
+    label: "Home Health Services",
     description:
       "Services performed by a qualified physical therapist in the home health setting",
     category: "Services",
@@ -48,6 +49,26 @@ describe("draft order helpers", () => {
       encounter: { reference: "Encounter/enc-1" },
       requester: { reference: "Practitioner/prac-1" },
       priority: "urgent",
+    });
+  });
+
+  it("uses the template label as code.text and keeps the coding display", () => {
+    const labelled: SelectedOrder = {
+      ...selectedOrder,
+      template: {
+        ...selectedOrder.template,
+        display: "Hhs/hospice of rn ea 15 min",
+        label: "Home Health RN Services",
+      },
+    };
+
+    const bundle = buildDraftOrdersBundle([labelled], "patient-1", {}, {});
+
+    expect(bundle.entry?.[0]?.resource).toMatchObject({
+      code: {
+        coding: [{ code: "G0151", display: "Hhs/hospice of rn ea 15 min" }],
+        text: "Home Health RN Services",
+      },
     });
   });
 

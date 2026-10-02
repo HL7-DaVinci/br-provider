@@ -13,7 +13,10 @@ export type TemplateCategory = "DME" | "Services" | "Medications";
 export interface OrderTemplate {
   id: string;
   code: string;
+  /** Terminology display, as the code system publishes it. */
   display: string;
+  /** Readable name shown in the UI and copied to code.text. */
+  label: string;
   description: string;
   category: TemplateCategory;
   resourceType: OrderResourceType;
@@ -36,6 +39,7 @@ const TEMPLATES: OrderTemplate[] = [
     id: "dme-e0424",
     code: "E0424",
     display: "Stationary compressed gas 02",
+    label: "Stationary Compressed Gas Oxygen",
     description:
       "Payer requires prior authorization and provides a questionnaire to complete",
     category: "DME",
@@ -45,7 +49,8 @@ const TEMPLATES: OrderTemplate[] = [
   {
     id: "dme-e0431",
     code: "E0431",
-    display: "Portable Gaseous Oxygen System",
+    display: "Portable gaseous 02",
+    label: "Portable Gaseous Oxygen System",
     description:
       "Payer checks whether the supplier is in network when the order is dispatched",
     category: "DME",
@@ -55,7 +60,8 @@ const TEMPLATES: OrderTemplate[] = [
   {
     id: "dme-e1390",
     code: "E1390",
-    display: "Oxygen Concentrator",
+    display: "Oxygen concentrator",
+    label: "Oxygen Concentrator",
     description:
       "Payer checks whether the supplier is in network when the order is dispatched",
     category: "DME",
@@ -65,7 +71,8 @@ const TEMPLATES: OrderTemplate[] = [
   {
     id: "dme-e0250",
     code: "E0250",
-    display: "Hospital Bed with Side Rails",
+    display: "Hosp bed fixed ht w/ mattres",
+    label: "Hospital Bed with Side Rails",
     description:
       "Covered by the payer; supporting documentation may be requested",
     category: "DME",
@@ -75,7 +82,8 @@ const TEMPLATES: OrderTemplate[] = [
   {
     id: "dme-e0251",
     code: "E0251",
-    display: "Hospital Bed without Mattress",
+    display: "Hosp bed fixd ht w/o mattres",
+    label: "Hospital Bed without Mattress",
     description: "Payer responds with a covered alternative (E0250) to swap in",
     category: "DME",
     resourceType: "DeviceRequest",
@@ -84,7 +92,8 @@ const TEMPLATES: OrderTemplate[] = [
   {
     id: "dme-e0466",
     code: "E0466",
-    display: "Home Ventilator, Non-Invasive Interface",
+    display: "Home vent non-invasive inter",
+    label: "Home Ventilator, Non-Invasive Interface",
     description:
       "Payer requires prior authorization with supporting documentation",
     category: "DME",
@@ -94,7 +103,8 @@ const TEMPLATES: OrderTemplate[] = [
   {
     id: "dme-l8000",
     code: "L8000",
-    display: "Breast Prosthesis, Mastectomy Bra",
+    display: "Mastectomy bra",
+    label: "Breast Prosthesis, Mastectomy Bra",
     description: "Payer requires prior authorization",
     category: "DME",
     resourceType: "DeviceRequest",
@@ -103,7 +113,8 @@ const TEMPLATES: OrderTemplate[] = [
   {
     id: "dme-j3490",
     code: "J3490",
-    display: "Unclassified Drug (Investigational)",
+    display: "Drugs unclassified injection",
+    label: "Unclassified Drug (Investigational)",
     description: "Not covered; payer responds that this service is excluded",
     category: "DME",
     resourceType: "DeviceRequest",
@@ -114,7 +125,8 @@ const TEMPLATES: OrderTemplate[] = [
   {
     id: "svc-g0151",
     code: "G0151",
-    display: "Home Health Physical Therapy",
+    display: "Hhcp-serv of pt,ea 15 min",
+    label: "Home Health Physical Therapy",
     description: "Payer requires prior authorization for home health services",
     category: "Services",
     resourceType: "ServiceRequest",
@@ -123,7 +135,8 @@ const TEMPLATES: OrderTemplate[] = [
   {
     id: "svc-g0299",
     code: "G0299",
-    display: "Home Health RN Services",
+    display: "Hhs/hospice of rn ea 15 min",
+    label: "Home Health RN Services",
     description: "Payer requires prior authorization for home health services",
     category: "Services",
     resourceType: "ServiceRequest",
@@ -133,6 +146,8 @@ const TEMPLATES: OrderTemplate[] = [
     id: "svc-72148",
     code: "72148",
     display:
+      "Magnetic resonance (eg, proton) imaging, spinal canal and contents, lumbar; without contrast material",
+    label:
       "Magnetic resonance (eg, proton) imaging, spinal canal and contents, lumbar; without contrast material",
     description:
       "Payer checks whether the imaging facility is in network when the order is dispatched",
@@ -146,6 +161,7 @@ const TEMPLATES: OrderTemplate[] = [
     id: "med-methotrexate-105585",
     code: "105585",
     display: "methotrexate 2.5 MG Oral Tablet",
+    label: "methotrexate 2.5 MG Oral Tablet",
     description:
       "Payer requests supporting documentation for immunosuppressive drugs",
     category: "Medications",
@@ -156,6 +172,7 @@ const TEMPLATES: OrderTemplate[] = [
     id: "med-azathioprine-105611",
     code: "105611",
     display: "azathioprine 50 MG Oral Tablet [Imuran]",
+    label: "azathioprine 50 MG Oral Tablet [Imuran]",
     description:
       "Payer requests supporting documentation for immunosuppressive drugs",
     category: "Medications",
@@ -166,6 +183,7 @@ const TEMPLATES: OrderTemplate[] = [
     id: "med-fentanyl-197696",
     code: "197696",
     display: "72 HR fentanyl 0.075 MG/HR Transdermal System",
+    label: "72 HR fentanyl 0.075 MG/HR Transdermal System",
     description:
       "Payer runs opioid safety checks and may require prior authorization",
     category: "Medications",
@@ -176,6 +194,7 @@ const TEMPLATES: OrderTemplate[] = [
     id: "med-oxycodone-1049502",
     code: "1049502",
     display: "12 HR oxycodone hydrochloride 10 MG Extended Release Oral Tablet",
+    label: "12 HR oxycodone hydrochloride 10 MG Extended Release Oral Tablet",
     description:
       "Payer runs opioid safety checks and may require prior authorization",
     category: "Medications",
@@ -224,6 +243,7 @@ export function saveCustomTemplate(input: CustomTemplateInput): OrderTemplate {
     id: `custom-${input.resourceType}-${input.code}`,
     code: input.code,
     display: input.display || input.code,
+    label: input.display || input.code,
     description: `Custom order code (${input.codeSystem})`,
     category: categoryForResourceType(input.resourceType),
     resourceType: input.resourceType,

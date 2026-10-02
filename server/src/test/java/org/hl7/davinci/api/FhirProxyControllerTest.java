@@ -703,6 +703,38 @@ class FhirProxyControllerTest {
     }
 
     @Test
+    void proxy_wildcardAcceptIsReplacedByFhirJsonDefault() throws Exception {
+        var received = new java.util.concurrent.atomic.AtomicReference<com.sun.net.httpserver.Headers>();
+        HttpServer upstream = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        upstream.createContext("/fhir", exchange -> {
+            received.set(exchange.getRequestHeaders());
+            byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        upstream.start();
+        try {
+            String base = "http://127.0.0.1:" + upstream.getAddress().getPort() + "/fhir";
+            serverProperties = new ServerProperties(base, null);
+            outboundAuth = new OutboundAuthService(serverProperties);
+            sessionTokens = new SessionTokenService(securityProperties, null, null);
+            controller = new FhirProxyController(securityProperties, serverProperties, null, sessionTokens, outboundAuth);
+
+            var request = new MockHttpServletRequest("GET", "/api/fhir-proxy");
+            request.addHeader("Accept", "*/*");
+            var response = new MockHttpServletResponse();
+
+            controller.proxy(base + "/metadata", false, "read", null, request, response);
+
+            assertEquals(200, response.getStatus());
+            assertEquals(List.of("application/fhir+json"), received.get().get("Accept"));
+        } finally {
+            upstream.stop(0);
+        }
+    }
+
+    @Test
     void proxy_forwardedAcceptReplacesDefaultInsteadOfDuplicating() throws Exception {
         var received = new java.util.concurrent.atomic.AtomicReference<com.sun.net.httpserver.Headers>();
         HttpServer upstream = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

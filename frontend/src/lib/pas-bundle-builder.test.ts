@@ -658,4 +658,76 @@ describe("ensureCoverageRelationship", () => {
     ensureCoverageRelationship(coverage);
     expect(coverage.relationship).toBe(relationship);
   });
+
+  it("appends the X12 1069 code when the relationship only carries subscriber-relationship self", () => {
+    const coverage = {
+      resourceType: "Coverage",
+      status: "active",
+      relationship: {
+        coding: [
+          {
+            system:
+              "http://terminology.hl7.org/CodeSystem/subscriber-relationship",
+            code: "self",
+          },
+        ],
+      },
+    } as Parameters<typeof ensureCoverageRelationship>[0];
+    ensureCoverageRelationship(coverage);
+    expect(coverage.relationship?.coding).toEqual([
+      {
+        system: "http://terminology.hl7.org/CodeSystem/subscriber-relationship",
+        code: "self",
+      },
+      { system: "https://codesystem.x12.org/005010/1069", code: "18" },
+    ]);
+  });
+
+  it("maps spouse to X12 01", () => {
+    const coverage = {
+      resourceType: "Coverage",
+      status: "active",
+      relationship: {
+        coding: [
+          {
+            system:
+              "http://terminology.hl7.org/CodeSystem/subscriber-relationship",
+            code: "spouse",
+          },
+        ],
+      },
+    } as Parameters<typeof ensureCoverageRelationship>[0];
+    ensureCoverageRelationship(coverage);
+    expect(coverage.relationship?.coding?.[1]).toEqual({
+      system: "https://codesystem.x12.org/005010/1069",
+      code: "01",
+    });
+  });
+
+  it("does not add an empty coding array to a text-only relationship", () => {
+    const coverage = {
+      resourceType: "Coverage",
+      status: "active",
+      relationship: { text: "Self" },
+    } as Parameters<typeof ensureCoverageRelationship>[0];
+    ensureCoverageRelationship(coverage);
+    expect(coverage.relationship?.coding).toBeUndefined();
+  });
+
+  it("leaves an existing X12 1069 coding alone", () => {
+    const coding = [
+      {
+        system: "http://terminology.hl7.org/CodeSystem/subscriber-relationship",
+        code: "self",
+      },
+      { system: "https://codesystem.x12.org/005010/1069", code: "18" },
+    ];
+    const coverage = {
+      resourceType: "Coverage",
+      status: "active",
+      relationship: { coding },
+    } as Parameters<typeof ensureCoverageRelationship>[0];
+    ensureCoverageRelationship(coverage);
+    expect(coverage.relationship?.coding).toHaveLength(2);
+  });
 });

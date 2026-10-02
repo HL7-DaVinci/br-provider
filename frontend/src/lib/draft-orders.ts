@@ -81,7 +81,7 @@ function buildOrderResource(
         display: template.display,
       },
     ],
-    text: template.display,
+    text: template.label,
   };
 
   const base: Record<string, unknown> = {
@@ -293,11 +293,13 @@ function buildAdhocTemplate(
   const codeable = getOrderCode(resource);
   const coding = codeable?.coding?.[0];
   const display = coding?.display ?? codeable?.text ?? code;
+  const label = codeable?.text ?? display;
   return {
     id: `adhoc-${resource.resourceType}-${code}`,
     code,
     display,
-    description: display,
+    label,
+    description: label,
     category: categoryForResourceType(resource.resourceType),
     resourceType: resource.resourceType,
     codeSystem: coding?.system ?? "",

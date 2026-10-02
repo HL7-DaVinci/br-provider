@@ -49,6 +49,10 @@ public class FhirProxyController {
         "accept", "content-type", "prefer", "if-match", "if-none-match"
     );
 
+    private static boolean isWildcardAccept(String headerName, String value) {
+        return "accept".equalsIgnoreCase(headerName) && "*/*".equals(value.trim());
+    }
+
     /** Headers that must not be forwarded through a proxy. */
     private static final Set<String> HOP_BY_HOP_HEADERS = Set.of(
         "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
@@ -197,11 +201,12 @@ public class FhirProxyController {
                     continue;
                 }
                 String value = request.getHeader(headerName);
-                if (value != null) {
+                if (value != null && !isWildcardAccept(headerName, value)) {
                     reqBuilder.header(headerName, value);
                 }
             }
-            if (request.getHeader("Accept") == null && !forwarded.contains("Accept")) {
+            String accept = request.getHeader("Accept");
+            if ((accept == null || isWildcardAccept("accept", accept)) && !forwarded.contains("Accept")) {
                 reqBuilder.header("Accept", "application/fhir+json");
             }
             // Prevent the shared HttpClient from caching upstream responses
