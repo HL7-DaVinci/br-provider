@@ -483,6 +483,12 @@ app:
       # auth-type: smart-backend   # udap (default) | smart-backend | none
       # client-id: provider-ri     # pre-registered with the payer; register our JWKS from /api/security/jwks
       # token-url:                 # optional; discovered from .well-known/smart-configuration when omitted
+    - name: "Inferno DTR Full EHR"
+      fhir-url: "http://host.docker.internal:4567/custom/dtr_full_ehr_v220/fhir"
+      auth-type: smart-backend
+      client-id: dtr_v220_smart
+      token-url: "http://host.docker.internal:4567/custom/dtr_full_ehr_v220/auth/token"
+
     # Inferno PAS Client Suite target
     # - name: "Inferno PAS"
     #   cds-url: "http://localhost:8081/cds-services"
