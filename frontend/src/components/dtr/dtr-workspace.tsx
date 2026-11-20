@@ -62,6 +62,7 @@ import {
   buildOriginIndex,
   stampOrigins,
 } from "@/lib/information-origin";
+import { qrCanonical, stripCanonicalVersion } from "@/lib/qr-canonical";
 import { isTerminalQrStatus, type TerminalQrStatus } from "@/lib/qr-status";
 import { cn } from "@/lib/utils";
 
@@ -271,7 +272,7 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     for (const entry of inProgressQrsQuery.data?.entry ?? []) {
       const qr = entry.resource;
       if (!isQuestionnaireResponse(qr)) continue;
-      const c = qr.questionnaire;
+      const c = qrCanonical(qr);
       if (!c) continue;
       const stripped = stripCanonicalVersion(c);
       for (const target of effectiveCanonicals) {
@@ -374,13 +375,12 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     null;
 
   const activeExistingQr = useMemo(() => {
-    if (existingQr?.questionnaire && activeCanonical) {
-      const fhirContextStripped = stripCanonicalVersion(
-        existingQr.questionnaire,
-      );
+    const existingCanonical = existingQr ? qrCanonical(existingQr) : undefined;
+    if (existingQr && existingCanonical && activeCanonical) {
+      const fhirContextStripped = stripCanonicalVersion(existingCanonical);
       const activeStripped = stripCanonicalVersion(activeCanonical);
       if (
-        existingQr.questionnaire === activeCanonical ||
+        existingCanonical === activeCanonical ||
         fhirContextStripped === activeStripped
       ) {
         return existingQr;
@@ -914,11 +914,6 @@ function isQuestionnaireResponse(
     (resource as { resourceType?: string }).resourceType ===
       "QuestionnaireResponse"
   );
-}
-
-function stripCanonicalVersion(canonical: string): string {
-  const pipeIdx = canonical.indexOf("|");
-  return pipeIdx === -1 ? canonical : canonical.substring(0, pipeIdx);
 }
 
 function friendlyCanonicalName(canonical: string): string {

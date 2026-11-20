@@ -33,6 +33,7 @@ import {
   formatPatientName,
   formatQuestionnaireName,
 } from "@/lib/clinical-formatters";
+import { qrCanonical } from "@/lib/qr-canonical";
 import { selectNewCompletedQrs } from "@/lib/qr-status";
 import {
   isTerminalTaskStatus,
@@ -385,7 +386,7 @@ function SubmittedQrRow({ qr }: { qr: QuestionnaireResponse }) {
   return (
     <div className="flex items-center justify-between gap-2">
       <span className="min-w-0 truncate">
-        {formatQuestionnaireName(qr.questionnaire)}
+        {formatQuestionnaireName(qrCanonical(qr))}
       </span>
       <Button variant="ghost" size="sm" onClick={() => setShowViewer(true)}>
         <Eye className="mr-1 h-3 w-3" />

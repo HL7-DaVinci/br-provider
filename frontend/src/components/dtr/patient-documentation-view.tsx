@@ -36,6 +36,7 @@ import {
 import { parseCoverageInfoFromResource } from "@/lib/coverage-extensions";
 import { QR_CONTEXT_EXT_URL } from "@/lib/dtr-qr-extensions";
 import { serializeQuestionnaireSearch } from "@/lib/dtr-search";
+import { qrCanonical } from "@/lib/qr-canonical";
 
 export function PatientDocumentationView({ patientId }: { patientId: string }) {
   const { serverUrl: providerFhirUrl } = useFhirServer();
@@ -362,7 +363,7 @@ function QrRow({
   const [isLaunching, setIsLaunching] = useState(false);
   const [showViewer, setShowViewer] = useState(false);
   const openDtrTask = useDtrTaskSheet();
-  const questionnaireUrl = qr.questionnaire;
+  const questionnaireUrl = qrCanonical(qr);
   const label = formatQuestionnaireName(questionnaireUrl);
   const dateStr = qr.authored ?? qr.meta?.lastUpdated;
   const date = formatClinicalDate(dateStr);

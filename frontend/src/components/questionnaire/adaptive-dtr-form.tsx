@@ -29,6 +29,9 @@ import {
 const SDC_ADAPTIVE_QR_PROFILE =
   "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaireresponse-adapt";
 
+/** Local id for the contained Questionnaire when the payer's has none. */
+const ADAPTIVE_CONTAINED_Q_ID = "adaptive-questionnaire";
+
 /**
  * Contained resources the payer returns alongside the adaptive Questionnaire
  * (ValueSets, Libraries). An OperationOutcome describes a single exchange,
@@ -251,14 +254,32 @@ export function AdaptiveDtrForm({
   ]);
 
   // Re-inject the contained Questionnaire into the QR before saving so that
-  // future resume can extract it and render the full accumulated item set
+  // future resume can extract it and render the full accumulated item set.
+  // derivedFrom carries the original canonical, which is how the saved QR
+  // is matched back to its questionnaire (see qrCanonical).
   const prepareForSave = useCallback(
-    (qr: QuestionnaireResponse): QuestionnaireResponse => ({
-      ...qr,
-      contained: [currentQuestionnaire as FhirResource, ...siblings],
-      questionnaire: `#${currentQuestionnaire.id}`,
-    }),
-    [currentQuestionnaire, siblings],
+    (qr: QuestionnaireResponse): QuestionnaireResponse => {
+      const containedQ: Questionnaire = {
+        ...currentQuestionnaire,
+        id: currentQuestionnaire.id ?? ADAPTIVE_CONTAINED_Q_ID,
+        derivedFrom:
+          currentQuestionnaire.derivedFrom ??
+          (questionnaire.url ? [questionnaire.url] : undefined),
+      };
+      const profiles = qr.meta?.profile ?? [];
+      return {
+        ...qr,
+        meta: {
+          ...qr.meta,
+          profile: profiles.includes(SDC_ADAPTIVE_QR_PROFILE)
+            ? profiles
+            : [...profiles, SDC_ADAPTIVE_QR_PROFILE],
+        },
+        contained: [containedQ as FhirResource, ...siblings],
+        questionnaire: `#${containedQ.id}`,
+      };
+    },
+    [currentQuestionnaire, questionnaire.url, siblings],
   );
 
   // Resolve answerValueSet against the payer's contained ValueSets for

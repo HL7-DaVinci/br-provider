@@ -54,6 +54,7 @@ import {
 } from "@/lib/clinical-formatters";
 import { buildTaskFhirContext } from "@/lib/dtr-search";
 import { derivePasDecision, type PasDecision } from "@/lib/pas-pend-status";
+import { qrCanonical } from "@/lib/qr-canonical";
 import { isTerminalQrStatus, selectNewCompletedQrs } from "@/lib/qr-status";
 import { TERMINAL_TASK_STATUSES } from "@/lib/task-worklist";
 
@@ -534,9 +535,9 @@ function PasPage() {
                     <span className="font-mono text-xs truncate">
                       QuestionnaireResponse/{qrId}
                     </span>
-                    {qr?.questionnaire && (
+                    {qr && qrCanonical(qr) && (
                       <span className="text-xs text-muted-foreground truncate">
-                        {qr.questionnaire.split("/").pop()?.split("|")[0]}
+                        {qrCanonical(qr)?.split("/").pop()?.split("|")[0]}
                       </span>
                     )}
                   </li>

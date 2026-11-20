@@ -105,6 +105,30 @@ describe("indexQrsByCanonical", () => {
   });
 });
 
+describe("indexQrsByCanonical with adaptive QRs", () => {
+  it("indexes a QR referencing a contained Questionnaire by its derivedFrom", () => {
+    const adaptive: QuestionnaireResponse = {
+      ...qr("a1", "#aq", "in-progress"),
+      contained: [
+        {
+          resourceType: "Questionnaire",
+          id: "aq",
+          status: "active",
+          derivedFrom: [Q_VERSIONED],
+        },
+      ],
+    };
+
+    const map = indexQrsByCanonical([], [adaptive]);
+
+    expect(map.get(Q_BARE)?.inProgress.map((q) => q.id)).toEqual(["a1"]);
+    expect(map.has("#aq")).toBe(false);
+    expect(
+      findReusableQr({ byCanonical: map, isLoading: false }, Q_BARE)?.id,
+    ).toBe("a1");
+  });
+});
+
 describe("findReusableQr", () => {
   it("returns most-recent in-progress QR (sorted by lastUpdated)", () => {
     const map = indexQrsByCanonical(

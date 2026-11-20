@@ -1,6 +1,7 @@
 import type { Bundle, QuestionnaireResponse } from "fhir/r4";
 import { useMemo } from "react";
 import { usePatientQuestionnaireResponses } from "@/hooks/use-clinical-api";
+import { qrCanonical, stripCanonicalVersion } from "@/lib/qr-canonical";
 
 const QR_CONTEXT_EXT_URL =
   "http://hl7.org/fhir/us/davinci-dtr/StructureDefinition/qr-context";
@@ -69,12 +70,14 @@ export function indexQrsByCanonical(
     return entry;
   };
   for (const qr of completed) {
-    if (!qr.questionnaire) continue;
-    ensure(stripCanonicalVersion(qr.questionnaire)).completed.push(qr);
+    const canonical = qrCanonical(qr);
+    if (!canonical) continue;
+    ensure(stripCanonicalVersion(canonical)).completed.push(qr);
   }
   for (const qr of inProgress) {
-    if (!qr.questionnaire) continue;
-    ensure(stripCanonicalVersion(qr.questionnaire)).inProgress.push(qr);
+    const canonical = qrCanonical(qr);
+    if (!canonical) continue;
+    ensure(stripCanonicalVersion(canonical)).inProgress.push(qr);
   }
   // Sort each bucket so consumers can rely on [0] being most-recent.
   const byUpdatedDesc = (a: QuestionnaireResponse, b: QuestionnaireResponse) =>
@@ -186,9 +189,4 @@ function isQuestionnaireResponse(
     (resource as { resourceType?: string }).resourceType ===
       "QuestionnaireResponse"
   );
-}
-
-function stripCanonicalVersion(canonical: string): string {
-  const pipeIdx = canonical.indexOf("|");
-  return pipeIdx === -1 ? canonical : canonical.substring(0, pipeIdx);
 }

@@ -8,6 +8,7 @@ import {
   formatQuestionnaireName,
 } from "@/lib/clinical-formatters";
 import { bundleResources } from "@/lib/fhir-types";
+import { qrCanonical } from "@/lib/qr-canonical";
 
 interface EncounterDocumentationProps {
   encounterId: string;
@@ -41,7 +42,7 @@ export function EncounterDocumentation({
               header: "Questionnaire",
               accessor: (qr) => (
                 <span className="font-medium">
-                  {formatQuestionnaireName(qr.questionnaire)}
+                  {formatQuestionnaireName(qrCanonical(qr))}
                 </span>
               ),
             },
