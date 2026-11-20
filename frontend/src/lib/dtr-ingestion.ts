@@ -6,6 +6,7 @@ import type {
   QuestionnaireItem,
   QuestionnaireResponse,
   QuestionnaireResponseItem,
+  Resource,
   ValueSet,
 } from "fhir/r4";
 
@@ -76,20 +77,40 @@ export function inlineBundleValueSets(
   questionnaire: Questionnaire,
   bundle: Bundle,
 ): Questionnaire {
+  const bundleValueSets = (bundle.entry ?? [])
+    .map((entry) => entry.resource)
+    .filter((resource) => resource?.resourceType === "ValueSet") as ValueSet[];
+  return inlineValueSets(
+    questionnaire,
+    bundleValueSets,
+    questionnaire.contained ?? [],
+  );
+}
+
+/**
+ * Inlines answer options from expanded ValueSets. `shared` ValueSets match an
+ * answerValueSet canonical by url. `local` resources are contained alongside
+ * the Questionnaire: in Questionnaire.contained, or as siblings of a contained
+ * Questionnaire in an adaptive QuestionnaireResponse. They match by "#<id>"
+ * and also by url, since payers use either form to reference them.
+ */
+export function inlineValueSets(
+  questionnaire: Questionnaire,
+  shared: ValueSet[],
+  local: Resource[],
+): Questionnaire {
   const valueSets = new Map<string, ValueSet>();
   const register = (vs: ValueSet, key: string | undefined) => {
     if (key && vs.expansion?.contains?.length) valueSets.set(key, vs);
   };
-  for (const entry of bundle.entry ?? []) {
-    const resource = entry.resource;
-    if (resource?.resourceType === "ValueSet") {
-      register(resource as ValueSet, (resource as ValueSet).url);
-    }
+  for (const vs of shared) {
+    register(vs, vs.url);
   }
-  // Contained ValueSets are referenced as "#<id>" from answerValueSet.
-  for (const contained of questionnaire.contained ?? []) {
-    if (contained.resourceType === "ValueSet") {
-      register(contained as ValueSet, `#${contained.id}`);
+  for (const resource of local) {
+    if (resource.resourceType === "ValueSet") {
+      const vs = resource as ValueSet;
+      register(vs, vs.id ? `#${vs.id}` : undefined);
+      register(vs, vs.url);
     }
   }
   if (valueSets.size === 0) return questionnaire;

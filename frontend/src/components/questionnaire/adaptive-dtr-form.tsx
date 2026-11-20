@@ -9,6 +9,7 @@ import { JsonViewerDialog } from "@/components/json-viewer-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useNextQuestion } from "@/hooks/use-questionnaire";
+import { inlineValueSets } from "@/lib/dtr-ingestion";
 import type { AnswerSnapshot } from "@/lib/information-origin";
 import { isTerminalQrStatus } from "@/lib/qr-status";
 import {
@@ -18,6 +19,33 @@ import {
 
 const SDC_ADAPTIVE_QR_PROFILE =
   "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaireresponse-adapt";
+
+/**
+ * Contained resources the payer returns alongside the adaptive Questionnaire
+ * (ValueSets, Libraries). An OperationOutcome describes a single exchange,
+ * not the form, so it is not kept.
+ */
+function siblingResources(qr?: QuestionnaireResponse): FhirResource[] {
+  return (qr?.contained ?? []).filter(
+    (r) =>
+      r.resourceType !== "Questionnaire" &&
+      r.resourceType !== "OperationOutcome",
+  );
+}
+
+/** Merges by id; an incoming resource replaces an existing one with the same id. */
+function mergeById(
+  existing: FhirResource[],
+  incoming: FhirResource[],
+): FhirResource[] {
+  const merged = [...existing];
+  for (const r of incoming) {
+    const idx = r.id ? merged.findIndex((m) => m.id === r.id) : -1;
+    if (idx >= 0) merged[idx] = r;
+    else merged.push(r);
+  }
+  return merged;
+}
 
 interface AdaptiveDtrFormProps {
   questionnaire: Questionnaire;
@@ -71,6 +99,11 @@ export function AdaptiveDtrForm({
   const [currentQr, setCurrentQr] = useState<QuestionnaireResponse | undefined>(
     prepopulated,
   );
+  // Kept locally, not echoed to $next-question; written back only on save so
+  // the stored QR stays self-contained and can be resumed.
+  const [siblings, setSiblings] = useState<FhirResource[]>(() =>
+    siblingResources(prepopulated),
+  );
   const [isCompleted, setIsCompleted] = useState(
     isTerminalQrStatus(prepopulated?.status),
   );
@@ -122,6 +155,7 @@ export function AdaptiveDtrForm({
       if (updatedQ) {
         setCurrentQuestionnaire(updatedQ);
       }
+      setSiblings((prev) => mergeById(prev, siblingResources(result)));
 
       setCurrentQr(result);
       setRound((r) => r + 1);
@@ -141,10 +175,22 @@ export function AdaptiveDtrForm({
   const prepareForSave = useCallback(
     (qr: QuestionnaireResponse): QuestionnaireResponse => ({
       ...qr,
-      contained: [currentQuestionnaire as FhirResource],
+      contained: [currentQuestionnaire as FhirResource, ...siblings],
       questionnaire: `#${currentQuestionnaire.id}`,
     }),
-    [currentQuestionnaire],
+    [currentQuestionnaire, siblings],
+  );
+
+  // Resolve answerValueSet against the payer's contained ValueSets for
+  // rendering only; currentQuestionnaire stays as the payer authored it.
+  const renderQuestionnaire = useMemo(
+    () =>
+      inlineValueSets(
+        currentQuestionnaire,
+        [],
+        [...(currentQuestionnaire.contained ?? []), ...siblings],
+      ),
+    [currentQuestionnaire, siblings],
   );
 
   const handleSaveDraft = useCallback(() => {
@@ -174,7 +220,7 @@ export function AdaptiveDtrForm({
         <LhcFormRenderer
           ref={formRef}
           key={round}
-          questionnaire={currentQuestionnaire}
+          questionnaire={renderQuestionnaire}
           prepopulated={renderQr}
           originIndex={originIndex}
           onSave={noop}
