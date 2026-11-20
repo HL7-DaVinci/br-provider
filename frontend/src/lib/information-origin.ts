@@ -371,3 +371,153 @@ function stampNewItem(
     item: item.item?.map(stampNewItem),
   };
 }
+
+// -- Adaptive rounds --
+
+/**
+ * Fills populated answers into items that have no answer yet, stamping them
+ * auto-client. Items that already hold a value are left as they are. The
+ * adaptive loop re-populates the whole accumulated Questionnaire on every
+ * $next-question round, and an earlier round's answers stay authoritative,
+ * whether the user, the payer or a prior populate supplied them. Candidate
+ * items with a value but no peer in the existing QR are appended.
+ *
+ * Pairing follows {@link applyPopulateResult}: by linkId, by occurrence
+ * index among siblings, recursing into item.item and answer.item.
+ */
+export function fillUnansweredFromPopulate(
+  existing: QuestionnaireResponse,
+  candidate: QuestionnaireResponse,
+): QuestionnaireResponse {
+  const merged = structuredClone(existing);
+  merged.item = fillItems(merged.item ?? [], candidate.item ?? []);
+  return merged;
+}
+
+function fillItems(
+  existingItems: QuestionnaireResponseItem[],
+  candidateItems: QuestionnaireResponseItem[],
+): QuestionnaireResponseItem[] {
+  const candidatesByLinkId = new Map<string, QuestionnaireResponseItem[]>();
+  for (const c of candidateItems) {
+    const arr = candidatesByLinkId.get(c.linkId) ?? [];
+    arr.push(c);
+    candidatesByLinkId.set(c.linkId, arr);
+  }
+  const consumed = new Map<string, number>();
+  const out: QuestionnaireResponseItem[] = [];
+
+  for (const existing of existingItems) {
+    const idx = consumed.get(existing.linkId) ?? 0;
+    const cand = candidatesByLinkId.get(existing.linkId)?.[idx];
+    consumed.set(existing.linkId, idx + 1);
+    out.push(fillItem(existing, cand));
+  }
+  for (const [linkId, list] of candidatesByLinkId) {
+    const used = consumed.get(linkId) ?? 0;
+    for (let i = used; i < list.length; i++) {
+      if (itemHasValue(list[i])) out.push(stampNewItem(list[i]));
+    }
+  }
+  return out;
+}
+
+function fillItem(
+  existing: QuestionnaireResponseItem,
+  candidate: QuestionnaireResponseItem | undefined,
+): QuestionnaireResponseItem {
+  const out: QuestionnaireResponseItem = { ...existing };
+  const existingAnswered = (existing.answer ?? []).some(
+    (a) => extractAnswerValue(a) !== null,
+  );
+  const candidateAnswered = (candidate?.answer ?? []).some(
+    (a) => extractAnswerValue(a) !== null,
+  );
+
+  if (!existingAnswered && candidateAnswered && candidate?.answer) {
+    out.answer = candidate.answer.map((a) => ({
+      ...withOriginSource(a, "auto-client"),
+      item: a.item?.map(stampNewItem),
+    }));
+  } else if (existing.answer) {
+    out.answer = existing.answer.map((a, i) => {
+      const cChildren = candidate?.answer?.[i]?.item;
+      if (!a.item && !cChildren) return a;
+      return { ...a, item: fillItems(a.item ?? [], cChildren ?? []) };
+    });
+  }
+
+  if (existing.item || candidate?.item) {
+    out.item = fillItems(existing.item ?? [], candidate?.item ?? []);
+  }
+  return out;
+}
+
+function itemHasValue(item: QuestionnaireResponseItem): boolean {
+  return (
+    (item.answer ?? []).some(
+      (a) =>
+        extractAnswerValue(a) !== null || (a.item ?? []).some(itemHasValue),
+    ) || (item.item ?? []).some(itemHasValue)
+  );
+}
+
+/**
+ * Stamps information-origin on answers of a $next-question response that
+ * arrive without one. An answer whose value matches the answer at the same
+ * linkId and position in `prior` (the QR sent to the payer) takes that
+ * answer's origin extension, author included. Payers are not required to echo
+ * extensions back, so without this the user's manual answers would be
+ * relabelled. Any other answer was supplied by the payer and gets `fallback`.
+ * Returns a deep clone.
+ */
+export function restoreOrigins(
+  qr: QuestionnaireResponse,
+  prior: QuestionnaireResponse | undefined,
+  fallback: OriginSource,
+): QuestionnaireResponse {
+  const priorAnswers = new Map<string, QuestionnaireResponseItemAnswer[]>();
+  function collect(items: QuestionnaireResponseItem[] | undefined): void {
+    if (!items) return;
+    for (const item of items) {
+      if (item.answer) {
+        const list = priorAnswers.get(item.linkId) ?? [];
+        list.push(...item.answer);
+        priorAnswers.set(item.linkId, list);
+        for (const a of item.answer) collect(a.item);
+      }
+      collect(item.item);
+    }
+  }
+  collect(prior?.item);
+
+  const clone = structuredClone(qr);
+  const seen = new Map<string, number>();
+  function walk(items: QuestionnaireResponseItem[] | undefined): void {
+    if (!items) return;
+    for (const item of items) {
+      for (const answer of item.answer ?? []) {
+        const pos = seen.get(item.linkId) ?? 0;
+        seen.set(item.linkId, pos + 1);
+        const value = extractAnswerValue(answer);
+        if (value !== null && !hasOriginExtension(answer)) {
+          const match = priorAnswers.get(item.linkId)?.[pos];
+          const matchOrigin =
+            match && extractAnswerValue(match) === value
+              ? match.extension?.find((e) => e.url === INFORMATION_ORIGIN_URL)
+              : undefined;
+          if (!answer.extension) answer.extension = [];
+          answer.extension.push(
+            matchOrigin
+              ? structuredClone(matchOrigin)
+              : makeOriginExtension(fallback),
+          );
+        }
+        walk(answer.item);
+      }
+      walk(item.item);
+    }
+  }
+  walk(clone.item);
+  return clone;
+}

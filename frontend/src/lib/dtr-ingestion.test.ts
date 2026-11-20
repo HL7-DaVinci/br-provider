@@ -13,6 +13,7 @@ import {
   inlineBundleValueSets,
   inlineValueSets,
   selectPackageBundle,
+  withPackageResources,
 } from "./dtr-ingestion";
 
 describe("extractPackageBundles", () => {
@@ -433,5 +434,50 @@ describe("coerceDateAnswers", () => {
       "2020-07-01T10:40:10+01:00",
     );
     expect(qr.item?.[0].answer?.[0].valueDateTime).toBeDefined();
+  });
+});
+
+describe("withPackageResources", () => {
+  const lib = (id: string, url?: string, version?: string) =>
+    ({
+      resourceType: "Library",
+      id,
+      status: "active",
+      type: {},
+      url,
+      version,
+    }) as const;
+
+  it("appends support resources and ignores other types", () => {
+    const bundle: Bundle = {
+      resourceType: "Bundle",
+      type: "collection",
+      entry: [],
+    };
+    const out = withPackageResources(bundle, [
+      lib("a", "http://x/Library/a"),
+      { resourceType: "Patient", id: "p" },
+    ]);
+    expect(out.entry?.map((e) => e.resource?.id)).toEqual(["a"]);
+    expect(bundle.entry).toHaveLength(0);
+  });
+
+  it("replaces an entry with the same url, or the same id without a url", () => {
+    const bundle: Bundle = {
+      resourceType: "Bundle",
+      type: "collection",
+      entry: [
+        { resource: lib("a", "http://x/Library/a", "1") },
+        { resource: lib("b") },
+      ],
+    };
+    const out = withPackageResources(bundle, [
+      lib("other-id", "http://x/Library/a", "2"),
+      lib("b", undefined, "2"),
+    ]);
+    expect(out.entry).toHaveLength(2);
+    expect(
+      out.entry?.map((e) => (e.resource as { version?: string }).version),
+    ).toEqual(["2", "2"]);
   });
 });

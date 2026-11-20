@@ -397,6 +397,15 @@ export interface PopulateResult {
   issues: OperationOutcome | null;
 }
 
+export interface ProviderPopulateParams {
+  populateUrl?: string;
+  questionnaire?: Questionnaire;
+  packageBundle?: Bundle;
+  subject?: string;
+  contexts?: Record<string, string[]>;
+  providerFhirUrl?: string;
+}
+
 /**
  * Posts an SDC 4.0 $populate Parameters body to the provider's in-process
  * populate endpoint. Everything the engine needs from the payer (Q + Libraries
@@ -413,14 +422,7 @@ export interface PopulateResult {
  *
  * Returns both the populated QR and any issues OperationOutcome.
  */
-export function useProviderPopulate(params: {
-  populateUrl?: string;
-  questionnaire?: Questionnaire;
-  packageBundle?: Bundle;
-  subject?: string;
-  contexts?: Record<string, string[]>;
-  providerFhirUrl?: string;
-}) {
+export function useProviderPopulate(params: ProviderPopulateParams) {
   const url = params.populateUrl ?? "/api/dtr/populate";
   const questionnaireKey = params.questionnaire
     ? `${params.questionnaire.url ?? ""}|${params.questionnaire.version ?? ""}`
@@ -442,97 +444,104 @@ export function useProviderPopulate(params: {
     ),
     retry: false,
     staleTime: 5 * 60 * 1000,
-    queryFn: async (): Promise<PopulateResult> => {
-      const contextEntries = Object.entries(params.contexts ?? {})
-        .filter(([, refs]) => refs.length > 0)
-        .map(([name, refs]) => ({
-          name: "context",
-          part: [
-            { name: "name", valueString: name },
-            ...refs.map((ref) => ({
-              name: "content",
-              valueReference: { reference: ref },
-            })),
-          ],
-        }));
-      const body = {
-        resourceType: "Parameters",
-        parameter: [
-          { name: "subject", valueReference: { reference: params.subject } },
-          { name: "questionnaire", resource: params.questionnaire },
-          { name: "packagebundle", resource: params.packageBundle },
-          ...contextEntries,
-        ],
-      };
-
-      const res = await loggedFetch(
-        url,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/fhir+json" },
-          body: JSON.stringify(body),
-          credentials: "same-origin",
-        },
-        {
-          payerUrl: "",
-          providerUrl: params.providerFhirUrl,
-          operationName: "$populate",
-        },
-      );
-      const data = await res.json().catch(() => null);
-
-      if (!res.ok) {
-        const failureOutcome =
-          data?.resourceType === "OperationOutcome"
-            ? (data as OperationOutcome)
-            : null;
-        if (failureOutcome) {
-          console.error(
-            "[$populate] failure OperationOutcome:",
-            failureOutcome,
-          );
-        } else {
-          console.error(
-            "[$populate] non-2xx with no OperationOutcome",
-            res.status,
-            data,
-          );
-        }
-        return { response: null, issues: failureOutcome };
-      }
-
-      if (data?.resourceType === "Parameters") {
-        const responseParam = (data.parameter ?? []).find(
-          (p: { name?: string }) => p.name === "response",
-        );
-        const issuesParam = (data.parameter ?? []).find(
-          (p: { name?: string }) => p.name === "issues",
-        );
-        const issues =
-          (issuesParam?.resource as OperationOutcome | undefined) ?? null;
-        if (issues?.issue?.length) {
-          console.warn("[$populate] issues:", issues);
-        }
-        return {
-          response: (responseParam?.resource as QuestionnaireResponse) ?? null,
-          issues,
-        };
-      }
-      // Tolerate non-conformant servers that return a bare QR. Populate
-      // problems then ride along as a contained OperationOutcome.
-      if (data?.resourceType === "QuestionnaireResponse") {
-        const qr = data as QuestionnaireResponse;
-        const containedIssues = (qr.contained ?? []).find(
-          (resource) => resource.resourceType === "OperationOutcome",
-        ) as OperationOutcome | undefined;
-        if (containedIssues?.issue?.length) {
-          console.warn("[$populate] issues:", containedIssues);
-        }
-        return { response: qr, issues: containedIssues ?? null };
-      }
-      return { response: null, issues: null };
-    },
+    queryFn: () => postProviderPopulate(params),
   });
+}
+
+/**
+ * Imperative form of {@link useProviderPopulate}, for callers that populate
+ * on demand rather than on render: the adaptive loop populates each
+ * Questionnaire revision that $next-question returns.
+ */
+export async function postProviderPopulate(
+  params: ProviderPopulateParams,
+): Promise<PopulateResult> {
+  const url = params.populateUrl ?? "/api/dtr/populate";
+  const contextEntries = Object.entries(params.contexts ?? {})
+    .filter(([, refs]) => refs.length > 0)
+    .map(([name, refs]) => ({
+      name: "context",
+      part: [
+        { name: "name", valueString: name },
+        ...refs.map((ref) => ({
+          name: "content",
+          valueReference: { reference: ref },
+        })),
+      ],
+    }));
+  const body = {
+    resourceType: "Parameters",
+    parameter: [
+      { name: "subject", valueReference: { reference: params.subject } },
+      { name: "questionnaire", resource: params.questionnaire },
+      { name: "packagebundle", resource: params.packageBundle },
+      ...contextEntries,
+    ],
+  };
+
+  const res = await loggedFetch(
+    url,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/fhir+json" },
+      body: JSON.stringify(body),
+      credentials: "same-origin",
+    },
+    {
+      payerUrl: "",
+      providerUrl: params.providerFhirUrl,
+      operationName: "$populate",
+    },
+  );
+  const data = await res.json().catch(() => null);
+
+  if (!res.ok) {
+    const failureOutcome =
+      data?.resourceType === "OperationOutcome"
+        ? (data as OperationOutcome)
+        : null;
+    if (failureOutcome) {
+      console.error("[$populate] failure OperationOutcome:", failureOutcome);
+    } else {
+      console.error(
+        "[$populate] non-2xx with no OperationOutcome",
+        res.status,
+        data,
+      );
+    }
+    return { response: null, issues: failureOutcome };
+  }
+
+  if (data?.resourceType === "Parameters") {
+    const responseParam = (data.parameter ?? []).find(
+      (p: { name?: string }) => p.name === "response",
+    );
+    const issuesParam = (data.parameter ?? []).find(
+      (p: { name?: string }) => p.name === "issues",
+    );
+    const issues =
+      (issuesParam?.resource as OperationOutcome | undefined) ?? null;
+    if (issues?.issue?.length) {
+      console.warn("[$populate] issues:", issues);
+    }
+    return {
+      response: (responseParam?.resource as QuestionnaireResponse) ?? null,
+      issues,
+    };
+  }
+  // Tolerate non-conformant servers that return a bare QR. Populate
+  // problems then ride along as a contained OperationOutcome.
+  if (data?.resourceType === "QuestionnaireResponse") {
+    const qr = data as QuestionnaireResponse;
+    const containedIssues = (qr.contained ?? []).find(
+      (resource) => resource.resourceType === "OperationOutcome",
+    ) as OperationOutcome | undefined;
+    if (containedIssues?.issue?.length) {
+      console.warn("[$populate] issues:", containedIssues);
+    }
+    return { response: qr, issues: containedIssues ?? null };
+  }
+  return { response: null, issues: null };
 }
 
 const DTR_NEXT_QUESTION_INPUT_PROFILE =

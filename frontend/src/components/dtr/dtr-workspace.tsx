@@ -4,6 +4,7 @@ import type {
   Bundle,
   Coverage,
   DomainResource,
+  FhirResource,
   Questionnaire,
   QuestionnaireResponse,
 } from "fhir/r4";
@@ -34,6 +35,7 @@ import {
 } from "@/hooks/use-patient-qr-index";
 import { usePayerServer } from "@/hooks/use-payer-server";
 import {
+  postProviderPopulate,
   type QuestionnairePackageEntry,
   useProviderPopulate,
   useQuestionnairePackageEntries,
@@ -43,7 +45,11 @@ import {
 import { parseCoverageInfoFromResource } from "@/lib/coverage-extensions";
 import { propagateCoverageInfo } from "@/lib/coverage-propagation";
 import { broadcastDtrCompletion } from "@/lib/dtr-completion";
-import { alignChoiceAnswers, coerceDateAnswers } from "@/lib/dtr-ingestion";
+import {
+  alignChoiceAnswers,
+  coerceDateAnswers,
+  withPackageResources,
+} from "@/lib/dtr-ingestion";
 import {
   copyMissingExtensionsWithContained,
   type IntendedUse,
@@ -334,6 +340,33 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     contexts,
     providerFhirUrl,
   });
+
+  // Adaptive rounds populate each Questionnaire revision $next-question
+  // returns, with the same subject and package as the launch-time populate.
+  // Launch contexts are rebuilt from the revision, which may declare more.
+  const activeBundle = activePackage?.bundle;
+  const populateAdaptive = useCallback(
+    async (
+      questionnaire: Questionnaire,
+      resources: FhirResource[],
+    ): Promise<QuestionnaireResponse | null> => {
+      if (!patientRef || !activeBundle) return null;
+      const result = await postProviderPopulate({
+        questionnaire,
+        packageBundle: withPackageResources(activeBundle, resources),
+        subject: patientRef,
+        contexts: buildLaunchContexts(
+          questionnaire,
+          patientRef,
+          orderRef,
+          encounterRef,
+        ),
+        providerFhirUrl,
+      });
+      return result.response;
+    },
+    [activeBundle, patientRef, orderRef, encounterRef, providerFhirUrl],
+  );
 
   const activeCanonical =
     packageEntries[safeActiveIndex]?.canonical ||
@@ -847,6 +880,7 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
               onSave={handleSave}
               isSaving={saveResponse.isPending}
               payerFhirUrl={payerFhirUrl}
+              populate={populateAdaptive}
               readOnly={!isEditing}
               allowInProgressSave={
                 !isTerminalQrStatus(activeExistingQr?.status)

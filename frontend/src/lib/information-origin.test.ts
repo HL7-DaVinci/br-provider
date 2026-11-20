@@ -8,7 +8,9 @@ import {
   applyOriginTracking,
   applyPopulateResult,
   buildOriginIndex,
+  fillUnansweredFromPopulate,
   type OriginSource,
+  restoreOrigins,
   stampOrigins,
 } from "./information-origin";
 
@@ -421,5 +423,119 @@ describe("applyOriginTracking with authorRef", () => {
       "manual",
     );
     expect(ext?.extension?.find((e) => e.url === "author")).toBeUndefined();
+  });
+});
+
+function sourceOf(a: QuestionnaireResponseItemAnswer | undefined) {
+  return a?.extension
+    ?.find((e) => e.url === ORIGIN_URL)
+    ?.extension?.find((e) => e.url === "source")?.valueCode;
+}
+
+function qrOf(items: QuestionnaireResponse["item"]): QuestionnaireResponse {
+  return {
+    resourceType: "QuestionnaireResponse",
+    status: "in-progress",
+    item: items,
+  };
+}
+
+describe("fillUnansweredFromPopulate", () => {
+  it("fills an unanswered item and stamps auto-client", () => {
+    const merged = fillUnansweredFromPopulate(
+      qrOf([{ linkId: "family" }]),
+      qrOf([{ linkId: "family", answer: [answer("Smith")] }]),
+    );
+    const a = merged.item?.[0].answer?.[0];
+    expect(a?.valueString).toBe("Smith");
+    expect(sourceOf(a)).toBe("auto-client");
+  });
+
+  it("keeps an answered item regardless of its origin", () => {
+    for (const source of ["manual", "auto-server", "override"] as const) {
+      const merged = fillUnansweredFromPopulate(
+        qrOf([{ linkId: "q", answer: [answer("mine", source)] }]),
+        qrOf([{ linkId: "q", answer: [answer("cql")] }]),
+      );
+      expect(merged.item?.[0].answer).toEqual([answer("mine", source)]);
+    }
+  });
+
+  it("appends candidate items with a value and skips empty ones", () => {
+    const merged = fillUnansweredFromPopulate(
+      qrOf([{ linkId: "a", answer: [answer("x", "manual")] }]),
+      qrOf([
+        { linkId: "a", answer: [answer("y")] },
+        { linkId: "b", answer: [answer("new")] },
+        { linkId: "c" },
+      ]),
+    );
+    expect(merged.item?.map((i) => i.linkId)).toEqual(["a", "b"]);
+    expect(sourceOf(merged.item?.[1].answer?.[0])).toBe("auto-client");
+  });
+
+  it("fills unanswered children inside a group", () => {
+    const merged = fillUnansweredFromPopulate(
+      qrOf([
+        {
+          linkId: "g",
+          item: [
+            { linkId: "kept", answer: [answer("k", "manual")] },
+            { linkId: "empty" },
+          ],
+        },
+      ]),
+      qrOf([
+        {
+          linkId: "g",
+          item: [
+            { linkId: "kept", answer: [answer("cql-k")] },
+            { linkId: "empty", answer: [answer("cql-e")] },
+          ],
+        },
+      ]),
+    );
+    const children = merged.item?.[0].item;
+    expect(children?.[0].answer?.[0].valueString).toBe("k");
+    expect(children?.[1].answer?.[0].valueString).toBe("cql-e");
+    expect(sourceOf(children?.[1].answer?.[0])).toBe("auto-client");
+  });
+});
+
+describe("restoreOrigins", () => {
+  it("restores the sent origin, author included, for an unchanged answer", () => {
+    const sent = qrOf([
+      { linkId: "q", answer: [answer("v", "manual", "Practitioner/1")] },
+    ]);
+    const restored = restoreOrigins(
+      qrOf([{ linkId: "q", answer: [answer("v")] }]),
+      sent,
+      "auto-server",
+    );
+    expect(restored.item?.[0].answer?.[0]).toEqual(
+      answer("v", "manual", "Practitioner/1"),
+    );
+  });
+
+  it("uses the fallback for new or changed answers", () => {
+    const restored = restoreOrigins(
+      qrOf([
+        { linkId: "q", answer: [answer("changed")] },
+        { linkId: "new", answer: [answer("payer")] },
+      ]),
+      qrOf([{ linkId: "q", answer: [answer("v", "manual")] }]),
+      "auto-server",
+    );
+    expect(sourceOf(restored.item?.[0].answer?.[0])).toBe("auto-server");
+    expect(sourceOf(restored.item?.[1].answer?.[0])).toBe("auto-server");
+  });
+
+  it("leaves answers that already carry an origin alone", () => {
+    const restored = restoreOrigins(
+      qrOf([{ linkId: "q", answer: [answer("v", "override")] }]),
+      qrOf([{ linkId: "q", answer: [answer("v", "manual")] }]),
+      "auto-server",
+    );
+    expect(restored.item?.[0].answer?.[0]).toEqual(answer("v", "override"));
   });
 });

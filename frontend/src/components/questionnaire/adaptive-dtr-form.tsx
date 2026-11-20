@@ -9,8 +9,17 @@ import { JsonViewerDialog } from "@/components/json-viewer-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useNextQuestion } from "@/hooks/use-questionnaire";
-import { inlineValueSets } from "@/lib/dtr-ingestion";
-import type { AnswerSnapshot } from "@/lib/information-origin";
+import {
+  alignChoiceAnswers,
+  coerceDateAnswers,
+  inlineValueSets,
+} from "@/lib/dtr-ingestion";
+import {
+  type AnswerSnapshot,
+  buildOriginIndex,
+  fillUnansweredFromPopulate,
+  restoreOrigins,
+} from "@/lib/information-origin";
 import { isTerminalQrStatus } from "@/lib/qr-status";
 import {
   LhcFormRenderer,
@@ -65,6 +74,28 @@ interface AdaptiveDtrFormProps {
    * regressing to in-progress is not a valid FHIR transition.
    */
   allowInProgressSave?: boolean;
+  /**
+   * Populates a Questionnaire revision returned by $next-question, given the
+   * revision and the payer's contained support resources (Libraries,
+   * ValueSets). Resolves to the populated QR, or null when populate is not
+   * available. Without it, new items carry only what the payer answered.
+   */
+  populate?: (
+    questionnaire: Questionnaire,
+    resources: FhirResource[],
+  ) => Promise<QuestionnaireResponse | null>;
+}
+
+/** Answer options inlined so populated choice answers align with them. */
+function resolveForRender(
+  questionnaire: Questionnaire,
+  siblings: FhirResource[],
+): Questionnaire {
+  return inlineValueSets(
+    questionnaire,
+    [],
+    [...(questionnaire.contained ?? []), ...siblings],
+  );
 }
 
 /**
@@ -84,6 +115,7 @@ export function AdaptiveDtrForm({
   payerFhirUrl,
   readOnly = false,
   allowInProgressSave = true,
+  populate,
 }: AdaptiveDtrFormProps) {
   const formRef = useRef<LhcFormRendererHandle>(null);
   const nextQuestion = useNextQuestion(payerFhirUrl);
@@ -107,6 +139,14 @@ export function AdaptiveDtrForm({
   const [isCompleted, setIsCompleted] = useState(
     isTerminalQrStatus(prepopulated?.status),
   );
+  // Origins for the answers rendered after a $next-question round. The
+  // prop index only describes the launch-time QR, so answers that arrive in
+  // later rounds would otherwise be stamped manual on extraction.
+  const [roundOriginIndex, setRoundOriginIndex] = useState<Map<
+    string,
+    AnswerSnapshot[]
+  > | null>(null);
+  const [isPopulating, setIsPopulating] = useState(false);
   // Incrementing key forces LhcFormRenderer to fully re-mount with new items
   const [round, setRound] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -152,12 +192,46 @@ export function AdaptiveDtrForm({
         (r) => r.resourceType === "Questionnaire",
       ) as Questionnaire | undefined;
 
+      const nextQ = updatedQ ?? currentQuestionnaire;
+      const nextSiblings = mergeById(siblings, siblingResources(result));
+
+      // Payers need not echo information-origin. An answer that comes back
+      // unchanged keeps the origin it was sent with; anything else the
+      // payer supplied.
+      let nextQr = restoreOrigins(result, extracted, "auto-server");
+
+      // Populate the revision so new items with initialExpression or CQL
+      // get answers. Only unanswered items are filled.
+      if (populate) {
+        setIsPopulating(true);
+        try {
+          const populated = await populate(nextQ, [
+            ...(nextQ.contained ?? []),
+            ...nextSiblings,
+          ]);
+          if (populated) {
+            const forRender = resolveForRender(nextQ, nextSiblings);
+            nextQr = fillUnansweredFromPopulate(
+              nextQr,
+              coerceDateAnswers(
+                alignChoiceAnswers(populated, forRender),
+                forRender,
+              ),
+            );
+          }
+        } catch (populateErr) {
+          console.warn("[adaptive] populate failed:", populateErr);
+        } finally {
+          setIsPopulating(false);
+        }
+      }
+
       if (updatedQ) {
         setCurrentQuestionnaire(updatedQ);
       }
-      setSiblings((prev) => mergeById(prev, siblingResources(result)));
-
-      setCurrentQr(result);
+      setSiblings(nextSiblings);
+      setCurrentQr(nextQr);
+      setRoundOriginIndex(buildOriginIndex(nextQr));
       setRound((r) => r + 1);
 
       if (isTerminalQrStatus(result.status)) {
@@ -168,7 +242,13 @@ export function AdaptiveDtrForm({
         err instanceof Error ? err.message : "Failed to get next question",
       );
     }
-  }, [currentQuestionnaire, nextQuestion, questionnaire.url]);
+  }, [
+    currentQuestionnaire,
+    nextQuestion,
+    questionnaire.url,
+    siblings,
+    populate,
+  ]);
 
   // Re-inject the contained Questionnaire into the QR before saving so that
   // future resume can extract it and render the full accumulated item set
@@ -184,12 +264,7 @@ export function AdaptiveDtrForm({
   // Resolve answerValueSet against the payer's contained ValueSets for
   // rendering only; currentQuestionnaire stays as the payer authored it.
   const renderQuestionnaire = useMemo(
-    () =>
-      inlineValueSets(
-        currentQuestionnaire,
-        [],
-        [...(currentQuestionnaire.contained ?? []), ...siblings],
-      ),
+    () => resolveForRender(currentQuestionnaire, siblings),
     [currentQuestionnaire, siblings],
   );
 
@@ -202,6 +277,8 @@ export function AdaptiveDtrForm({
     const qr = formRef.current?.extractQr("completed");
     if (qr) onSave(prepareForSave(qr), "completed");
   }, [onSave, prepareForSave]);
+
+  const isAdvancing = nextQuestion.isPending || isPopulating;
 
   // Adaptive forms don't use onSave from LhcFormRenderer since we control the footer
   const noop = useCallback(() => {}, []);
@@ -222,7 +299,7 @@ export function AdaptiveDtrForm({
           key={round}
           questionnaire={renderQuestionnaire}
           prepopulated={renderQr}
-          originIndex={originIndex}
+          originIndex={roundOriginIndex ?? originIndex}
           onSave={noop}
           hideFooter
           readOnly={readOnly}
@@ -281,16 +358,13 @@ export function AdaptiveDtrForm({
               )}
 
               {!isCompleted ? (
-                <Button
-                  onClick={handleContinue}
-                  disabled={nextQuestion.isPending}
-                >
-                  {nextQuestion.isPending ? (
+                <Button onClick={handleContinue} disabled={isAdvancing}>
+                  {isAdvancing ? (
                     <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
                   ) : (
                     <ArrowRight className="h-4 w-4 mr-1.5" />
                   )}
-                  {nextQuestion.isPending ? "Loading..." : "Continue"}
+                  {isAdvancing ? "Loading..." : "Continue"}
                 </Button>
               ) : (
                 <Button onClick={handleSaveCompleted} disabled={isSaving}>

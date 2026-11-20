@@ -1,6 +1,7 @@
 import type {
   Bundle,
   Coding,
+  FhirResource,
   ParametersParameter,
   Questionnaire,
   QuestionnaireItem,
@@ -227,4 +228,35 @@ export function alignChoiceAnswers(
   };
   walk(result.item);
   return result;
+}
+
+const POPULATE_SUPPORT_TYPES = new Set(["Library", "ValueSet", "CodeSystem"]);
+
+/**
+ * Returns a copy of a package bundle with additional Libraries, ValueSets and
+ * CodeSystems appended. The adaptive loop uses it to populate a Questionnaire
+ * revision from $next-question, whose CQL may live in Libraries the payer only
+ * ships contained in that response rather than in the original package.
+ * An added resource replaces a bundle entry of the same type with the same
+ * url, or with the same id when either lacks a url.
+ */
+export function withPackageResources(
+  bundle: Bundle,
+  resources: Resource[],
+): Bundle {
+  const entries = [...(bundle.entry ?? [])];
+  for (const resource of resources) {
+    if (!POPULATE_SUPPORT_TYPES.has(resource.resourceType)) continue;
+    const url = (resource as { url?: string }).url;
+    const idx = entries.findIndex((e) => {
+      const r = e.resource;
+      if (r?.resourceType !== resource.resourceType) return false;
+      const rUrl = (r as { url?: string }).url;
+      return url && rUrl ? rUrl === url : Boolean(r.id) && r.id === resource.id;
+    });
+    const entry = { resource: resource as FhirResource };
+    if (idx >= 0) entries[idx] = entry;
+    else entries.push(entry);
+  }
+  return { ...bundle, entry: entries };
 }
