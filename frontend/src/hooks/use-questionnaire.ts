@@ -20,6 +20,12 @@ import {
 } from "@/lib/dtr-ingestion";
 import { extractFhirError } from "@/lib/fhir-types";
 import { loggedFetch } from "@/lib/logged-fetch";
+import {
+  extractPackageOutcome,
+  outcomeHasErrors,
+  type PackageResumeHint,
+  retrievalInstant,
+} from "@/lib/package-retrieval";
 import { ensureCoverageRelationship } from "@/lib/pas-bundle-builder";
 import { useFhirServer } from "./use-fhir-server";
 
@@ -30,8 +36,27 @@ interface QuestionnairePackageParams {
   orderRef?: string;
   coverageAssertionId?: string;
   questionnaire?: string[];
+  /**
+   * $questionnaire-package `changedsince`: when resuming an in-progress QR,
+   * the time its package was last retrieved. Only sent on single-context
+   * calls, since it filters every package the call would return.
+   */
+  changedSince?: string;
+  /**
+   * Package to use when the payer reports nothing changed since
+   * `changedSince`, instead of fetching the package again. Set only for
+   * adaptive drafts, which carry their package as contained resources.
+   */
+  unchangedBundle?: Bundle;
   enabled?: boolean;
 }
+
+/**
+ * Result of a `changedsince` request. "unchanged" means the payer returned
+ * no package and reported no error. The form then renders from the draft's
+ * own package (adaptive) or from a second, full request.
+ */
+export type ChangedSinceOutcome = "changed" | "unchanged";
 
 interface QuestionnairePackageResult {
   bundle: Bundle | null;
@@ -39,12 +64,18 @@ interface QuestionnairePackageResult {
   questionnaireResponse: QuestionnaireResponse | null;
   contentServerUrl: string | null;
   terminologyServerUrl: string | null;
+  /** When the package that `bundle` came from was retrieved (instant). */
+  retrievedAt: string | null;
+  changedSinceOutcome: ChangedSinceOutcome | null;
 }
 
 interface RawQuestionnairePackage {
   bundles: Bundle[];
   contentServerUrl: string | null;
   terminologyServerUrl: string | null;
+  retrievedAt: string;
+  /** The response carried an OperationOutcome with an error or fatal issue. */
+  hasErrorOutcome: boolean;
 }
 
 /**
@@ -69,6 +100,8 @@ async function fetchRawQuestionnairePackage(
     contextIds.map((contextId, idx) =>
       fetchSingleQuestionnairePackage({
         ...params,
+        changedSince: undefined,
+        unchangedBundle: undefined,
         coverageAssertionId: contextId,
         questionnaire: idx === 0 ? params.questionnaire : undefined,
         orderRef: idx === 0 ? params.orderRef : undefined,
@@ -100,6 +133,10 @@ async function fetchRawQuestionnairePackage(
       results.find((r) => r.contentServerUrl)?.contentServerUrl ?? null,
     terminologyServerUrl:
       results.find((r) => r.terminologyServerUrl)?.terminologyServerUrl ?? null,
+    retrievedAt: results
+      .map((r) => r.retrievedAt)
+      .reduce((a, b) => (a < b ? a : b)),
+    hasErrorOutcome: results.some((r) => r.hasErrorOutcome),
   };
 }
 
@@ -108,6 +145,7 @@ async function fetchSingleQuestionnairePackage(
 ): Promise<RawQuestionnairePackage> {
   const body = await buildQuestionnairePackageParams(params);
 
+  const requestedAt = new Date();
   const response = await loggedFetch(
     fhirProxyUrl(
       `${params.payerFhirUrl}/Questionnaire/$questionnaire-package`,
@@ -140,13 +178,19 @@ async function fetchSingleQuestionnairePackage(
     bundles: extractPackageBundles(data),
     contentServerUrl,
     terminologyServerUrl,
+    retrievedAt: retrievalInstant(requestedAt, response.headers.get("Date")),
+    hasErrorOutcome: outcomeHasErrors(extractPackageOutcome(data)),
   };
 }
 
 function toQuestionnairePackageResult(
   bundle: Bundle | null,
-  contentServerUrl: string | null,
-  terminologyServerUrl: string | null,
+  {
+    contentServerUrl,
+    terminologyServerUrl,
+    retrievedAt,
+  }: RawQuestionnairePackage,
+  changedSinceOutcome: ChangedSinceOutcome | null,
 ): QuestionnairePackageResult {
   const questionnaire = bundle
     ? findResourceInBundle<Questionnaire>(bundle, "Questionnaire")
@@ -167,6 +211,8 @@ function toQuestionnairePackageResult(
       : null,
     contentServerUrl,
     terminologyServerUrl,
+    retrievedAt: bundle ? retrievedAt : null,
+    changedSinceOutcome,
   };
 }
 
@@ -181,37 +227,55 @@ function toQuestionnairePackageResult(
 async function fetchQuestionnairePackageEntries(
   params: QuestionnairePackageParams,
 ): Promise<QuestionnairePackageResult[]> {
-  const { bundles, contentServerUrl, terminologyServerUrl } =
-    await fetchRawQuestionnairePackage(params);
+  let raw = await fetchRawQuestionnairePackage(params);
+  let outcome: ChangedSinceOutcome | null = null;
+  if (params.changedSince && raw.bundles.length > 0) {
+    outcome = "changed";
+  } else if (params.changedSince) {
+    const refetch = () =>
+      fetchRawQuestionnairePackage({
+        ...params,
+        changedSince: undefined,
+        unchangedBundle: undefined,
+      });
+    if (raw.hasErrorOutcome) {
+      // No package because the request failed, not because nothing changed.
+      // Retry without changedsince and leave the outcome unknown.
+      console.warn(
+        "[$questionnaire-package] changedsince request returned errors; retrying without it",
+      );
+      raw = await refetch();
+    } else if (params.unchangedBundle) {
+      // An adaptive draft carries its own package. Nothing was retrieved,
+      // so the original retrieval time still applies.
+      outcome = "unchanged";
+      raw = {
+        ...raw,
+        bundles: [params.unchangedBundle],
+        retrievedAt: params.changedSince,
+      };
+    } else {
+      // An unchanged response carries no package, and nothing stores the
+      // Libraries and ValueSets that rendering and $populate need, so fetch
+      // the package again in full. Its retrieval time becomes the new one.
+      outcome = "unchanged";
+      raw = await refetch();
+    }
+  }
+  const { bundles } = raw;
 
   const requestedCanonical = params.questionnaire?.[0];
   if (requestedCanonical) {
     const bundle = selectPackageBundle(bundles, requestedCanonical);
-    return [
-      toQuestionnairePackageResult(
-        bundle,
-        contentServerUrl,
-        terminologyServerUrl,
-      ),
-    ];
+    return [toQuestionnairePackageResult(bundle, raw, outcome)];
   }
 
   if (bundles.length === 0) {
-    return [
-      toQuestionnairePackageResult(
-        null,
-        contentServerUrl,
-        terminologyServerUrl,
-      ),
-    ];
+    return [toQuestionnairePackageResult(null, raw, outcome)];
   }
 
   return bundles.map((bundle) =>
-    toQuestionnairePackageResult(
-      bundle,
-      contentServerUrl,
-      terminologyServerUrl,
-    ),
+    toQuestionnairePackageResult(bundle, raw, outcome),
   );
 }
 
@@ -227,6 +291,8 @@ function questionnairePackageQueryKey(
     params.orderRef,
     params.questionnaire ?? [],
     params.coverageAssertionId,
+    params.changedSince,
+    !!params.unchangedBundle,
   ];
 }
 
@@ -244,6 +310,8 @@ export interface QuestionnairePackageEntry {
   questionnaireResponse: QuestionnaireResponse | null;
   contentServerUrl: string | null;
   terminologyServerUrl: string | null;
+  retrievedAt: string | null;
+  changedSinceOutcome: ChangedSinceOutcome | null;
   isLoading: boolean;
   isError: boolean;
   error: unknown;
@@ -276,6 +344,8 @@ export function useQuestionnairePackageEntries(
       questionnaireResponse: null,
       contentServerUrl: null,
       terminologyServerUrl: null,
+      retrievedAt: null,
+      changedSinceOutcome: null,
     },
   ];
 
@@ -286,6 +356,8 @@ export function useQuestionnairePackageEntries(
     questionnaireResponse: result.questionnaireResponse,
     contentServerUrl: result.contentServerUrl,
     terminologyServerUrl: result.terminologyServerUrl,
+    retrievedAt: result.retrievedAt,
+    changedSinceOutcome: result.changedSinceOutcome,
     isLoading: query.isLoading,
     isError: query.isError,
     error: query.error,
@@ -302,13 +374,23 @@ export function useQuestionnairePackageEntries(
  */
 export function useQuestionnairePackages(
   canonicals: string[],
-  rest: Omit<QuestionnairePackageParams, "questionnaire">,
+  {
+    resumeByCanonical,
+    ...rest
+  }: Omit<
+    QuestionnairePackageParams,
+    "questionnaire" | "changedSince" | "unchangedBundle"
+  > & {
+    resumeByCanonical?: Record<string, PackageResumeHint>;
+  },
 ): QuestionnairePackageEntry[] {
   const queries = useQueries({
     queries: canonicals.map((canonical) => {
       const params: QuestionnairePackageParams = {
         ...rest,
         questionnaire: [canonical],
+        changedSince: resumeByCanonical?.[canonical]?.changedSince,
+        unchangedBundle: resumeByCanonical?.[canonical]?.unchangedBundle,
       };
       // Same query key as useQuestionnairePackageEntries, so the cached value
       // must keep the same shape (the full entries array); this query reads [0].
@@ -332,6 +414,8 @@ export function useQuestionnairePackages(
       questionnaireResponse: result?.questionnaireResponse ?? null,
       contentServerUrl: result?.contentServerUrl ?? null,
       terminologyServerUrl: result?.terminologyServerUrl ?? null,
+      retrievedAt: result?.retrievedAt ?? null,
+      changedSinceOutcome: result?.changedSinceOutcome ?? null,
       isLoading: q?.isLoading ?? false,
       isError: q?.isError ?? false,
       error: q?.error,
@@ -734,7 +818,7 @@ export function buildPackageParameterList(
   order: unknown | null,
   params: Pick<
     QuestionnairePackageParams,
-    "questionnaire" | "coverageAssertionId"
+    "questionnaire" | "coverageAssertionId" | "changedSince"
   >,
 ): Record<string, unknown>[] {
   if (!coverage) {
@@ -761,6 +845,13 @@ export function buildPackageParameterList(
 
   if (order) {
     parameterList.push({ name: "order", resource: order });
+  }
+
+  if (params.changedSince) {
+    parameterList.push({
+      name: "changedsince",
+      valueInstant: params.changedSince,
+    });
   }
 
   return parameterList;

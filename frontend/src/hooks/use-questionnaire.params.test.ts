@@ -15,6 +15,24 @@ function paramNames(params: Record<string, unknown>[]): string[] {
 }
 
 describe("buildPackageParameterList", () => {
+  it("sends changedsince as an instant when resuming", () => {
+    const params = buildPackageParameterList(coverage, order, {
+      questionnaire: [OXYGEN],
+      changedSince: "2026-11-01T10:00:00.000Z",
+    });
+    expect(params.find((p) => p.name === "changedsince")).toEqual({
+      name: "changedsince",
+      valueInstant: "2026-11-01T10:00:00.000Z",
+    });
+  });
+
+  it("omits changedsince on a first retrieval", () => {
+    const params = buildPackageParameterList(coverage, order, {
+      questionnaire: [OXYGEN],
+    });
+    expect(paramNames(params)).not.toContain("changedsince");
+  });
+
   it("sends context alongside questionnaire canonicals for CRD launches", () => {
     const params = buildPackageParameterList(coverage, order, {
       questionnaire: [OXYGEN],

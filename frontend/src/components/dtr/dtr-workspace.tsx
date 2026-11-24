@@ -62,12 +62,15 @@ import {
   buildOriginIndex,
   stampOrigins,
 } from "@/lib/information-origin";
+import {
+  ADAPTIVE_EXT_URL,
+  type PackageResumeHint,
+  resolveResumeHints,
+  setPackageRetrievedAt,
+} from "@/lib/package-retrieval";
 import { qrCanonical, stripCanonicalVersion } from "@/lib/qr-canonical";
 import { isTerminalQrStatus, type TerminalQrStatus } from "@/lib/qr-status";
 import { cn } from "@/lib/utils";
-
-const ADAPTIVE_EXT_URL =
-  "http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaire-questionnaireAdaptive";
 
 export interface DtrTaskContext {
   iss: string;
@@ -202,19 +205,53 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
   );
   const existingQrId = existingQrRef?.split("/")[1];
 
-  const { data: existingQr } = useQuery({
+  const existingQrEnabled = !!existingQrId && !!providerFhirUrl;
+  const existingQrQuery = useQuery({
     queryKey: ["fhir", "QuestionnaireResponse", existingQrId],
     queryFn: () =>
       fhirFetch<QuestionnaireResponse>(
         `${providerFhirUrl}/QuestionnaireResponse/${existingQrId}`,
       ),
-    enabled: !!existingQrId && !!providerFhirUrl,
+    enabled: existingQrEnabled,
   });
+  const existingQr = existingQrQuery.data;
 
   const inProgressQrsQuery = usePatientQuestionnaireResponses(
     context.patientId ?? "",
     "in-progress",
   );
+
+  // Resume hint (changedsince, plus an adaptive draft's own package) per
+  // requested canonical, from the in-progress QR that will be resumed. Latched once the QR lookups settle: a later save refetches
+  // the QR list, and a changed query key would refetch the package and reset
+  // the open form. Launches that name no canonical skip it, since the
+  // payer's package set is not known until the response arrives.
+  const [resumeByCanonical, setResumeByCanonical] = useState<Record<
+    string,
+    PackageResumeHint
+  > | null>(null);
+  const resumeLookupSettled =
+    (!existingQrEnabled || existingQrQuery.isFetched) &&
+    (!selectedProviderFhirUrl ||
+      !context.patientId ||
+      inProgressQrsQuery.isFetched);
+  useEffect(() => {
+    if (resumeByCanonical || !resumeLookupSettled) return;
+    const inProgress = (inProgressQrsQuery.data?.entry ?? [])
+      .map((e) => e.resource)
+      .filter((r): r is QuestionnaireResponse => isQuestionnaireResponse(r));
+    setResumeByCanonical(
+      resolveResumeHints(questionnaireCanonicals, inProgress, existingQr),
+    );
+  }, [
+    resumeByCanonical,
+    resumeLookupSettled,
+    inProgressQrsQuery.data,
+    questionnaireCanonicals,
+    existingQr,
+  ]);
+  const packagesReady =
+    questionnaireCanonicals.length === 0 || resumeByCanonical !== null;
 
   // Patient-wide QR index for order-anchored satisfaction state. Drives tab
   // decoration and the read-only display fallback in activeExistingQr when a
@@ -234,6 +271,8 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     coverageRef: resolvedCoverageRef,
     orderRef,
     coverageAssertionId: context.coverageAssertionId,
+    resumeByCanonical: resumeByCanonical ?? undefined,
+    enabled: packagesReady,
   });
 
   // Single-fetch path: used when the launch does not already know a set of
@@ -248,7 +287,10 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
     orderRef,
     coverageAssertionId: context.coverageAssertionId,
     questionnaire: questionnaireCanonicals,
-    enabled: !isKnownMultiCanonical,
+    ...(questionnaireCanonicals.length === 1
+      ? resumeByCanonical?.[questionnaireCanonicals[0]]
+      : undefined),
+    enabled: !isKnownMultiCanonical && packagesReady,
   });
 
   const packageEntries = isKnownMultiCanonical
@@ -592,6 +634,12 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
         intendedUse,
       });
 
+      // Record this package's retrieval time so a resume can ask the payer
+      // what changed since (changedsince); see package-retrieval.ts.
+      if (activeEntry?.retrievedAt) {
+        setPackageRetrievedAt(response, activeEntry.retrievedAt);
+      }
+
       const sourceQr = activeExistingQr ?? mergedQr;
       if (sourceQr?.extension) {
         copyMissingExtensionsWithContained(sourceQr, response);
@@ -642,6 +690,7 @@ export function DtrWorkspace({ context, onClose }: DtrWorkspaceProps) {
       coverageResolutionPending,
       intendedUse,
       activeExistingQr,
+      activeEntry?.retrievedAt,
       mergedQr,
       propagateCoverage,
       notifyDtrCompletion,

@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
+import type { Bundle } from "fhir/r4";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fhirSend } from "@/lib/api";
@@ -71,6 +72,7 @@ describe("questionnaire package query cache", () => {
     loggedFetchMock.mockResolvedValue({
       ok: true,
       status: 200,
+      headers: new Headers(),
       json: async () => PACKAGE_RESPONSE,
     } as Response);
   });
@@ -125,6 +127,7 @@ describe("multi-context package fetch", () => {
     loggedFetchMock.mockResolvedValue({
       ok: true,
       status: 200,
+      headers: new Headers(),
       json: async () => PACKAGE_RESPONSE,
     } as Response);
   });
@@ -164,5 +167,173 @@ describe("multi-context package fetch", () => {
 
     // Both contexts resolved the same questionnaire: deduplicated to one entry.
     expect(result.current).toHaveLength(1);
+  });
+});
+
+describe("changedsince package fetch", () => {
+  const SINCE = "2026-11-01T10:00:00.000Z";
+  const EMPTY_RESPONSE = { resourceType: "Parameters", parameter: [] };
+
+  function packageResponse(body: unknown, date?: string): Response {
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers(date ? { Date: date } : {}),
+      json: async () => body,
+    } as Response;
+  }
+
+  function sentChangedSince(callIdx: number): string | undefined {
+    const init = loggedFetchMock.mock.calls[callIdx]?.[1];
+    const body = JSON.parse(init?.body as string);
+    return body.parameter.find(
+      (p: { name: string }) => p.name === "changedsince",
+    )?.valueInstant;
+  }
+
+  function wrapper({ children }: { children: ReactNode }) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    return (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fhirSendMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        resourceType: "Coverage",
+        id: "cov-1",
+        status: "active",
+      }),
+    } as Response);
+  });
+
+  it("re-fetches in full when the payer reports nothing changed", async () => {
+    loggedFetchMock
+      .mockResolvedValueOnce(packageResponse(EMPTY_RESPONSE))
+      .mockResolvedValueOnce(
+        packageResponse(PACKAGE_RESPONSE, "Fri, 20 Nov 2026 12:00:00 GMT"),
+      );
+
+    const { result } = renderHook(
+      () => useQuestionnairePackageEntries({ ...PARAMS, changedSince: SINCE }),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current[0]?.questionnaire).not.toBeNull(),
+    );
+
+    expect(loggedFetchMock).toHaveBeenCalledTimes(2);
+    expect(sentChangedSince(0)).toBe(SINCE);
+    expect(sentChangedSince(1)).toBeUndefined();
+    expect(result.current[0]?.changedSinceOutcome).toBe("unchanged");
+    // Never later than the response's Date header.
+    expect(
+      (result.current[0]?.retrievedAt ?? "") <= "2026-11-20T12:00:00.000Z",
+    ).toBe(true);
+  });
+
+  it("uses the returned package when the payer reports a change", async () => {
+    loggedFetchMock.mockResolvedValue(packageResponse(PACKAGE_RESPONSE));
+
+    const { result } = renderHook(
+      () => useQuestionnairePackageEntries({ ...PARAMS, changedSince: SINCE }),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current[0]?.questionnaire).not.toBeNull(),
+    );
+
+    expect(loggedFetchMock).toHaveBeenCalledTimes(1);
+    expect(result.current[0]?.changedSinceOutcome).toBe("changed");
+    expect(result.current[0]?.retrievedAt).toEqual(expect.any(String));
+  });
+
+  it("uses an adaptive draft's own package when nothing changed", async () => {
+    loggedFetchMock.mockResolvedValue(packageResponse(EMPTY_RESPONSE));
+    const unchangedBundle = PACKAGE_RESPONSE.parameter[0]?.resource as Bundle;
+
+    const { result } = renderHook(
+      () =>
+        useQuestionnairePackageEntries({
+          ...PARAMS,
+          changedSince: SINCE,
+          unchangedBundle,
+        }),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current[0]?.questionnaire).not.toBeNull(),
+    );
+
+    expect(loggedFetchMock).toHaveBeenCalledTimes(1);
+    expect(result.current[0]?.changedSinceOutcome).toBe("unchanged");
+    expect(result.current[0]?.retrievedAt).toBe(SINCE);
+  });
+
+  it("retries without changedsince when the payer returns an error outcome", async () => {
+    loggedFetchMock
+      .mockResolvedValueOnce(
+        packageResponse({
+          resourceType: "Parameters",
+          parameter: [
+            {
+              name: "outcome",
+              resource: {
+                resourceType: "OperationOutcome",
+                issue: [{ severity: "error", code: "processing" }],
+              },
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(packageResponse(PACKAGE_RESPONSE));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const unchangedBundle = PACKAGE_RESPONSE.parameter[0]?.resource as Bundle;
+
+    const { result } = renderHook(
+      () =>
+        useQuestionnairePackageEntries({
+          ...PARAMS,
+          changedSince: SINCE,
+          unchangedBundle,
+        }),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current[0]?.questionnaire).not.toBeNull(),
+    );
+
+    // The draft's package is not used: an error is not "nothing changed".
+    expect(loggedFetchMock).toHaveBeenCalledTimes(2);
+    expect(sentChangedSince(1)).toBeUndefined();
+    expect(result.current[0]?.changedSinceOutcome).toBeNull();
+    expect(result.current[0]?.retrievedAt).not.toBe(SINCE);
+    warn.mockRestore();
+  });
+
+  it("omits changedsince on multi-context fan-out calls", async () => {
+    loggedFetchMock.mockResolvedValue(packageResponse(PACKAGE_RESPONSE));
+
+    const { result } = renderHook(
+      () =>
+        useQuestionnairePackageEntries({
+          ...PARAMS,
+          questionnaire: undefined,
+          coverageAssertionId: "ctx-1,ctx-2",
+          changedSince: SINCE,
+        }),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current[0]?.questionnaire).not.toBeNull(),
+    );
+
+    expect(sentChangedSince(0)).toBeUndefined();
+    expect(sentChangedSince(1)).toBeUndefined();
   });
 });
