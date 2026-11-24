@@ -69,3 +69,80 @@ A Docker Compose file is provided to run the provider server alongside the payer
 ```bash
 docker compose up
 ```
+
+## Local Inferno Usage
+
+A running burden reduction client with a functional UI is very helpful
+when developing Inferno test kits. The DTR test kit in particular benefits
+from observing the interaction in the UI. However, the standard br-provider
+functionality does not fully support all DTR capabilities. This inferno-specific
+fork provides a sandbox for the team to add quick, AI-authored, non-general
+updates to support features that enable Inferno test validation locally.
+
+### Running with Inferno
+
+Run br-provider with its other components (br-payer and fast-security) using docker:
+
+```
+docker compose up -d
+```
+
+Note that it will take a few minutes to start-up. Additional configuration is
+needed to run against specific test kits.
+
+#### CRD
+
+TODO
+
+#### DTR
+
+With the br-provider docker container running locally, Inferno services running
+in docker, and the dtr test kit running locally in Ruby, you can test your
+local br-provider instances against the Inferno DTR tests.
+
+In the br-provider settings for the Payer, use the following values:
+- CDS Services URL: `http://localhost:8081/cds-services` (uses the br-payer service)
+- FHIR URL: `http://host.docker.internal:4567/custom/dtr_full_ehr_v220/fhir` (NOTE: run over an internal docker host - generates some errors in Inferno around mismatched hosts, but works)
+- Authentication: `SMART Backend Services`
+- Client ID: `dtr_v220_smart`
+- Bypass payor-handled checks: checked
+
+In Inferno, start a DTR v2.2.0 client suite and run the Registration group
+with the following inputs (paste as json). Note that the `client_id`
+value is configured within the br-provider `application.yaml` file.
+```
+[
+  {
+    "name": "client_id",
+    "value": "dtr_v220_smart"
+  },
+  {
+    "name": "smart_jwk_set",
+    "value": "http://localhost:8080/api/security/jwks"
+  }
+]
+```
+
+After attesting to the completion of registration, you can start any Inferno
+group to wait for a DTR request. In the [br-provider UI](http://localhost:8080/login),
+you can then
+- Login as a provider (e.g., Jane Doe)
+- Choose a patient (e.g., Teddy Roosevelt)
+- Start an Encounter
+- Place an order (e.g., "EO424 - Stationary Compressed Gas Oxygen")
+- Sign it and confirm
+- Launch DTR using the button that shows up
+
+Additional variations in the UI are possible, but not documented here.
+
+#### PAS
+
+TODO
+
+### Updates
+
+If you make updates to add or adjust functionality, bring docker down (`docker compose down`) and then run again building br-provider:
+
+```
+docker compose up -d --build br-provider
+```
